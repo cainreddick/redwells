@@ -108,3 +108,15 @@ test('POST /api/months with copyFrom returns the new month and a copy report', a
   assert.equal(r.body.copyReport.source, 'January 2030');
   assert.equal((await api('POST', '/api/months', { year: 2029, month: 12, copyFrom: src.month.id })).status, 400);
 });
+
+test('PUT re-validates the whole item, including cross-field rules', async () => {
+  const { body: m } = await api('POST', '/api/months', { year: 2031, month: 5 });
+  const { body: withPot } = await api('POST', `/api/months/${m.month.id}/pots`, { name: 'Car', opening: '100' });
+  const pot = withPot.pots[0];
+  const r = await api('PUT', `/api/pots/${pot.id}`, { ...pot, withdrawal: 20000 });
+  assert.equal(r.status, 400);
+  assert.match(r.body.details.withdrawal, /Cannot withdraw more/);
+  const ok = await api('PUT', `/api/pots/${pot.id}`, { ...pot, name: 'Car fund', withdrawal: 2500 });
+  assert.equal(ok.body.pots[0].closing, 7500);
+  assert.equal(ok.body.pots[0].seriesId, pot.seriesId); // edits keep the series link
+});

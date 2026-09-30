@@ -4,9 +4,9 @@ A local, single-computer budget planner. Each month is its own saved record with
 fixed bills, savings pots and debts. Everything is stored in **one SQLite file** on disk.
 There are no accounts and no cloud, and nothing lives in browser storage.
 
-> **Status:** stage 2 of 6 is done. You can create, copy forward, view and delete months, and
-> add notes. Adding and editing items in the four sections arrives in stage 3; until then,
-> use `npm run demo` to see months with sample data in them.
+> **Status:** stage 3 of 6 is done. You can manage months, copy them forward, and add, edit
+> and delete items in all four sections. Still to come: the monthly summary panel, charts,
+> and CSV export with backup/restore.
 
 ## Requirements
 
@@ -82,6 +82,33 @@ Copying forward:
 Deleting a month asks for confirmation first. If you delete one by mistake, the startup
 snapshots in `data/backups/` still have it.
 
+## Editing a month
+
+Each section (**Income**, **Fixed bills**, **Savings pots** and **Debts**) is an editable
+table.
+
+- **Add:** click **+ Add …** under the table. A new row opens with the cursor in the name
+  field.
+- **Edit:** click the pencil icon on a row, or double-click the row.
+- **Keys:** `Enter` saves and `Esc` cancels.
+- **Live preview:** while you edit, the calculated columns update as you type. These are a
+  pot's balance and progress, and a debt's interest, closing balance and payoff date.
+- **Delete:** click the bin icon, then confirm.
+- **One row at a time:** only one row per section can be edited at once, so a half-finished
+  edit is never thrown away by accident.
+- **Validation:** problems show under the field and the row won't save until they're fixed.
+  The rules are:
+  - names are required
+  - amounts can't be negative or have more than 2 decimal places
+  - the due day must be 1–31
+  - APR must be 0–100%
+  - a withdrawal can't be more than the pot holds
+  - a payment can't be more than the debt owes this month (opening balance plus interest)
+
+Months are independent records. Changing a pot's balance in October doesn't rewrite November,
+which was copied from October's figures at the time it was created. Edit November too if
+needed.
+
 ## How the numbers work
 
 - Money is stored as whole **pence** (integers), so no floating-point rounding creeps in.
@@ -108,7 +135,7 @@ shared/      pure JS used by both server and browser
   validate.js per-section field validation
 public/      the browser app: Preact + htm via an import map, no build step
   js/main.js         app shell, routing, month list state
-  js/components/     MonthList, MonthView, NewMonthDialog, sections
+  js/components/     MonthList, MonthView, NewMonthDialog, sections (editable tables)
   js/ui.js           modal, confirm dialog, toasts
   vendor/            the Preact and htm library files, copied in (see vendor/README.md)
 scripts/demo.js      seeds and runs the demo database

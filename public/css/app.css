@@ -72,7 +72,7 @@ a { color: var(--accent); }
 
 .layout {
   display: grid;
-  grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-columns: 220px minmax(0, 1fr);
   min-height: 100vh;
 }
 
@@ -91,6 +91,7 @@ a { color: var(--accent); }
   align-items: center;
   gap: .5rem;
   font-weight: 650;
+  white-space: nowrap;
   margin-bottom: 1rem;
 }
 .brand-mark {
@@ -104,7 +105,7 @@ a { color: var(--accent); }
 }
 
 .content {
-  padding: 1.5rem 2rem 3rem;
+  padding: 1.5rem 1.5rem 3rem;
   max-width: 1200px;
   width: 100%;
 }
@@ -151,6 +152,7 @@ a { color: var(--accent); }
   box-shadow: var(--shadow);
   padding: 1rem 1.25rem;
 }
+.section.card { padding: 1rem; }
 .card-head {
   display: flex;
   align-items: baseline;
@@ -172,12 +174,12 @@ a { color: var(--accent); }
 }
 .month-actions { display: flex; gap: .5rem; }
 
-.sections {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1rem;
-}
-.section-pots, .section-debts { grid-column: 1 / -1; }
+.sections { display: grid; gap: 1rem; }
+.sections > * { min-width: 0; }
+/* The first column (the item's name) takes the slack so numbers line up at the right. */
+table.items th:first-child { width: 30%; }
+.section-pots table.items th:first-child, .section-debts table.items th:first-child { width: 18%; }
+.nowrap { white-space: nowrap; }
 .notes { margin-top: 1rem; }
 
 .empty { color: var(--muted); margin: .25rem 0 .5rem; }
@@ -344,6 +346,61 @@ textarea { width: 100%; resize: vertical; }
 @media (max-width: 900px) {
   .layout { grid-template-columns: 1fr; }
   .sidebar { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--border); }
-  .sections { grid-template-columns: 1fr; }
   .content { padding: 1rem; }
 }
+
+/* ------------------------------------------------------------ editable sections */
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.table-scroll { overflow-x: auto; }
+.section-foot { margin-top: .5rem; }
+
+.btn-sm { padding: .25rem .6rem; font-size: .85rem; }
+.btn-ghost { border-color: transparent; background: transparent; color: var(--accent); }
+.btn-ghost:hover:not(:disabled) { background: var(--accent-soft); }
+
+table.items th.row-actions, table.items td.row-actions {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
+  padding-left: .25rem;
+}
+td.row-actions .btn + .btn { margin-left: .25rem; }
+td.row-actions .icon-btn { opacity: .35; display: inline-grid; place-items: center; padding: .3rem; }
+tr:hover td.row-actions .icon-btn, td.row-actions .icon-btn:focus-visible { opacity: 1; }
+td.row-actions .icon-btn:disabled { opacity: .15; cursor: default; background: none; }
+.icon-danger:hover:not(:disabled) { color: var(--negative); background: var(--negative-soft); }
+
+table.items tr.editing, table.items tr.editing:hover { background: var(--accent-soft); }
+table.items tr.editing td { vertical-align: top; padding: .35rem .3rem; }
+table.items tr.editing td.preview { padding-top: .75rem; color: var(--muted); }
+table.items tr.editing input, table.items tr.editing select { padding: .3rem .45rem; font-size: .9rem; }
+
+.input-text { width: 100%; min-width: 7rem; }
+.input-money { width: 6rem; text-align: right; font-variant-numeric: tabular-nums; }
+.input-percent { width: 4.5rem; text-align: right; }
+.input-day { width: 4.5rem; }
+
+.affix { display: inline-flex; align-items: center; gap: .25rem; }
+.affix > span { color: var(--muted); font-size: .9rem; }
+
+.inline-check { display: inline-flex; align-items: center; gap: .35rem; padding-top: .3rem; cursor: pointer; }
+.inline-check input { width: 1rem; height: 1rem; margin: 0; }
+
+.cell-error {
+  color: var(--negative);
+  font-size: .78rem;
+  line-height: 1.3;
+  margin-top: .2rem;
+  white-space: normal;
+  text-align: left;
+  max-width: 14rem;
+}
+td.num .cell-error { margin-left: auto; text-align: right; }

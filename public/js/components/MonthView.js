@@ -3,7 +3,7 @@ import { html } from '../html.js';
 import { api } from '../api.js';
 import { confirmAction, toast } from '../ui.js';
 import { dateTime } from '../format.js';
-import { SectionTable } from './sections.js';
+import { Section } from './sections.js';
 
 export function MonthView({ monthId, onChanged, onDeleted }) {
   const [data, setData] = useState(null);
@@ -61,10 +61,10 @@ export function MonthView({ monthId, onChanged, onDeleted }) {
       </header>
 
       <div class="sections">
-        <${SectionTable} name="income" data=${data} />
-        <${SectionTable} name="bills" data=${data} />
-        <${SectionTable} name="pots" data=${data} />
-        <${SectionTable} name="debts" data=${data} />
+        <${Section} name="income" data=${data} onMonth=${apply} />
+        <${Section} name="bills" data=${data} onMonth=${apply} />
+        <${Section} name="pots" data=${data} onMonth=${apply} />
+        <${Section} name="debts" data=${data} onMonth=${apply} />
       </div>
 
       <${Notes} key=${monthId} month=${data.month} onSaved=${apply} />
