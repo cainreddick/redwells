@@ -6,6 +6,7 @@ import { ConfirmHost, ToastHost, toast } from './ui.js';
 import { MonthList } from './components/MonthList.js';
 import { MonthView } from './components/MonthView.js';
 import { NewMonthDialog } from './components/NewMonthDialog.js';
+import { ChartsView } from './components/ChartsView.js';
 import { shortMonth } from './format.js';
 import { monthKey, monthLabel, parseMonthKey } from '/shared/calc.js';
 
@@ -60,7 +61,9 @@ function App() {
   const prev = selected && months[months.indexOf(selected) + 1];
 
   let main;
-  if (selected) {
+  if (route === 'charts') {
+    main = html`<${ChartsView} />`;
+  } else if (selected) {
     main = html`
       <${MonthView}
         key=${selected.id}
@@ -93,6 +96,10 @@ function App() {
     <div class="layout">
       <aside class="sidebar">
         <div class="brand"><span class="brand-mark">£</span> Household Budget</div>
+        <a href="#/charts" class="nav-link ${route === 'charts' ? 'active' : ''}" aria-current=${route === 'charts' ? 'page' : undefined}>
+          <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M3 16.5h14V18H3zM4 10h2.5v5H4zm4.75-4h2.5v9h-2.5zM13.5 8H16v7h-2.5z"/></svg>
+          Charts
+        </a>
         <${MonthList} months=${months} selectedKey=${route} onNew=${() => setCreating(true)} />
       </aside>
       <main class="content">${main}</main>

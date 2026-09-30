@@ -4,15 +4,15 @@ A local, single-computer budget planner. Each month is its own saved record with
 fixed bills, savings pots and debts. Everything is stored in **one SQLite file** on disk.
 There are no accounts and no cloud, and nothing lives in browser storage.
 
-> **Status:** stage 4 of 6 is done. You can manage months, copy them forward, edit all four
-> sections, and see a monthly summary. Still to come: charts, and CSV export with
+> **Status:** stage 5 of 6 is done. You can manage months, copy them forward, edit all four
+> sections, and use the monthly summary and charts. Still to come: CSV export and
 > backup/restore.
 
 ## Requirements
 
 - **Node.js 22.13 or newer** (22 LTS or 24 LTS). Check with `node --version`.
-  Nothing else is needed: SQLite is built into Node, the two small UI libraries are copied
-  into `public/vendor/`, and there's no `npm install` step.
+  Nothing else is needed: SQLite is built into Node, the UI and chart libraries are copied
+  into `public/vendor/`, and there's no `npm install` step. The app works offline.
 
 ## Run it
 
@@ -128,6 +128,27 @@ The panel at the top of each month shows:
 
 Everything updates as soon as you save a change.
 
+## Charts
+
+Click **Charts** in the sidebar. Pick a range with the **From** and **To** month selectors,
+or use the **Last 6**, **Last 12** and **All** buttons. The browser remembers your choice.
+There are three charts:
+
+- **Month-to-month comparison:** grouped bars for income, fixed bills, savings contributions
+  and debt payments in each month.
+- **Savings pot balances:** one line per pot, showing its closing balance.
+  - A pot keeps its colour and history even if you rename it.
+  - The line has gaps for months when the pot didn't exist.
+  - More than 8 pots are grouped into "Other".
+- **Total debt balance:** all debts combined, after interest and payments.
+
+Hover over a chart to see exact figures. **Show table** switches any chart to a plain table
+of the same numbers; the pots and debt tables include a per-item breakdown. Only saved
+months appear, so a month you skipped is simply missing from the axis.
+
+The colours match everywhere: income is yellow, bills blue, savings orange and debts green.
+They were checked for colour-blind readability in both light and dark mode.
+
 ## How the numbers work
 
 - Money is stored as whole **pence** (integers), so no floating-point rounding creeps in.
@@ -154,9 +175,10 @@ shared/      pure JS used by both server and browser
   validate.js per-section field validation
 public/      the browser app: Preact + htm via an import map, no build step
   js/main.js         app shell, routing, month list state
-  js/components/     MonthList, MonthView, NewMonthDialog, Summary, sections (editable tables)
+  js/components/     MonthList, MonthView, NewMonthDialog, Summary, ChartsView,
+                     sections (editable tables)
   js/ui.js           modal, confirm dialog, toasts
-  vendor/            the Preact and htm library files, copied in (see vendor/README.md)
+  vendor/            Preact, htm and Chart.js library files, copied in (see vendor/README.md)
 scripts/demo.js      seeds and runs the demo database
 test/        node:test suites
 ```
@@ -171,6 +193,7 @@ its `summary`.
 |---|---|---|
 | GET | `/api/months` | (lists months, newest first, each with a summary) |
 | POST | `/api/months` | `{ year, month, copyFrom? }`. With `copyFrom` (a month id), the response includes a `copyReport` |
+| GET | `/api/history?from=YYYY-MM&to=YYYY-MM` | (chart data: month summaries plus per-pot and per-debt closing balances; both params optional) |
 | GET | `/api/months/:id` | (the month with its items and computed fields) |
 | PATCH | `/api/months/:id` | `{ notes }` |
 | DELETE | `/api/months/:id` | (deletes the month and all its items) |

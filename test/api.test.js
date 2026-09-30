@@ -120,3 +120,10 @@ test('PUT re-validates the whole item, including cross-field rules', async () =>
   assert.equal(ok.body.pots[0].closing, 7500);
   assert.equal(ok.body.pots[0].seriesId, pot.seriesId); // edits keep the series link
 });
+
+test('GET /api/history validates range keys', async () => {
+  assert.equal((await api('GET', '/api/history?from=2026-13')).status, 400);
+  const r = await api('GET', '/api/history?from=2030-01&to=2030-02');
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.months.map((m) => m.key), ['2030-01', '2030-02']);
+});

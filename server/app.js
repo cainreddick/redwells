@@ -8,6 +8,7 @@ import * as repo from './repo.js';
 import { AppError } from './repo.js';
 import { SCHEMA_VERSION } from './db.js';
 import { SECTION_NAMES, validateItem, validateMonth } from '../shared/validate.js';
+import { parseMonthKey } from '../shared/calc.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const STATIC_ROOTS = [
@@ -61,6 +62,18 @@ function buildRoutes(db) {
     route('GET', '/api/health', () => ({ ok: true, schemaVersion: SCHEMA_VERSION })),
 
     route('GET', '/api/months', () => repo.listMonths(db)),
+
+    // ?from=YYYY-MM&to=YYYY-MM (both optional)
+    route('GET', '/api/history', ({ query }) => {
+      const range = {};
+      for (const k of ['from', 'to']) {
+        const v = query.get(k);
+        if (!v) continue;
+        if (!parseMonthKey(v)) throw new AppError(400, `${k} must look like 2026-10`);
+        range[k] = v;
+      }
+      return repo.history(db, range);
+    }),
 
     // Body: { year, month, copyFrom?: monthId }. With copyFrom, carries that month forward.
     route('POST', '/api/months', ({ body }) => {
@@ -183,7 +196,7 @@ export function createServer({ db, log = console }) {
   const routes = buildRoutes(db);
 
   const server = http.createServer(async (req, res) => {
-    const { pathname } = new URL(req.url, 'http://localhost');
+    const { pathname, searchParams } = new URL(req.url, 'http://localhost');
     try {
       checkRequestOrigin(req, server.address().port);
 
@@ -196,7 +209,7 @@ export function createServer({ db, log = console }) {
           if (r.method !== req.method) continue;
           const params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
           const body = await readJson(req);
-          const result = await r.handler({ params, body, req, res });
+          const result = await r.handler({ params, query: searchParams, body, req, res });
           if (res.writableEnded) return; // handler streamed its own response
           return result?.[CREATED] ? send(res, 201, result.payload) : send(res, 200, result);
         }

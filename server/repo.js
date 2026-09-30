@@ -100,6 +100,44 @@ export function allMonthsDetailed(db) {
   return assemble(db, db.prepare('SELECT * FROM months ORDER BY year, month').all());
 }
 
+/**
+ * Chart data for saved months between two "YYYY-MM" keys (inclusive; either may be omitted).
+ * Pot and debt series are ordered by first appearance across *all* months, and `index` is
+ * that position, so a series keeps its colour whatever range is picked. Each series has one
+ * closing balance per month in range (null where it didn't exist) and its most recent name.
+ */
+export function history(db, { from, to } = {}) {
+  const all = allMonthsDetailed(db);
+  const keyOf = (m) => monthKey(m.month.year, m.month.month);
+  const inRange = all.filter((m) => (!from || keyOf(m) >= from) && (!to || keyOf(m) <= to));
+
+  const seriesFor = (section) => {
+    const byId = new Map();
+    for (const m of all) {
+      for (const it of m[section]) {
+        const s = byId.get(it.seriesId) ?? { seriesId: it.seriesId, index: byId.size };
+        s.name = it.name;
+        byId.set(it.seriesId, s);
+      }
+    }
+    return [...byId.values()]
+      .map((s) => ({
+        ...s,
+        balances: inRange.map((m) => m[section].find((it) => it.seriesId === s.seriesId)?.closing ?? null),
+      }))
+      .filter((s) => s.balances.some((v) => v !== null));
+  };
+
+  return {
+    available: all.map((m) => ({ key: keyOf(m), label: m.month.label })),
+    months: inRange.map((m) => ({
+      key: keyOf(m), label: m.month.label, year: m.month.year, month: m.month.month, summary: m.summary,
+    })),
+    pots: seriesFor('pots'),
+    debts: seriesFor('debts'),
+  };
+}
+
 export function getMonth(db, id) {
   const row = db.prepare('SELECT * FROM months WHERE id = ?').get(id);
   return row ? assemble(db, [row])[0] : null;

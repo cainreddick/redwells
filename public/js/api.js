@@ -26,6 +26,10 @@ async function request(method, path, body) {
 
 export const api = {
   listMonths: () => request('GET', '/api/months'),
+  history: ({ from, to } = {}) => {
+    const q = new URLSearchParams(Object.entries({ from, to }).filter(([, v]) => v));
+    return request('GET', `/api/history${q.size ? `?${q}` : ''}`);
+  },
   getMonth: (id) => request('GET', `/api/months/${id}`),
   createMonth: ({ year, month, copyFrom }) => request('POST', '/api/months', { year, month, copyFrom }),
   updateNotes: (id, notes) => request('PATCH', `/api/months/${id}`, { notes }),

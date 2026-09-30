@@ -173,3 +173,34 @@ test('copy forward across a year boundary and over a gap', () => {
   assert.equal(repo.getMonth(db, monthId).month.label, 'February 2027');
   assert.equal(repo.getMonth(db, monthId).pots[0].opening, 20000);
 });
+
+test('history: range filter, stable series order and latest names', () => {
+  const db = fresh();
+  const jul = repo.createMonth(db, { year: 2026, month: 7 });
+  repo.addItem(db, 'income', jul, { name: 'Salary', amount: 100000, recurring: true });
+  repo.addItem(db, 'pots', jul, { name: 'Holiday', target: null, opening: 0, contribution: 1000, withdrawal: 0 });
+  repo.addItem(db, 'debts', jul, { name: 'Card', opening: 5000, payment: 2500, apr: null });
+  const aug = repo.createMonthFromCopy(db, jul, { year: 2026, month: 8 }).monthId;
+  const hol = repo.getMonth(db, aug).pots[0];
+  repo.updateItem(db, 'pots', hol.id, { ...hol, name: 'Summer holiday' });
+  repo.addItem(db, 'pots', aug, { name: 'Car', target: null, opening: 500, contribution: 0, withdrawal: 0 });
+  const sep = repo.createMonthFromCopy(db, aug, { year: 2026, month: 9 }).monthId;
+  assert.ok(sep);
+
+  const all = repo.history(db);
+  assert.deepEqual(all.months.map((m) => m.key), ['2026-07', '2026-08', '2026-09']);
+  assert.deepEqual(all.pots.map((p) => [p.name, p.index, p.balances]), [
+    ['Summer holiday', 0, [1000, 2000, 3000]],
+    ['Car', 1, [null, 500, 500]],
+  ]);
+  // Card: 5000 → 2500 → 0 (paid off in Aug, so not carried into Sep)
+  assert.deepEqual(all.debts.map((d) => d.balances), [[2500, 0, null]]);
+
+  const late = repo.history(db, { from: '2026-09' });
+  assert.deepEqual(late.months.map((m) => m.key), ['2026-09']);
+  assert.deepEqual(late.pots.map((p) => [p.name, p.index]), [['Summer holiday', 0], ['Car', 1]]);
+  assert.equal(late.debts.length, 0); // no Card in September
+  assert.equal(late.available.length, 3);
+
+  assert.deepEqual(repo.history(db, { from: '2026-07', to: '2026-07' }).pots.map((p) => p.name), ['Summer holiday']);
+});

@@ -24,6 +24,10 @@
   --seg-savings: #eb6834;
   --seg-debt: #1baf7a;
   --seg-left: #e4e7ec;
+  --c-income: #eda100;
+  /* Categorical order for per-pot lines (validated adjacent-pair CVD separation). */
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
+  --series-5: #e87ba4; --series-6: #008300; --series-7: #4a3aa7; --series-8: #e34948;
   --font: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
 }
 
@@ -48,6 +52,9 @@
     --seg-savings: #d95926;
     --seg-debt: #199e70;
     --seg-left: #343a46;
+    --c-income: #c98500;
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+    --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
   }
 }
 
@@ -417,6 +424,37 @@ textarea { width: 100%; resize: vertical; }
 .legend li { display: inline-flex; align-items: center; gap: .35rem; }
 .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
 .swatch-marker { width: 2px; height: 12px; background: var(--text); border-radius: 1px; }
+
+/* ------------------------------------------------------------ charts */
+
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  padding: .45rem .6rem;
+  margin-bottom: .75rem;
+  border-radius: 7px;
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 550;
+}
+.nav-link:hover { background: var(--surface-2); }
+.nav-link.active { background: var(--accent-soft); }
+
+.range-card { margin-bottom: 1rem; padding: .75rem 1rem; }
+.range-picker { display: flex; flex-wrap: wrap; align-items: flex-end; gap: .75rem 1rem; }
+.range-field { display: flex; align-items: center; gap: .5rem; }
+.segmented { display: inline-flex; margin-left: auto; }
+.segmented .btn { border-radius: 0; margin-left: -1px; }
+.segmented .btn:first-child { border-radius: 7px 0 0 7px; margin-left: 0; }
+.segmented .btn:last-child { border-radius: 0 7px 7px 0; }
+.segmented .btn.is-active { background: var(--accent-soft); border-color: var(--accent); color: var(--text); position: relative; }
+
+.charts-grid { display: grid; gap: 1rem; }
+.chart-card .card-head { align-items: flex-start; }
+.chart-subtitle { margin: .15rem 0 0; }
+.chart-box { position: relative; height: 320px; }
+.chart-table td, .chart-table th { white-space: nowrap; }
 
 @media (max-width: 1100px) {
   .summary-flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
