@@ -6,6 +6,7 @@ import { ConfirmHost, ToastHost, toast } from './ui.js';
 import { MonthList } from './components/MonthList.js';
 import { MonthView } from './components/MonthView.js';
 import { NewMonthDialog } from './components/NewMonthDialog.js';
+import { shortMonth } from './format.js';
 import { monthKey, monthLabel, parseMonthKey } from '/shared/calc.js';
 
 // Routes look like #/2026-10 so a refresh or the back button keeps your place.
@@ -55,12 +56,16 @@ function App() {
   const selected = months.find((m) => monthKey(m.year, m.month) === route);
   const routeMonth = parseMonthKey(route);
 
+  // Months are newest first, so the one after the selected month is the previous saved one.
+  const prev = selected && months[months.indexOf(selected) + 1];
+
   let main;
   if (selected) {
     main = html`
       <${MonthView}
         key=${selected.id}
         monthId=${selected.id}
+        previous=${prev ? { shortLabel: shortMonth(prev.year, prev.month), summary: prev.summary } : null}
         onChanged=${refreshMonths}
         onDeleted=${() => {
           const rest = months.filter((m) => m.id !== selected.id);

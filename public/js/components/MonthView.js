@@ -4,8 +4,9 @@ import { api } from '../api.js';
 import { confirmAction, toast } from '../ui.js';
 import { dateTime } from '../format.js';
 import { Section } from './sections.js';
+import { Summary } from './Summary.js';
 
-export function MonthView({ monthId, onChanged, onDeleted }) {
+export function MonthView({ monthId, previous, onChanged, onDeleted }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
 
@@ -59,6 +60,8 @@ export function MonthView({ monthId, onChanged, onDeleted }) {
           <button type="button" class="btn btn-danger-ghost" onClick=${remove}>Delete month</button>
         </div>
       </header>
+
+      <${Summary} summary=${data.summary} previous=${previous} />
 
       <div class="sections">
         <${Section} name="income" data=${data} onMonth=${apply} />

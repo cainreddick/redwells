@@ -4,9 +4,9 @@ A local, single-computer budget planner. Each month is its own saved record with
 fixed bills, savings pots and debts. Everything is stored in **one SQLite file** on disk.
 There are no accounts and no cloud, and nothing lives in browser storage.
 
-> **Status:** stage 3 of 6 is done. You can manage months, copy them forward, and add, edit
-> and delete items in all four sections. Still to come: the monthly summary panel, charts,
-> and CSV export with backup/restore.
+> **Status:** stage 4 of 6 is done. You can manage months, copy them forward, edit all four
+> sections, and see a monthly summary. Still to come: charts, and CSV export with
+> backup/restore.
 
 ## Requirements
 
@@ -109,6 +109,25 @@ Months are independent records. Changing a pot's balance in October doesn't rewr
 which was copied from October's figures at the time it was created. Edit November too if
 needed.
 
+## Monthly summary
+
+The panel at the top of each month shows:
+
+- **Left over:** income − fixed bills − savings contributions − debt payments. It's shown in
+  large type and turns red, with a warning, when it's negative.
+- **Totals:** income, fixed bills, savings contributions and debt payments.
+- **Where the money goes:** a bar showing bills, savings, debt payments and left over, each
+  as a share of income.
+  - The legend lists each amount and its percentage.
+  - When you overspend, the bar is scaled to your outgoings, with a marker showing where
+    income runs out.
+- **Balances:** the total of all savings pots (closing balances) and the total remaining
+  debt (closing balances, after interest). The savings total also mentions any withdrawals.
+- **Change vs the previous saved month:** shown under each figure, with an arrow and a sign.
+  Green means good news and red means bad; debt payments stay neutral.
+
+Everything updates as soon as you save a change.
+
 ## How the numbers work
 
 - Money is stored as whole **pence** (integers), so no floating-point rounding creeps in.
@@ -135,7 +154,7 @@ shared/      pure JS used by both server and browser
   validate.js per-section field validation
 public/      the browser app: Preact + htm via an import map, no build step
   js/main.js         app shell, routing, month list state
-  js/components/     MonthList, MonthView, NewMonthDialog, sections (editable tables)
+  js/components/     MonthList, MonthView, NewMonthDialog, Summary, sections (editable tables)
   js/ui.js           modal, confirm dialog, toasts
   vendor/            the Preact and htm library files, copied in (see vendor/README.md)
 scripts/demo.js      seeds and runs the demo database
