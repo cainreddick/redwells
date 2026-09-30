@@ -2,11 +2,13 @@
 
 import http from 'node:http';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as repo from './repo.js';
 import { AppError } from './repo.js';
-import { SCHEMA_VERSION } from './db.js';
+import { SCHEMA_VERSION, snapshot } from './db.js';
+import { backupFilename, buildBackup, csvFilename, monthToCsv, parseBackup, restoreBackup } from './export.js';
 import { SECTION_NAMES, validateItem, validateMonth } from '../shared/validate.js';
 import { parseMonthKey } from '../shared/calc.js';
 
@@ -57,7 +59,7 @@ function validated(result) {
   return result.value;
 }
 
-function buildRoutes(db) {
+function buildRoutes({ db, dataFile, backupDir }) {
   return [
     route('GET', '/api/health', () => ({ ok: true, schemaVersion: SCHEMA_VERSION })),
 
@@ -84,6 +86,34 @@ function buildRoutes(db) {
     }),
 
     route('GET', '/api/months/:id', ({ params }) => repo.requireMonth(db, id(params.id))),
+
+    route('GET', '/api/months/:id/export.csv', ({ params, res }) => {
+      const m = repo.requireMonth(db, id(params.id));
+      sendDownload(res, monthToCsv(m), csvFilename(m.month), 'text/csv; charset=utf-8');
+    }),
+
+    // ---- backup & restore
+
+    route('GET', '/api/info', () => ({
+      dataFile,
+      backupDir,
+      snapshots: listSnapshots(backupDir),
+    })),
+
+    route('GET', '/api/backup', ({ res }) => {
+      const now = new Date();
+      sendDownload(res, JSON.stringify(buildBackup(db, now), null, 2), backupFilename(now), 'application/json; charset=utf-8');
+    }),
+
+    // Body: a backup file's contents. Validated in full, then replaces everything.
+    route('POST', '/api/restore', ({ body }) => {
+      const months = parseBackup(body);
+      let saved = null;
+      if (backupDir && repo.listMonths(db).length > 0) {
+        saved = path.basename(snapshot(db, backupDir, { prefix: 'pre-restore', keep: 10 }));
+      }
+      return { ...restoreBackup(db, months), snapshot: saved };
+    }),
 
     route('PATCH', '/api/months/:id', ({ params, body }) => {
       const monthId = id(params.id);
@@ -120,6 +150,31 @@ function buildRoutes(db) {
 }
 
 // ---------------------------------------------------------------- helpers
+
+function sendDownload(res, body, filename, type) {
+  res.writeHead(200, {
+    'Content-Type': type,
+    'Content-Disposition': `attachment; filename="${filename}"`,
+    'Cache-Control': 'no-store',
+    'X-Content-Type-Options': 'nosniff',
+  });
+  res.end(body);
+}
+
+function listSnapshots(dir) {
+  if (!dir) return [];
+  try {
+    return fsSync.readdirSync(dir)
+      .filter((f) => f.endsWith('.db'))
+      .map((f) => {
+        const st = fsSync.statSync(path.join(dir, f));
+        return { name: f, size: st.size, modified: st.mtime.toISOString() };
+      })
+      .sort((a, b) => b.modified.localeCompare(a.modified));
+  } catch {
+    return [];
+  }
+}
 
 function send(res, status, payload, headers = {}) {
   const body = typeof payload === 'string' || Buffer.isBuffer(payload) ? payload : JSON.stringify(payload);
@@ -192,8 +247,8 @@ async function serveStatic(req, res, pathname) {
 
 // ---------------------------------------------------------------- server
 
-export function createServer({ db, log = console }) {
-  const routes = buildRoutes(db);
+export function createServer({ db, dataFile = null, backupDir = null, log = console }) {
+  const routes = buildRoutes({ db, dataFile, backupDir });
 
   const server = http.createServer(async (req, res) => {
     const { pathname, searchParams } = new URL(req.url, 'http://localhost');

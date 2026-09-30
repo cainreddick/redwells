@@ -72,7 +72,11 @@ const MIGRATIONS = [
 
 export const SCHEMA_VERSION = MIGRATIONS.length;
 
-export function openDatabase(file) {
+/**
+ * Open (creating if needed) and migrate a database. With `backupDir`, an existing database
+ * that needs a schema upgrade is first copied to `pre-upgrade-v<old>-<timestamp>.db` there.
+ */
+export function openDatabase(file, { backupDir } = {}) {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
   const db = new DatabaseSync(file);
   // Rollback journal (not WAL) keeps everything in the one .db file, so copying it is a backup.
@@ -81,16 +85,19 @@ export function openDatabase(file) {
     PRAGMA synchronous = FULL;
     PRAGMA foreign_keys = ON;
   `);
-  migrate(db);
+  migrate(db, backupDir);
   return db;
 }
 
-function migrate(db) {
+function migrate(db, backupDir) {
   const current = db.prepare('PRAGMA user_version').get().user_version;
   if (current > MIGRATIONS.length) {
     throw new Error(
       `Database schema v${current} is newer than this app understands (v${MIGRATIONS.length}). Update the app.`,
     );
+  }
+  if (backupDir && current > 0 && current < MIGRATIONS.length) {
+    snapshot(db, backupDir, { prefix: `pre-upgrade-v${current}`, keep: 3 });
   }
   for (let v = current; v < MIGRATIONS.length; v++) {
     transaction(db, () => {

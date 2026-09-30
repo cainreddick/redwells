@@ -1,6 +1,6 @@
 {
   "name": "household-budget",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Local household budget planner \u2014 monthly records, savings pots, debts and charts.",
   "private": true,
   "type": "module",

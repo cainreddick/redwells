@@ -27,14 +27,14 @@ function openBrowser(url) {
 }
 
 const existed = fs.existsSync(DB_FILE);
-const db = openDatabase(DB_FILE);
+const db = openDatabase(DB_FILE, { backupDir: BACKUP_DIR });
 
 if (existed && db.prepare('SELECT COUNT(*) AS n FROM months').get().n > 0) {
   const file = snapshot(db, BACKUP_DIR, { prefix: 'startup', keep: 10 });
   console.log(`Snapshot saved: ${file}`);
 }
 
-const server = createServer({ db });
+const server = createServer({ db, dataFile: DB_FILE, backupDir: BACKUP_DIR });
 
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {

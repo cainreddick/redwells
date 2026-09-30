@@ -350,7 +350,7 @@ export function Section({ name, data, onMonth }) {
                     ${sec.columns.map((c, i) => html`
                       <td class=${c.cls}>${i === 0 ? 'Total' : c.total ? money(c.total(data.summary)) : ''}</td>
                     `)}
-                    <td></td>
+                    <td class="row-actions"></td>
                   </tr>
                 </tfoot>
               `}

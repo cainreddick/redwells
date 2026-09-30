@@ -204,3 +204,20 @@ test('history: range filter, stable series order and latest names', () => {
 
   assert.deepEqual(repo.history(db, { from: '2026-07', to: '2026-07' }).pots.map((p) => p.name), ['Summer holiday']);
 });
+
+test('no pre-upgrade snapshot for a new or already-current database', () => {
+  // The upgrade path itself (snapshot, then migrate) is exercised once a second migration exists.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'budget-upgrade-'));
+  try {
+    const file = path.join(dir, 'budget.db');
+    const backups = path.join(dir, 'backups');
+    let db = openDatabase(file, { backupDir: backups });
+    repo.createMonth(db, { year: 2026, month: 10 });
+    db.close();
+    db = openDatabase(file, { backupDir: backups });
+    assert.equal(fs.existsSync(backups), false);
+    db.close();
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

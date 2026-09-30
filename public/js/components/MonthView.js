@@ -57,9 +57,12 @@ export function MonthView({ monthId, previous, onChanged, onDeleted }) {
           <p class="muted small">Last changed ${dateTime(data.month.updatedAt)}</p>
         </div>
         <div class="month-actions">
+          <a class="btn" href=${api.csvUrl(monthId)} download>Export CSV</a>
+          <button type="button" class="btn" onClick=${() => printMonth(data.month.label)}>Export PDF</button>
           <button type="button" class="btn btn-danger-ghost" onClick=${remove}>Delete month</button>
         </div>
       </header>
+      <p class="print-only print-meta">Household Budget · exported ${dateTime(new Date().toISOString())}</p>
 
       <${Summary} summary=${data.summary} previous=${previous} />
 
@@ -73,6 +76,21 @@ export function MonthView({ monthId, previous, onChanged, onDeleted }) {
       <${Notes} key=${monthId} month=${data.month} onSaved=${apply} />
     </article>
   `;
+}
+
+/**
+ * PDF export uses the browser's own "Save as PDF" print destination with an A4 print
+ * stylesheet (see @media print in app.css). The document title becomes the suggested
+ * file name.
+ */
+function printMonth(label) {
+  const original = document.title;
+  document.title = `Budget ${label}`;
+  for (const el of document.querySelectorAll('.print-meta')) {
+    el.textContent = `Household Budget · exported ${dateTime(new Date().toISOString())}`;
+  }
+  addEventListener('afterprint', () => { document.title = original; }, { once: true });
+  print();
 }
 
 function Notes({ month, onSaved }) {
@@ -93,7 +111,7 @@ function Notes({ month, onSaved }) {
   }
 
   return html`
-    <section class="card notes">
+    <section class="card notes ${text ? '' : 'is-empty'}">
       <header class="card-head">
         <h2><label for="month-notes">Notes</label></h2>
         <span class="muted small">${status}</span>
@@ -107,6 +125,7 @@ function Notes({ month, onSaved }) {
         onInput=${(e) => setText(e.currentTarget.value)}
         onBlur=${save}
       ></textarea>
+      <p class="print-only notes-print">${text || '—'}</p>
     </section>
   `;
 }

@@ -31,6 +31,9 @@ export const api = {
     return request('GET', `/api/history${q.size ? `?${q}` : ''}`);
   },
   getMonth: (id) => request('GET', `/api/months/${id}`),
+  csvUrl: (id) => `/api/months/${id}/export.csv`,
+  info: () => request('GET', '/api/info'),
+  restore: (backup) => request('POST', '/api/restore', backup),
   createMonth: ({ year, month, copyFrom }) => request('POST', '/api/months', { year, month, copyFrom }),
   updateNotes: (id, notes) => request('PATCH', `/api/months/${id}`, { notes }),
   deleteMonth: (id) => request('DELETE', `/api/months/${id}`),

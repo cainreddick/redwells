@@ -4,58 +4,85 @@ A local, single-computer budget planner. Each month is its own saved record with
 fixed bills, savings pots and debts. Everything is stored in **one SQLite file** on disk.
 There are no accounts and no cloud, and nothing lives in browser storage.
 
-> **Status:** stage 5 of 6 is done. You can manage months, copy them forward, edit all four
-> sections, and use the monthly summary and charts. Still to come: CSV export and
-> backup/restore.
-
 ## Requirements
 
-- **Node.js 22.13 or newer** (22 LTS or 24 LTS). Check with `node --version`.
-  Nothing else is needed: SQLite is built into Node, the UI and chart libraries are copied
-  into `public/vendor/`, and there's no `npm install` step. The app works offline.
+- **Node.js 22.13 or newer** (22 LTS or 24 LTS). Check with `node --version`, and install the
+  LTS from <https://nodejs.org> if needed.
+- Nothing else. SQLite is built into Node, the UI and chart libraries are copied into
+  `public/vendor/`, and there's no `npm install` step. The app works fully offline.
 
-## Run it
+## Getting started
 
 ```sh
+git clone https://github.com/cainreddick/redwells.git
+cd redwells
 npm start
 ```
 
 This starts the app at <http://localhost:4600> and opens your browser. Press `Ctrl+C` in the
-terminal to stop it. The server listens on `127.0.0.1` only, so other devices on your network
-can't reach it.
+terminal to stop it. Next time, just `cd redwells` and `npm start`.
 
-| Setting | How | Default |
-|---|---|---|
-| Data file location | `BUDGET_DB=/path/to/budget.db npm start` | `./data/budget.db` |
-| Automatic snapshot folder | `BUDGET_BACKUP_DIR=/path npm start` | `backups/` next to the data file |
-| Port | `PORT=4601 npm start` | `4600` |
-| Don't open a browser | `npm start -- --no-open` | opens one |
+The server listens on `127.0.0.1` only, so other devices on your network can't reach it.
+
+**Want to look around first?** `npm run demo` runs the app against a separate demo database
+(`data/demo.db`) that starts with July to September 2026 filled in, so you can experiment
+without touching your real data. `npm run demo -- --reset` rebuilds it.
+
+### Options
+
+| Setting | macOS / Linux | Windows (PowerShell) | Default |
+|---|---|---|---|
+| Data file | `BUDGET_DB=~/Budget/budget.db npm start` | `$env:BUDGET_DB="D:\Budget\budget.db"; npm start` | `./data/budget.db` |
+| Snapshot folder | `BUDGET_BACKUP_DIR=/path npm start` | `$env:BUDGET_BACKUP_DIR="D:\Budget\snapshots"; npm start` | `backups/` next to the data file |
+| Port | `PORT=4601 npm start` | `$env:PORT=4601; npm start` | `4600` |
+| Don't open a browser | `npm start -- --no-open` | same | opens one |
 
 Other scripts:
 
-- `npm run demo` runs the app against a separate **demo database** (`data/demo.db`) that
-  starts with July to September 2026 filled in, so you can try things without touching your
-  real data. Add `-- --reset` to rebuild it from scratch.
 - `npm test` runs the test suite (Node's built-in test runner).
-- `npm run dev` restarts the server automatically when you edit the code.
+- `npm run dev` restarts the server automatically when you edit the server code.
 
 ## Your data and backups
 
-All data lives in **`data/budget.db`** (or wherever `BUDGET_DB` points).
+All data lives in one file: **`data/budget.db`** (or wherever `BUDGET_DB` points). `data/` is
+in `.gitignore`, so your figures never end up in git.
 
-- **Manual backup:** copy `budget.db` somewhere safe. The database uses SQLite's rollback
-  journal rather than WAL, so that one file is always the complete dataset. There are no
-  `-wal` or `-shm` side files to forget. Copy it while the app is stopped, or at least not
-  mid-save.
-- **Automatic snapshots:** every time the app starts with existing data, it writes a
-  consistent copy to `data/backups/startup-<date>_<time>.db` and keeps the 10 most recent.
-- **Restore from a `.db` file:** stop the app, replace `data/budget.db` with your copy, then
-  start it again.
-- **Keep it somewhere synced:** point `BUDGET_DB` at a folder that Dropbox, OneDrive or
-  iCloud syncs (for example `BUDGET_DB=~/Dropbox/budget/budget.db npm start`) to get
-  off-machine backups for free. Only run one copy of the app against the file at a time.
+There are three ways to back it up. Using the first two regularly is a good habit.
 
-`data/` is in `.gitignore`, so your figures never end up in git.
+### 1. Backup file from the app (recommended)
+
+Open **Backup & restore** in the sidebar and click **Download backup**. You get
+`budget-backup-YYYY-MM-DD.json`, a readable file with every month, item and note. Keep copies
+somewhere off this computer, such as a USB stick, cloud storage or email.
+
+To restore, go to **Backup & restore** → **Choose backup file…**.
+
+- The whole file is checked first. If anything in it is invalid, nothing changes and you're
+  told exactly which month and item is wrong.
+- You're asked to confirm, because a restore **replaces all current data**.
+- Before replacing anything, the app saves a snapshot of your current data as
+  `pre-restore-<date>_<time>.db`, so a restore can itself be undone.
+
+### 2. Copy the database file
+
+`budget.db` is always the complete dataset: the database uses SQLite's rollback journal
+rather than WAL, so there are no `-wal` or `-shm` side files. Copy it while the app is
+stopped.
+
+To restore, stop the app, put your copy in place of `data/budget.db`, and start it again.
+
+**Tip:** point `BUDGET_DB` at a folder that Dropbox, OneDrive or iCloud syncs, and you get
+an off-machine copy automatically. Only run one copy of the app against the file at a time.
+
+### 3. Automatic snapshots
+
+Every time the app starts with existing data, it writes a copy to
+`data/backups/startup-<date>_<time>.db`. It also writes a `pre-restore-…` copy before every
+restore, and a `pre-upgrade-…` copy before an update changes the database layout. The newest
+10 startup and pre-restore copies are kept, and the newest 3 pre-upgrade copies. The **Backup & restore** page lists them.
+
+To go back to one, stop the app and copy the snapshot over `data/budget.db`. Snapshots are
+ordinary SQLite files, the same format as the main one.
 
 ## Months and copy-forward
 
@@ -149,6 +176,22 @@ months appear, so a month you skipped is simply missing from the axis.
 The colours match everywhere: income is yellow, bills blue, savings orange and debts green.
 They were checked for colour-blind readability in both light and dark mode.
 
+## Exporting a month
+
+Each month has **Export CSV** and **Export PDF** buttons at the top.
+
+- **CSV** downloads `budget-YYYY-MM.csv`, which opens directly in Excel, Numbers or Google
+  Sheets.
+  - It contains the summary, then one block per section with the same columns as the app,
+    then the notes.
+  - Amounts are plain numbers with two decimals (`1234.50`, no `£`) so you can do sums on
+    them. Dates are `DD/MM/YYYY`.
+- **PDF** opens your browser's print dialog with an A4 layout of the month: the summary, all
+  four tables and the notes, always in light colours.
+  - Choose **Save as PDF** as the destination. It's called "Microsoft Print to PDF" on some
+    Windows setups.
+  - The suggested file name is "Budget October 2026".
+
 ## How the numbers work
 
 - Money is stored as whole **pence** (integers), so no floating-point rounding creeps in.
@@ -170,13 +213,15 @@ server/
   app.js     HTTP server: JSON API router and static file serving
   repo.js    all SQL; converts rows <-> API objects
   db.js      opening the DB, schema migrations, transactions, snapshots
+  export.js  month CSV, JSON backup build/validate/restore
 shared/      pure JS used by both server and browser
   calc.js    money parsing and formatting, dates, pot/debt/summary maths
   validate.js per-section field validation
 public/      the browser app: Preact + htm via an import map, no build step
   js/main.js         app shell, routing, month list state
   js/components/     MonthList, MonthView, NewMonthDialog, Summary, ChartsView,
-                     sections (editable tables)
+                     BackupView, sections (editable tables)
+  css/app.css        all styles, including the print (PDF) layout
   js/ui.js           modal, confirm dialog, toasts
   vendor/            Preact, htm and Chart.js library files, copied in (see vendor/README.md)
 scripts/demo.js      seeds and runs the demo database
@@ -200,6 +245,10 @@ its `summary`.
 | POST | `/api/months/:id/:section` | item fields (section is `income`, `bills`, `pots` or `debts`) |
 | PUT | `/api/:section/:itemId` | all item fields |
 | DELETE | `/api/:section/:itemId` | |
+| GET | `/api/months/:id/export.csv` | (downloads the month as CSV) |
+| GET | `/api/backup` | (downloads the full JSON backup) |
+| POST | `/api/restore` | a backup file's contents. Replaces all data; the response names the pre-restore snapshot |
+| GET | `/api/info` | (data file path, snapshot folder and the list of snapshots) |
 
 Item fields:
 
@@ -211,3 +260,15 @@ Item fields:
 - **debts:** `name`, `opening`, `payment`, `apr` (optional, a percentage)
 
 Validation failures return `400` with `{ error, details: { field: message } }`.
+
+## Updating the app
+
+```sh
+git pull
+npm start
+```
+
+An update never replaces your data file. If a future version changes the database layout,
+it upgrades the file automatically the first time it starts. Just before upgrading, it saves
+an untouched copy to `data/backups/pre-upgrade-v<old version>-<date>_<time>.db`, so you can
+roll back if needed.

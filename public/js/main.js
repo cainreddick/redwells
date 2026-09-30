@@ -7,6 +7,7 @@ import { MonthList } from './components/MonthList.js';
 import { MonthView } from './components/MonthView.js';
 import { NewMonthDialog } from './components/NewMonthDialog.js';
 import { ChartsView } from './components/ChartsView.js';
+import { BackupView } from './components/BackupView.js';
 import { shortMonth } from './format.js';
 import { monthKey, monthLabel, parseMonthKey } from '/shared/calc.js';
 
@@ -63,6 +64,8 @@ function App() {
   let main;
   if (route === 'charts') {
     main = html`<${ChartsView} />`;
+  } else if (route === 'backup') {
+    main = html`<${BackupView} onRestored=${refreshMonths} />`;
   } else if (selected) {
     main = html`
       <${MonthView}
@@ -99,6 +102,10 @@ function App() {
         <a href="#/charts" class="nav-link ${route === 'charts' ? 'active' : ''}" aria-current=${route === 'charts' ? 'page' : undefined}>
           <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M3 16.5h14V18H3zM4 10h2.5v5H4zm4.75-4h2.5v9h-2.5zM13.5 8H16v7h-2.5z"/></svg>
           Charts
+        </a>
+        <a href="#/backup" class="nav-link ${route === 'backup' ? 'active' : ''}" aria-current=${route === 'backup' ? 'page' : undefined}>
+          <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M10 2c-4 0-7 1.3-7 3v10c0 1.7 3 3 7 3s7-1.3 7-3V5c0-1.7-3-3-7-3zm0 1.5c3.4 0 5.5 1 5.5 1.5S13.4 6.5 10 6.5 4.5 5.5 4.5 5 6.6 3.5 10 3.5zm5.5 11.5c0 .5-2.1 1.5-5.5 1.5S4.5 15.5 4.5 15v-2.2c1.3.7 3.3 1.2 5.5 1.2s4.2-.5 5.5-1.2V15zm0-4.5c0 .5-2.1 1.5-5.5 1.5s-5.5-1-5.5-1.5V8.3c1.3.7 3.3 1.2 5.5 1.2s4.2-.5 5.5-1.2v2.2z"/></svg>
+          Backup & restore
         </a>
         <${MonthList} months=${months} selectedKey=${route} onNew=${() => setCreating(true)} />
       </aside>

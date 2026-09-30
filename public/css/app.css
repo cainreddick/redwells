@@ -437,6 +437,7 @@ textarea { width: 100%; resize: vertical; }
   color: var(--text);
   text-decoration: none;
   font-weight: 550;
+  white-space: nowrap;
 }
 .nav-link:hover { background: var(--surface-2); }
 .nav-link.active { background: var(--accent-soft); }
@@ -455,6 +456,20 @@ textarea { width: 100%; resize: vertical; }
 .chart-subtitle { margin: .15rem 0 0; }
 .chart-box { position: relative; height: 320px; }
 .chart-table td, .chart-table th { white-space: nowrap; }
+
+/* ------------------------------------------------------------ backup page */
+
+a.btn { display: inline-block; text-decoration: none; }
+.backup-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+.backup-grid .card h2, .storage-card h2 { margin-bottom: .5rem; }
+.backup-grid .card p { min-height: 3em; }
+.storage { display: grid; grid-template-columns: max-content 1fr; gap: .35rem 1rem; margin: 0 0 .75rem; }
+.storage dt { font-weight: 600; }
+.storage dd { margin: 0; overflow-wrap: anywhere; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .85em; }
+.snapshots { margin-top: .5rem; }
+
+.print-only { display: none; }
 
 @media (max-width: 1100px) {
   .summary-flow { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -522,3 +537,47 @@ table.items tr.editing input, table.items tr.editing select { padding: .3rem .45
   max-width: 14rem;
 }
 td.num .cell-error { margin-left: auto; text-align: right; }
+
+/* ------------------------------------------------------------ print / PDF export */
+
+@page { size: A4; margin: 12mm; }
+
+@media print {
+  /* Always print with the light palette, whatever the screen theme. */
+  :root {
+    color-scheme: light;
+    --bg: #ffffff; --surface: #ffffff; --surface-2: #f6f7f9; --border: #d9dde3;
+    --text: #1c2330; --muted: #5d6675; --accent: #1f6f5c; --accent-soft: #e3f1ed;
+    --negative: #b3261e; --negative-soft: #fdecea; --positive: #1f7a3f;
+    --seg-bills: #2a78d6; --seg-savings: #eb6834; --seg-debt: #1baf7a; --seg-left: #e4e7ec;
+  }
+  html { font-size: 10.5px; } /* everything is rem-based, so this scales the whole page for A4 */
+  body { background: #fff; font-size: 1rem; }
+  * { -webkit-print-color-adjust: exact; print-color-adjust: exact; box-shadow: none !important; }
+
+  .sidebar, .month-actions, .row-actions, .section-foot, .toasts, dialog,
+  .notes textarea, .notes .card-head .muted, .card-head > .muted, .notes.is-empty { display: none !important; }
+  .print-only { display: block; }
+
+  .layout { display: block; min-height: 0; }
+  .content { padding: 0; max-width: none; }
+  .month-head { margin-bottom: .25rem; }
+  .print-meta { color: var(--muted); margin: 0 0 .75rem; }
+  .print-meta { font-size: .9rem; }
+
+  .card { border: 1px solid var(--border); padding: .6rem .75rem; break-inside: avoid; }
+  .section.card { padding: .6rem .75rem; }
+  .sections { gap: .6rem; }
+  .summary { margin-bottom: .6rem; padding: .75rem; }
+  .summary-flow { grid-template-columns: 1.4fr repeat(4, minmax(0, 1fr)); gap: .5rem; }
+  .tile-hero { grid-column: auto; margin: 0; }
+  .delta { white-space: normal; }
+  .summary-balances { grid-template-columns: repeat(2, 1fr); }
+
+  table.items th, table.items td { padding: .2rem .35rem; }
+  table.items tr { break-inside: avoid; }
+  table.items tbody tr:hover { background: none; }
+  .table-scroll { overflow: visible; }
+  .notes { margin-top: .6rem; }
+  .notes-print { white-space: pre-wrap; margin: 0; }
+}
