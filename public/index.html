@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Household Budget</title>
+</head>
+<body>
+  <h1>Household Budget</h1>
+  <p id="status">Checking server…</p>
+  <script type="module">
+    const res = await fetch('/api/health');
+    const health = await res.json();
+    const months = await (await fetch('/api/months')).json();
+    document.getElementById('status').textContent =
+      `Server OK (schema v${health.schemaVersion}), ${months.length} saved month(s). The UI arrives in stage 2.`;
+  </script>
+</body>
+</html>
