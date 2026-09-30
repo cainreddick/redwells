@@ -3,7 +3,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { transaction } from './db.js';
-import { enrichMonth, monthLabel } from '../shared/calc.js';
+import { enrichMonth, monthLabel, monthKey, monthlyInterest } from '../shared/calc.js';
 
 export class AppError extends Error {
   constructor(status, message, details) {
@@ -121,6 +121,54 @@ export function createMonth(db, { year, month, notes = '' }) {
   }
   const r = db.prepare('INSERT INTO months (year, month, notes) VALUES (?, ?, ?)').run(year, month, notes);
   return Number(r.lastInsertRowid);
+}
+
+/**
+ * Create a month by carrying another one forward:
+ * - recurring income and all bills are copied as-is (one-off income is left behind)
+ * - each pot's closing balance becomes the new opening balance; the contribution carries,
+ *   withdrawals reset to zero
+ * - each debt's closing balance (after interest and payment) becomes the new opening
+ *   balance; debts that reached zero are not carried, and a payment larger than what will
+ *   be owed is trimmed to the final amount
+ * Returns the new month id and a report of anything that wasn't carried unchanged.
+ */
+export function createMonthFromCopy(db, sourceId, target) {
+  return transaction(db, () => {
+    const src = requireMonth(db, sourceId);
+    if (monthKey(src.month.year, src.month.month) >= monthKey(target.year, target.month)) {
+      throw new AppError(400, `Can only copy forward from an earlier month (${src.month.label} is not before ${monthLabel(target.year, target.month)})`);
+    }
+    const monthId = createMonth(db, target);
+    const report = { source: src.month.label, skippedIncome: [], paidOffDebts: [], adjustedPayments: [] };
+
+    for (const { id, ...item } of src.income) {
+      if (item.recurring) addItem(db, 'income', monthId, item);
+      else report.skippedIncome.push(item.name);
+    }
+    for (const { id, ...item } of src.bills) addItem(db, 'bills', monthId, item);
+
+    for (const p of src.pots) {
+      addItem(
+        db, 'pots', monthId,
+        { name: p.name, target: p.target, opening: p.closing, contribution: p.contribution, withdrawal: 0 },
+        { seriesId: p.seriesId },
+      );
+    }
+
+    for (const d of src.debts) {
+      if (d.closing === 0) {
+        report.paidOffDebts.push(d.name);
+        continue;
+      }
+      const owed = d.closing + monthlyInterest(d.closing, d.apr);
+      const payment = Math.min(d.payment, owed);
+      if (payment !== d.payment) report.adjustedPayments.push({ name: d.name, from: d.payment, to: payment });
+      addItem(db, 'debts', monthId, { name: d.name, opening: d.closing, payment, apr: d.apr }, { seriesId: d.seriesId });
+    }
+
+    return { monthId, report };
+  });
 }
 
 export function updateMonthNotes(db, id, notes) {

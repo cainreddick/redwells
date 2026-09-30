@@ -4,13 +4,15 @@ A local, single-computer budget planner. Each month is its own saved record with
 fixed bills, savings pots and debts. Everything is stored in **one SQLite file** on disk.
 There are no accounts and no cloud, and nothing lives in browser storage.
 
-> **Status:** stage 1 of 6 is done (data model, storage and JSON API). The user interface
-> arrives in stage 2.
+> **Status:** stage 2 of 6 is done. You can create, copy forward, view and delete months, and
+> add notes. Adding and editing items in the four sections arrives in stage 3; until then,
+> use `npm run demo` to see months with sample data in them.
 
 ## Requirements
 
 - **Node.js 22.13 or newer** (22 LTS or 24 LTS). Check with `node --version`.
-  Nothing else is needed: SQLite is built into Node, and there are no npm dependencies to install.
+  Nothing else is needed: SQLite is built into Node, the two small UI libraries are copied
+  into `public/vendor/`, and there's no `npm install` step.
 
 ## Run it
 
@@ -31,6 +33,9 @@ can't reach it.
 
 Other scripts:
 
+- `npm run demo` runs the app against a separate **demo database** (`data/demo.db`) that
+  starts with July to September 2026 filled in, so you can try things without touching your
+  real data. Add `-- --reset` to rebuild it from scratch.
 - `npm test` runs the test suite (Node's built-in test runner).
 - `npm run dev` restarts the server automatically when you edit the code.
 
@@ -51,6 +56,31 @@ All data lives in **`data/budget.db`** (or wherever `BUDGET_DB` points).
   off-machine backups for free. Only run one copy of the app against the file at a time.
 
 `data/` is in `.gitignore`, so your figures never end up in git.
+
+## Months and copy-forward
+
+Each month (for example "October 2026") is its own record. The sidebar lists every saved
+month, newest first, with what was left over. The URL (`#/2026-10`) keeps your place across
+refreshes.
+
+**+ New month** suggests the month after your newest one. You can either **start blank** or
+**copy forward** from any earlier month. The latest earlier month is picked by default.
+Copying forward:
+
+- **Income:** recurring sources are copied with the same amounts. One-off income isn't
+  copied.
+- **Bills:** all bills are copied, including category and due day.
+- **Savings pots:** each pot's opening balance = last month's opening + contribution −
+  withdrawals. The contribution and target carry over, and withdrawals reset to £0.
+- **Debts:** each debt's opening balance = last month's opening + interest − payment, and
+  the payment and APR carry over.
+  - A debt that reached £0 isn't carried over.
+  - If the payment is now more than the remaining balance, it's reduced to the final amount.
+- **After copying:** a message lists anything that wasn't carried over unchanged. Everything
+  copied stays fully editable, and the source month is never changed.
+
+Deleting a month asks for confirmation first. If you delete one by mistake, the startup
+snapshots in `data/backups/` still have it.
 
 ## How the numbers work
 
@@ -76,7 +106,12 @@ server/
 shared/      pure JS used by both server and browser
   calc.js    money parsing and formatting, dates, pot/debt/summary maths
   validate.js per-section field validation
-public/      the browser app (static files, no build step)
+public/      the browser app: Preact + htm via an import map, no build step
+  js/main.js         app shell, routing, month list state
+  js/components/     MonthList, MonthView, NewMonthDialog, sections
+  js/ui.js           modal, confirm dialog, toasts
+  vendor/            the Preact and htm library files, copied in (see vendor/README.md)
+scripts/demo.js      seeds and runs the demo database
 test/        node:test suites
 ```
 
@@ -89,7 +124,7 @@ its `summary`.
 | Method | Path | Body |
 |---|---|---|
 | GET | `/api/months` | (lists months, newest first, each with a summary) |
-| POST | `/api/months` | `{ year, month }` |
+| POST | `/api/months` | `{ year, month, copyFrom? }`. With `copyFrom` (a month id), the response includes a `copyReport` |
 | GET | `/api/months/:id` | (the month with its items and computed fields) |
 | PATCH | `/api/months/:id` | `{ notes }` |
 | DELETE | `/api/months/:id` | (deletes the month and all its items) |

@@ -98,3 +98,13 @@ test('serves static files without path traversal', async () => {
   const traversal = await fetch(`${base}/shared/..%2F..%2Fpackage.json`);
   assert.equal(traversal.status, 404);
 });
+
+test('POST /api/months with copyFrom returns the new month and a copy report', async () => {
+  const { body: src } = await api('POST', '/api/months', { year: 2030, month: 1 });
+  await api('POST', `/api/months/${src.month.id}/pots`, { name: 'Rainy day', opening: '100', contribution: '50' });
+  const r = await api('POST', '/api/months', { year: 2030, month: 2, copyFrom: src.month.id });
+  assert.equal(r.status, 201);
+  assert.equal(r.body.pots[0].opening, 15000);
+  assert.equal(r.body.copyReport.source, 'January 2030');
+  assert.equal((await api('POST', '/api/months', { year: 2029, month: 12, copyFrom: src.month.id })).status, 400);
+});

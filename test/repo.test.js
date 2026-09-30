@@ -102,3 +102,74 @@ test('data persists across reopen, and snapshots prune old copies', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('copy forward carries income, bills, pot and debt balances', () => {
+  const db = fresh();
+  const sep = repo.createMonth(db, { year: 2026, month: 9 });
+  repo.addItem(db, 'income', sep, { name: 'Salary', amount: 250000, recurring: true });
+  repo.addItem(db, 'income', sep, { name: 'Bonus', amount: 50000, recurring: false });
+  repo.addItem(db, 'bills', sep, { name: 'Rent', amount: 100000, category: 'Housing', dueDay: 1 });
+  repo.addItem(db, 'pots', sep, { name: 'Holiday', target: 200000, opening: 50000, contribution: 10000, withdrawal: 5000 });
+  repo.addItem(db, 'debts', sep, { name: 'Card', opening: 100000, payment: 10000, apr: 12 });
+  repo.addItem(db, 'debts', sep, { name: 'Loan', opening: 3000, payment: 3000, apr: null });
+  repo.addItem(db, 'debts', sep, { name: 'Friend', opening: 8000, payment: 5000, apr: null });
+  const source = repo.getMonth(db, sep);
+
+  const { monthId, report } = repo.createMonthFromCopy(db, sep, { year: 2026, month: 10 });
+  const oct = repo.getMonth(db, monthId);
+
+  assert.equal(oct.month.label, 'October 2026');
+  assert.deepEqual(oct.income.map((i) => [i.name, i.amount]), [['Salary', 250000]]);
+  assert.deepEqual(oct.bills.map(({ id, ...b }) => b), [{ name: 'Rent', amount: 100000, category: 'Housing', dueDay: 1 }]);
+
+  const pot = oct.pots[0];
+  assert.equal(pot.opening, 55000); // 50000 + 10000 − 5000
+  assert.equal(pot.contribution, 10000);
+  assert.equal(pot.withdrawal, 0);
+  assert.equal(pot.target, 200000);
+  assert.equal(pot.seriesId, source.pots[0].seriesId);
+
+  const card = oct.debts.find((d) => d.name === 'Card');
+  assert.equal(card.opening, 91000); // 100000 + 1000 interest − 10000
+  assert.equal(card.payment, 10000);
+  assert.equal(card.apr, 12);
+  assert.equal(card.seriesId, source.debts[0].seriesId);
+
+  // Loan was paid off; Friend owes £30 but pays £50 → trimmed to £30.
+  assert.equal(oct.debts.some((d) => d.name === 'Loan'), false);
+  const friend = oct.debts.find((d) => d.name === 'Friend');
+  assert.equal(friend.opening, 3000);
+  assert.equal(friend.payment, 3000);
+
+  assert.deepEqual(report, {
+    source: 'September 2026',
+    skippedIncome: ['Bonus'],
+    paidOffDebts: ['Loan'],
+    adjustedPayments: [{ name: 'Friend', from: 5000, to: 3000 }],
+  });
+
+  // Source month is untouched.
+  assert.deepEqual(repo.getMonth(db, sep).income.length, 2);
+});
+
+test('copy forward refuses an existing target or a later source', () => {
+  const db = fresh();
+  const oct = repo.createMonth(db, { year: 2026, month: 10 });
+  repo.addItem(db, 'income', oct, { name: 'Salary', amount: 1, recurring: true });
+  repo.createMonth(db, { year: 2026, month: 11 });
+  assert.throws(() => repo.createMonthFromCopy(db, oct, { year: 2026, month: 11 }), { status: 409 });
+  assert.throws(() => repo.createMonthFromCopy(db, oct, { year: 2026, month: 9 }), { status: 400 });
+  assert.throws(() => repo.createMonthFromCopy(db, oct, { year: 2026, month: 10 }), { status: 400 });
+  assert.throws(() => repo.createMonthFromCopy(db, 999, { year: 2027, month: 1 }), { status: 404 });
+  // Failed copies leave nothing behind.
+  assert.equal(repo.listMonths(db).length, 2);
+});
+
+test('copy forward across a year boundary and over a gap', () => {
+  const db = fresh();
+  const nov = repo.createMonth(db, { year: 2026, month: 11 });
+  repo.addItem(db, 'pots', nov, { name: 'ISA', target: null, opening: 0, contribution: 20000, withdrawal: 0 });
+  const { monthId } = repo.createMonthFromCopy(db, nov, { year: 2027, month: 2 });
+  assert.equal(repo.getMonth(db, monthId).month.label, 'February 2027');
+  assert.equal(repo.getMonth(db, monthId).pots[0].opening, 20000);
+});

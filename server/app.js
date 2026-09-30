@@ -62,10 +62,12 @@ function buildRoutes(db) {
 
     route('GET', '/api/months', () => repo.listMonths(db)),
 
+    // Body: { year, month, copyFrom?: monthId }. With copyFrom, carries that month forward.
     route('POST', '/api/months', ({ body }) => {
-      const { year, month } = validated(validateMonth(body));
-      const monthId = repo.createMonth(db, { year, month });
-      return created(repo.getMonth(db, monthId));
+      const target = validated(validateMonth(body));
+      if (body.copyFrom == null) return created(repo.getMonth(db, repo.createMonth(db, target)));
+      const { monthId, report } = repo.createMonthFromCopy(db, id(body.copyFrom), target);
+      return created({ ...repo.getMonth(db, monthId), copyReport: report });
     }),
 
     route('GET', '/api/months/:id', ({ params }) => repo.requireMonth(db, id(params.id))),

@@ -1,7 +1,7 @@
 {
   "name": "household-budget",
   "version": "0.1.0",
-  "description": "Local household budget planner — monthly records, savings pots, debts and charts.",
+  "description": "Local household budget planner \u2014 monthly records, savings pots, debts and charts.",
   "private": true,
   "type": "module",
   "engines": {
@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning server/index.js",
     "dev": "node --disable-warning=ExperimentalWarning --watch-path=server --watch-path=shared server/index.js --no-open",
-    "test": "node --disable-warning=ExperimentalWarning --test"
+    "test": "node --disable-warning=ExperimentalWarning --test",
+    "demo": "node --disable-warning=ExperimentalWarning scripts/demo.js"
   }
 }
