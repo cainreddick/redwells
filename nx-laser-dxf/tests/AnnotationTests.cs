@@ -395,3 +395,53 @@ namespace LaserDxf.Tests
         }
     }
 }
+
+namespace LaserDxf.Tests
+{
+    using System;
+    using LaserDxf.Core;
+
+    public static class AddLabelTests
+    {
+        public static void TestAddLabelsByHand()
+        {
+            var s = new Synth(6);
+            s.Rectangle(200, 100);
+            s.SimpleHole(30, 50, 5.8);   // R6 by table
+            s.SimpleHole(80, 50, 6.0);   // the field case: real-size holes missing from the table
+            s.SimpleHole(110, 50, 6.0);
+            s.SimpleHole(140, 50, 6.8);
+            s.M.Attributes = IdentityTests.Attrs();
+            var c = new LaserConfig();
+            c.LabelTable.Add(new LabelRule { Label = "CB", Diameter = 20, CutDiameter = double.NaN });
+            c.LabelTable[1].CutDiameter = 6.2; // M8 row: laser cut dia 6.2
+            ExportRun r = ExportPipeline.Prepare(s.M, s.TopFace, c, c.ToAnalysisOptions(), "t");
+            var ed = new LayoutEditor(r);
+            TestMain.Check(ed.Unlabelled().Count == 3, "3 unlabelled round holes");
+
+            CutHole h80 = ed.HitHole(new Vec2(80 + 2.9, 50), 0.5) ?? ed.HitHole(new Vec2(200 - 80 - 2.9, 50), 0.5);
+            TestMain.Check(h80 != null, "hit test finds the hole by clicking its edge");
+            TestMain.Check(ed.DescribeHole(h80).Contains("no label") && ed.DescribeHole(h80).Contains("not in the label table"), ed.DescribeHole(h80));
+            TestMain.Check(ed.SameSizeUnlabelled(h80).Count == 1, "one other dia 6 hole");
+            TestMain.Check(ed.LabelChoices().Contains("R6") && ed.LabelChoices().Contains("M8") && ed.LabelChoices().Contains("CS"), "choices from the table");
+
+            PlacedText t = ed.AddLabel(h80, "R6");
+            foreach (CutHole o in ed.SameSizeUnlabelled(h80)) ed.AddLabel(o, "R6");
+            TestMain.Check(t != null && t.Clear && t.Position == "right", "added label placed like the automatic ones");
+            TestMain.Check(ed.Unlabelled().Count == 1 && ed.Problems().Count == 0, "only the 6.8 hole left, no clashes");
+
+            CutHole h68 = ed.Unlabelled()[0];
+            ed.AddLabel(h68, "M8");
+            TestMain.Near(h68.Circle.Radius, 3.1, 1e-12, "M8's laser cut diameter applied to the hand-labelled hole");
+
+            ed.Apply();
+            TestMain.Check(r.EditSummary.StartsWith("3 label(s) added"), r.EditSummary);
+            string report = string.Join("\n", ExportReport.Summary(r).ToArray());
+            TestMain.Check(report.Contains("Labelled     : 4 of 4") && report.Contains("added by hand"), report);
+            TestMain.Check(r.DxfText.Contains("\r\n 40\r\n3.1\r\n"), "cut diameter 6.2 written");
+
+            ed.Reset();
+            TestMain.Check(ed.Unlabelled().Count == 3 && Math.Abs(h68.Circle.Radius - 3.4) < 1e-12, "reset removes added labels and restores the diameter");
+        }
+    }
+}

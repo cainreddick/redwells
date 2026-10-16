@@ -1,67 +1,86 @@
-// UI smoke test (needs X, run via xvfb-run): opens the options dialog and the preview
-// window on a synthetic plate, drives them from a timer, and saves screenshots.
+// UI smoke test (needs X, run via xvfb-run): drives the preview window and the options
+// dialog on a synthetic plate from timers, and saves screenshots of each step.
 namespace LaserDxf.Tests
 {
     using System;
-    using System.Drawing;
+    using System.Reflection;
     using System.Windows.Forms;
     using LaserDxf.Core;
     using LaserDxf.Nx;
 
     public static class PreviewSmoke
     {
+        static string outDir;
+
         // Mono's DrawToBitmap doesn't paint child controls, so grab the X screen instead.
-        static void Shot(string path)
+        static void Shot(string name)
         {
             Application.DoEvents();
-            var p = System.Diagnostics.Process.Start("import", "-window root \"" + path + "\"");
+            var p = System.Diagnostics.Process.Start("import", "-window root \"" + System.IO.Path.Combine(outDir, name) + "\"");
             p.WaitForExit();
+        }
+
+        static void After(int ms, Action a)
+        {
+            var t = new Timer { Interval = ms };
+            t.Tick += delegate { t.Stop(); a(); };
+            t.Start();
+        }
+
+        static Form Top(string titleStart)
+        {
+            Form found = null;
+            foreach (Form f in Application.OpenForms) if (f.Text.StartsWith(titleStart)) found = f;
+            return found;
         }
 
         public static int Main(string[] args)
         {
-            string outDir = args.Length > 0 ? args[0] : "build/test-output";
+            outDir = args.Length > 0 ? args[0] : "build/test-output";
             Synth s = Synth.Irregular();
+            s.SimpleHole(250, 320, 6.0);   // like the field case: holes the table doesn't know
+            s.SimpleHole(262, 360, 6.8);
+            s.SimpleHole(274, 400, 6.0);
             s.M.Attributes = IdentityTests.Attrs();
             var c = new LaserConfig();
             ExportRun run = ExportPipeline.Prepare(s.M, s.TopFace, c, c.ToAnalysisOptions(), "smoke");
             var ed = new LayoutEditor(run);
+            CutHole target = null;
+            foreach (CutHole h in ed.Unlabelled()) if (Math.Abs(h.CutDiameter - 6.0) < 1e-6) { target = h; break; }
 
-            // Drag the part number over the plate edge so the screenshot shows a flagged item.
-            ed.Move(run.Etch, new Vec2(-run.Etch.Box.MinX - 20, 0));
-
-            var timer = new Timer { Interval = 1500 };
-            timer.Tick += delegate
+            After(1500, delegate
             {
-                timer.Stop();
-                foreach (Form f in Application.OpenForms)
+                Form preview = Top("Laser DXF preview");
+                Type ft = preview.GetType();
+                BindingFlags bf = BindingFlags.NonPublic | BindingFlags.Instance;
+                ft.GetField("selectedHole", bf).SetValue(preview, target);
+                ft.GetMethod("Changed", bf).Invoke(preview, null);
+                Shot("preview_hole_selected.png");
+                After(1200, delegate
                 {
-                    Shot(System.IO.Path.Combine(outDir, "preview_window.png"));
-                    f.DialogResult = DialogResult.OK;
-                    break;
-                }
-            };
-            timer.Start();
+                    Shot("preview_add_label_prompt.png");
+                    Form prompt = Top("Add hole label");
+                    prompt.DialogResult = DialogResult.OK; // accept the first table label, "same size" ticked
+                });
+                ft.GetMethod("AddLabelToSelectedHole", bf).Invoke(preview, null); // modal prompt
+                After(800, delegate
+                {
+                    Shot("preview_after_add.png");
+                    preview.DialogResult = DialogResult.OK;
+                });
+            });
             bool ok = PreviewWindow.Show(ed, "S180-06068-47009-1  (S180-06068-47009-1.dxf)");
             ed.Apply();
-            Console.WriteLine("preview returned " + ok + "; warnings after edits: " + run.Warnings.Count);
-            foreach (string w in run.Warnings) if (w.StartsWith("After hand edits")) Console.WriteLine("  " + w);
+            Console.WriteLine("preview returned " + ok + "; " + run.EditSummary + "; unlabelled left: " + ed.Unlabelled().Count);
 
-            var t2 = new Timer { Interval = 1000 };
-            t2.Tick += delegate
+            After(1000, delegate
             {
-                t2.Stop();
-                foreach (Form f in Application.OpenForms)
-                {
-                    Shot(System.IO.Path.Combine(outDir, "options_dialog.png"));
-                    f.DialogResult = DialogResult.OK;
-                    break;
-                }
-            };
-            t2.Start();
+                Shot("options_dialog.png");
+                Top("Laser DXF - ").DialogResult = DialogResult.OK;
+            });
             bool ok2 = OptionsDialog.Show(c, "S180-06068-47009/1");
-            Console.WriteLine("options returned " + ok2 + "; preview " + c.ShowPreview + ", placement " + c.EtchPlacement);
-            return ok && ok2 ? 0 : 1;
+            Console.WriteLine("options returned " + ok2);
+            return ok && ok2 && run.EditSummary.StartsWith("2 label(s) added") ? 0 : 1;
         }
     }
 }

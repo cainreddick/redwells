@@ -34,6 +34,11 @@ The design is described in [ARCHITECTURE.md](ARCHITECTURE.md).
    the part number to select it, then:
    - drag it, or nudge it with the arrow keys (0.5 mm, or 5 mm with Shift)
    - `R` turns it 90°, `F2` or a double-click edits the text, `Del` deletes it
+   - round holes without a label have a **dashed orange ring**. Click one to see its diameter
+     and why it wasn't labelled. Then press `L`, double-click it, or use *Add label...* to pick
+     a label from your table or type your own. You can also tick "label the other holes of the
+     same size". A hand-added label is placed like the automatic ones, and gets the table's
+     `cutDiameter` for that label if one is set
    - *Reset all* undoes every edit
    - the mouse wheel zooms, right-drag pans, and *Fit view* (Home) shows the whole plate
 

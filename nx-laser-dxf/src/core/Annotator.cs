@@ -20,6 +20,8 @@ namespace LaserDxf.Core
         public bool IsEtch;
         public bool Deleted;
         public bool Edited;
+        /// <summary>Label added by hand in the preview.</summary>
+        public bool Added;
 
         /// <summary>Recomputes Box from Origin, Text, Height and RotationDeg (any multiple of 90).</summary>
         public void UpdateBox()
@@ -72,6 +74,14 @@ namespace LaserDxf.Core
                     pts.Add(a.Frame.ToLocal(e[oe.Reversed ? e.Count - 1 - i : i]) * k);
             }
             return pts;
+        }
+
+        /// <summary>Same geometry, different text boxes.</summary>
+        public Obstacles WithTexts(IEnumerable<Rect2> texts)
+        {
+            var o = new Obstacles { Outer = Outer, Cutouts = Cutouts, CircleCenters = CircleCenters, CircleRadii = CircleRadii };
+            o.Texts.AddRange(texts);
+            return o;
         }
 
         /// <summary>Smallest distance from the box to anything; negative/zero when it overlaps
@@ -132,24 +142,9 @@ namespace LaserDxf.Core
                 return Math.Abs(x.Center.Y - y.Center.Y) > 1e-6 ? cy : x.Center.X.CompareTo(y.Center.X);
             });
 
-            double hgt = c.LabelHeight;
             foreach (var h in holes)
             {
-                int self = obs.CircleCenters.IndexOf(h.Circle.Center);
-                double w = StrokeFont.Measure(h.Label, hgt);
-                PlacedText best = null;
-                foreach (string pos in LabelPositions)
-                {
-                    Rect2 box = LabelBox(pos, h.Circle.Center, h.Circle.Radius, c.LabelGap, w, hgt);
-                    // edges need edgeClearance, everything else holeClearance
-                    double edge = Layout2.PolylineRect(obs.Outer, box);
-                    double other = obs.Clearance(box, self);
-                    double score = Math.Min(edge - c.EdgeClearance, other - c.HoleClearance);
-                    var t = new PlacedText { Text = h.Label, Height = hgt, Box = box, Origin = new Vec2(box.MinX, box.MinY), Position = pos, Clearance = score, Hole = h };
-                    if (best == null || score > best.Clearance) best = t;
-                    if (score >= 0) { best = t; break; }
-                }
-                best.Clear = best.Clearance >= 0;
+                PlacedText best = PlaceLabel(h, h.Label, obs, c);
                 if (!best.Clear)
                     warnings.Add("Label " + h.Label + " for the hole at (" + Fmt.N(h.Center.X, 1) + ", " + Fmt.N(h.Center.Y, 1) +
                                  ") has no clear spot - placed " + best.Position + ", check it in the DXF.");
@@ -157,6 +152,29 @@ namespace LaserDxf.Core
                 placed.Add(best);
             }
             return placed;
+        }
+
+        /// <summary>Places one label next to its hole: right, above, left, below, then diagonals; the
+        /// first clear position wins, otherwise the one with the most room (Clear = false).</summary>
+        public static PlacedText PlaceLabel(CutHole h, string text, Obstacles obs, LaserConfig c)
+        {
+            double hgt = c.LabelHeight;
+            int self = obs.CircleCenters.IndexOf(h.Circle.Center);
+            double w = StrokeFont.Measure(text, hgt);
+            PlacedText best = null;
+            foreach (string pos in LabelPositions)
+            {
+                Rect2 box = LabelBox(pos, h.Circle.Center, h.Circle.Radius, c.LabelGap, w, hgt);
+                // edges need edgeClearance, everything else holeClearance
+                double edge = Layout2.PolylineRect(obs.Outer, box);
+                double other = obs.Clearance(box, self);
+                double score = Math.Min(edge - c.EdgeClearance, other - c.HoleClearance);
+                var t = new PlacedText { Text = text, Height = hgt, Box = box, Origin = new Vec2(box.MinX, box.MinY), Position = pos, Clearance = score, Hole = h };
+                if (best == null || score > best.Clearance) best = t;
+                if (score >= 0) { best = t; break; }
+            }
+            best.Clear = best.Clearance >= 0;
+            return best;
         }
 
         /// <summary>Finds the spot on the plate with the most room for the etch text (largest clear
