@@ -1,6 +1,6 @@
 # Excel macro: export selection to PDF
 
-`ExportSelectionToPDF.bas` saves whatever cells you have selected as a PDF.
+`PdfExport.bas` saves whatever cells you have selected as a PDF.
 
 When you run it, it:
 
@@ -31,7 +31,7 @@ macro is available everywhere.
    click **OK**, then straight away **View → Macros → Stop Recording**.
 2. Press **Alt+F11** to open the VBA editor.
 3. In the Project pane on the left, click **VBAProject (PERSONAL.XLSB)**.
-4. **File → Import File…** and choose `ExportSelectionToPDF.bas`.
+4. **File → Import File…** and choose `PdfExport.bas`.
 5. Press **Ctrl+S** to save, then close the VBA editor.
    When you close Excel, click **Save** if it asks about the Personal Macro Workbook.
 
@@ -60,3 +60,16 @@ click **Options…** and set a key, e.g. Ctrl+Shift+P.
   but the export itself works.
 - If macros are blocked, go to **File → Options → Trust Center → Trust Center Settings →
   Macro Settings**, or right-click the downloaded `.bas` file → **Properties → Unblock**.
+
+## Troubleshooting
+
+**"Cannot run the macro 'something.csv'!…" or "'something.xlsx'!…"**
+The macro was imported into (or the button was linked to) that file, not into
+`PERSONAL.XLSB`. CSV and .xlsx files can't keep macros, so once that file is closed the
+button points at nothing. To fix it:
+
+1. Remove the old button: **File → Options → Quick Access Toolbar**, select it on the
+   right, click **Remove**.
+2. Import `PdfExport.bas` into **VBAProject (PERSONAL.XLSB)** as described above and save.
+3. Add the button again, making sure you pick the entry that starts with
+   `PERSONAL.XLSB!`.

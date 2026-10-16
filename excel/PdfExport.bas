@@ -1,4 +1,4 @@
-Attribute VB_Name = "ExportSelectionToPDF"
+Attribute VB_Name = "PdfExport"
 Option Explicit
 
 ' Exports whatever cells are selected to a PDF.
