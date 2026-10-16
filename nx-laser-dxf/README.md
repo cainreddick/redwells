@@ -126,8 +126,10 @@ several plates in one go:
      has rows, and the print area grows to match.
    - "Total Part No.'s" (H1) recalculates if it's a formula, or gets the number of parts if
      it isn't.
-   - Nothing else is added. Set `requestList.dataSheet` to a sheet name if you want the full
-     CSV table as an extra sheet.
+   - A second sheet, **"DXF list"**, holds the full CSV table: ID, Revision, Name, Qty,
+     Material, Thickness and DXF path, plus any columns you add to `batch.csvColumns`. Rename
+     it with `requestList.dataSheet`, or set that to `""` to leave it out. The CSV file is
+     still written as well.
 
    **Setup:** save your request-list workbook as `Jig Part Request List.xlsx` (a real `.xlsx`,
    not `.xls`) in the same folder as the config file. Which columns get which CSV column, the

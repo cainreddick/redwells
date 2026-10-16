@@ -17,7 +17,7 @@ for n, name in ((6, "request_list_6.xlsx"), (40, "request_list_40.xlsx")):
     check(z.testzip() is None, f"{name}: zip CRC error")
     check("xl/media/image1.png" in z.namelist(), f"{name}: logo lost")
     wb = load_workbook(path)
-    want_sheets = ["Jig Part Request List"] + (["DXF list"] if n == 40 else [])
+    want_sheets = ["Jig Part Request List", "DXF list"]
     check(wb.sheetnames == want_sheets, f"{name}: sheets {wb.sheetnames}")
     check(wb["Jig Part Request List"]["A2"].value == "S180-06068-37005-1", f"{name}: A2 = {wb['Jig Part Request List']['A2'].value!r}")
     check("A2:D2" in [str(r) for r in wb["Jig Part Request List"].merged_cells.ranges], f"{name}: A2:D2 merge lost")
@@ -36,10 +36,9 @@ for n, name in ((6, "request_list_6.xlsx"), (40, "request_list_40.xlsx")):
     pa = ws.print_area if isinstance(ws.print_area, str) else ",".join(ws.print_area)
     want = 37 if n <= 34 else 3 + n
     check(pa.endswith(f"$D${want}"), f"{name}: print area {pa}, expected to end at row {want}")
-    if n == 40:
-        ds = wb["DXF list"]
-        check([c.value for c in ds[1]] == ["ID", "Revision", "Name", "Qty", "Material", "Thickness", "DXF path"], f"{name}: data header")
-        check(ds.max_row == n + 1 and ds["C2"].value == "PLATE 0 & CO <X>", f"{name}: data rows ({ds.max_row}, {ds['C2'].value!r})")
+    ds = wb["DXF list"]
+    check([c.value for c in ds[1]] == ["ID", "Revision", "Name", "Qty", "Material", "Thickness", "DXF path"], f"{name}: data header")
+    check(ds.max_row == n + 1 and ds["C2"].value == "PLATE 0 & CO <X>", f"{name}: data rows ({ds.max_row}, {ds['C2'].value!r})")
     print(("ok   " if not problems else "FAIL ") + name)
 
 for p in problems:

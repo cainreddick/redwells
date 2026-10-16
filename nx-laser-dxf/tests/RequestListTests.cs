@@ -52,7 +52,7 @@ namespace LaserDxf.Tests
 
         public static void TestFillTemplate()
         {
-            byte[] xlsx = Fill(6, "request_list_6.xlsx", "");
+            byte[] xlsx = Fill(6, "request_list_6.xlsx", LaserConfig.DefaultRequestList().DataSheetName);
             var names = new List<string>();
             string sheet1 = null, workbook = null;
             foreach (var e in Zip.Read(xlsx))
@@ -62,7 +62,7 @@ namespace LaserDxf.Tests
                 if (e.Name == "xl/workbook.xml") workbook = Encoding.UTF8.GetString(e.Data);
             }
             TestMain.Check(names.Contains("xl/media/image1.png") && names.Contains("xl/drawings/drawing1.xml"), "logo image kept");
-            TestMain.Check(!names.Contains("xl/worksheets/sheet2.xml") && !workbook.Contains("DXF list"), "no extra sheet by default");
+            TestMain.Check(names.Contains("xl/worksheets/sheet2.xml") && workbook.Contains("name=\"DXF list\""), "CSV data on a second sheet by default");
             TestMain.Check(workbook.Contains("fullCalcOnLoad=\"1\""), "recalc on open");
             TestMain.Check(sheet1.Contains("<c r=\"A2\"") && sheet1.Contains(">S180-06068-37005-1</t>"), "assembly number in A2");
             TestMain.Check(sheet1.Contains("<f>COUNTA(A4:A37)</f>"), "total formula untouched");

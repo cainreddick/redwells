@@ -3132,7 +3132,7 @@ namespace LaserDxf.Core
 
         public static RequestListSpec DefaultRequestList()
         {
-            var r = new RequestListSpec { FirstRow = 4, TotalCell = "H1", TitleCell = "A2", DataSheetName = "" };
+            var r = new RequestListSpec { FirstRow = 4, TotalCell = "H1", TitleCell = "A2", DataSheetName = "DXF list" };
             r.Columns.Add(new KeyValuePair<string, string>("A", "ID"));
             r.Columns.Add(new KeyValuePair<string, string>("B", "Material"));
             r.Columns.Add(new KeyValuePair<string, string>("C", "Thickness"));
