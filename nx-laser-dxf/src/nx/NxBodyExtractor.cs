@@ -192,10 +192,24 @@ namespace LaserDxf.Nx
                 return;
             }
 
+            var idByTag = new Dictionary<Tag, int>();
+            for (int i = 0; i < feats.Length; i++) idByTag[feats[i].Tag] = i + 1;
+
             int id = 1;
             foreach (NXOpen.Features.Feature feat in feats)
             {
                 var fi = new FeatureInfo { Id = id++, ClassName = feat.GetType().Name };
+                // Parents link a Pattern/Mirror instance back to the Hole feature it copies.
+                var parents = NxReflect.Call(feat, "GetParents") as Array;
+                if (parents != null)
+                {
+                    foreach (object o in parents)
+                    {
+                        var pf = o as NXOpen.Features.Feature;
+                        int pid;
+                        if (pf != null && idByTag.TryGetValue(pf.Tag, out pid)) fi.ParentIds.Add(pid);
+                    }
+                }
                 try { fi.Name = feat.GetFeatureName(); } catch { fi.Name = feat.JournalIdentifier; }
                 try { fi.FeatureType = feat.FeatureType; } catch { }
 

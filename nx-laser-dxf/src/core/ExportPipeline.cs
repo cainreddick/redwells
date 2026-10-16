@@ -6,7 +6,8 @@ namespace LaserDxf.Core
 
     public static class ExportPipeline
     {
-        public static ExportRun Prepare(BodyModel m, int faceId, LaserConfig c, AnalysisOptions opt, string selectionNote)
+        /// <param name="etchPick">Optional point (model coordinates) the user picked for the part number.</param>
+        public static ExportRun Prepare(BodyModel m, int faceId, LaserConfig c, AnalysisOptions opt, string selectionNote, Vec3? etchPick = null)
         {
             var run = new ExportRun { Config = c, ConfigPath = c.SourcePath, PartName = m.PartName, SelectionNote = selectionNote };
 
@@ -30,10 +31,14 @@ namespace LaserDxf.Core
             string bad = StrokeFont.Unsupported(run.EtchText);
             if (bad.Length > 0 && c.TextMode == TextMode.Stroke)
                 run.Warnings.Add("The etch font has no glyph for \"" + bad + "\" - drawn as '?'.");
-            if (!string.Equals(c.EtchPlacement, "Auto", StringComparison.OrdinalIgnoreCase))
-                run.Warnings.Add("etch.placement \"" + c.EtchPlacement + "\" is not available yet - placed automatically.");
             var plate = new Bounds2 { MinX = 0, MinY = 0, MaxX = run.Profile.Width, MaxY = run.Profile.Height };
-            run.Etch = Annotator.PlaceEtch(run.EtchText, obs, plate, c, run.Warnings);
+            if (etchPick.HasValue)
+            {
+                Vec2 at = run.Analysis.Frame.ToLocal(etchPick.Value) * run.Profile.UnitScale;
+                run.Etch = Annotator.PlaceEtchAt(run.EtchText, at, obs, c, run.Warnings);
+            }
+            if (run.Etch == null)
+                run.Etch = Annotator.PlaceEtch(run.EtchText, obs, plate, c, run.Warnings);
             Annotator.Emit(run.Profile.Doc, run.Etch, c);
 
             run.FileName = FileNameFor(run.Identity, c, run.Warnings);

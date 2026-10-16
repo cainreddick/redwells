@@ -48,6 +48,7 @@ namespace LaserDxf.Core
         public string FeatureType = "";
         public string ClassName = "";
         public List<int> FaceIds = new List<int>();
+        public List<int> ParentIds = new List<int>();
         public List<KeyValuePair<string, string>> Props = new List<KeyValuePair<string, string>>();
 
         public string Prop(string key)
@@ -156,7 +157,7 @@ namespace LaserDxf.Core
                 var props = new JObj();
                 foreach (var kv in f.Props) props.Add(kv.Key, kv.Value);
                 feats.Add(new JObj().Add("id", (double)f.Id).Add("name", f.Name).Add("featureType", f.FeatureType)
-                    .Add("className", f.ClassName).Add("faces", Ints(f.FaceIds)).Add("props", props));
+                    .Add("className", f.ClassName).Add("faces", Ints(f.FaceIds)).Add("parents", Ints(f.ParentIds)).Add("props", props));
             }
 
             var attrs = new List<object>();
@@ -214,7 +215,8 @@ namespace LaserDxf.Core
                         Name = f.Str("name", ""),
                         FeatureType = f.Str("featureType", ""),
                         ClassName = f.Str("className", ""),
-                        FaceIds = ToInts(f.Get("faces"))
+                        FaceIds = ToInts(f.Get("faces")),
+                        ParentIds = ToInts(f.Get("parents"))
                     };
                     var props = f.Obj("props");
                     if (props != null) foreach (var kv in props.Items) fi.Props.Add(new KeyValuePair<string, string>(kv.Key, Convert.ToString(kv.Value, Fmt.Inv)));

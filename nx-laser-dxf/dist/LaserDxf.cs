@@ -34,7 +34,7 @@ namespace LaserDxf.Nx
 
     public static class ExportCommand
     {
-        public const string Version = "0.3 (steps 3-5: labels + part number)";
+        public const string Version = "0.4";
 
         public static void Run()
         {
@@ -48,6 +48,24 @@ namespace LaserDxf.Nx
 
             PlateSelection sel = NxPlate.Select(s, log);
             if (sel == null) return;
+
+            if (cfg.ShowOptionsDialog && !OptionsDialog.Show(cfg, NxUtil.PartLabel(sel.Part)))
+            {
+                lw.WriteLine("Laser DXF: cancelled.");
+                return;
+            }
+
+            Vec3? etchPick = null;
+            if (string.Equals(cfg.EtchPlacement, "Pick", StringComparison.OrdinalIgnoreCase))
+            {
+                Vec3 p;
+                if (sel.FromOccurrence)
+                    cfgWarnings.Add("Picking the part-number position only works with the plate part displayed on its own - placed automatically.");
+                else if (NxPlate.PickPoint("Click on the plate where the part number should go (Cancel = automatic)", out p))
+                    etchPick = p;
+                else
+                    cfgWarnings.Add("No point picked - part number placed automatically.");
+            }
 
             AnalysisOptions opt = cfg.ToAnalysisOptions();
             if (cfg.XAlign == XAlignMode.Hint)
@@ -63,7 +81,7 @@ namespace LaserDxf.Nx
             string note;
             int faceId = NxPlate.PlateFaceId(sel, ex, m, opt, log, out note);
 
-            ExportRun run = ExportPipeline.Prepare(m, faceId, cfg, opt, note);
+            ExportRun run = ExportPipeline.Prepare(m, faceId, cfg, opt, note, etchPick);
             run.Version = Version;
             run.Warnings.InsertRange(0, cfgWarnings);
             run.Notes.AddRange(log);
@@ -331,10 +349,24 @@ namespace LaserDxf.Nx
                 return;
             }
 
+            var idByTag = new Dictionary<Tag, int>();
+            for (int i = 0; i < feats.Length; i++) idByTag[feats[i].Tag] = i + 1;
+
             int id = 1;
             foreach (NXOpen.Features.Feature feat in feats)
             {
                 var fi = new FeatureInfo { Id = id++, ClassName = feat.GetType().Name };
+                // Parents link a Pattern/Mirror instance back to the Hole feature it copies.
+                var parents = NxReflect.Call(feat, "GetParents") as Array;
+                if (parents != null)
+                {
+                    foreach (object o in parents)
+                    {
+                        var pf = o as NXOpen.Features.Feature;
+                        int pid;
+                        if (pf != null && idByTag.TryGetValue(pf.Tag, out pid)) fi.ParentIds.Add(pid);
+                    }
+                }
                 try { fi.Name = feat.GetFeatureName(); } catch { fi.Name = feat.JournalIdentifier; }
                 try { fi.FeatureType = feat.FeatureType; } catch { }
 
@@ -379,6 +411,8 @@ namespace LaserDxf.Nx
         /// <summary>The face the user picked, or null if they picked the body.</summary>
         public Face Face;
         public Part Part;
+        /// <summary>The user picked inside an assembly (geometry was mapped to the component part).</summary>
+        public bool FromOccurrence;
     }
 
     public static class NxPlate
@@ -437,11 +471,13 @@ namespace LaserDxf.Nx
             if (sel.Face != null && sel.Face.IsOccurrence)
             {
                 sel.Face = (Face)sel.Face.Prototype;
+                sel.FromOccurrence = true;
                 log.Add("Selection was an assembly occurrence; using the component part's face.");
             }
             if (sel.Body != null && sel.Body.IsOccurrence)
             {
                 sel.Body = (Body)sel.Body.Prototype;
+                sel.FromOccurrence = true;
                 log.Add("Selection was an assembly occurrence; using the component part's body.");
             }
             if (sel.Face != null)
@@ -456,6 +492,26 @@ namespace LaserDxf.Nx
             sel.Part = sel.Body.OwningPart as Part;
             if (sel.Part == null) throw new PlateException("Could not find the part that owns the selected body.");
             return sel;
+        }
+
+        /// <summary>Asks the user to click on the plate where the part number should go.
+        /// Returns false if they cancel. The point is NX's cursor position on the picked face.</summary>
+        public static bool PickPoint(string message, out Vec3 point)
+        {
+            point = Vec3.Zero;
+            Selection.MaskTriple[] mask =
+            {
+                new Selection.MaskTriple(UFConstants.UF_solid_type, 0, UFConstants.UF_UI_SEL_FEATURE_ANY_FACE)
+            };
+            TaggedObject picked;
+            Point3d cursor;
+            Selection.Response resp = UI.GetUI().SelectionManager.SelectTaggedObject(
+                message, "Laser DXF - part number position",
+                Selection.SelectionScope.AnyInAssembly, Selection.SelectionAction.ClearAndEnableSpecific,
+                false, false, mask, out picked, out cursor);
+            if (resp != Selection.Response.ObjectSelected && resp != Selection.Response.ObjectSelectedByName) return false;
+            point = new Vec3(cursor.X, cursor.Y, cursor.Z);
+            return true;
         }
 
         /// <summary>Picks the face to export: the selected one, or the plate face of the selected body.</summary>
@@ -745,6 +801,17 @@ namespace LaserDxf.Nx
             }
         }
 
+        /// <summary>Calls a parameterless method by reflection; null if missing or it throws.</summary>
+        public static object Call(object obj, string method)
+        {
+            try
+            {
+                MethodInfo mi = obj.GetType().GetMethod(method, Type.EmptyTypes);
+                return mi == null ? null : mi.Invoke(obj, null);
+            }
+            catch { return null; }
+        }
+
         /// <summary>Calls obj.method(title, AttributeType, -1) by reflection, trying the String then
         /// Any attribute type. Returns null if the method is missing or the attribute isn't there.</summary>
         public static object CallByTitle(object obj, string method, string title)
@@ -772,6 +839,101 @@ namespace LaserDxf.Nx
         {
             object v = Member(s, "ExecutingJournal");
             return v == null ? null : v.ToString();
+        }
+    }
+}
+
+// ----- nx/OptionsDialog.cs -----
+// Run-time options dialog (Windows Forms), pre-filled from the config.
+// Changes apply to this run only; the config file is not modified.
+// This file deliberately doesn't import NXOpen, so WinForms names can't clash with it.
+namespace LaserDxf.Nx
+{
+    using System;
+    using System.Drawing;
+    using System.Windows.Forms;
+    using LaserDxf.Core;
+
+    public static class OptionsDialog
+    {
+        /// <summary>Shows the dialog and applies the choices to cfg. Returns false if cancelled.</summary>
+        public static bool Show(LaserConfig cfg, string partLabel)
+        {
+            using (var f = new Form())
+            {
+                f.Text = "Laser DXF - " + partLabel;
+                f.FormBorderStyle = FormBorderStyle.FixedDialog;
+                f.MaximizeBox = false;
+                f.MinimizeBox = false;
+                f.ShowInTaskbar = false;
+                f.StartPosition = FormStartPosition.CenterScreen;
+                f.TopMost = true;
+                f.Font = new Font("Segoe UI", 9f);
+                f.ClientSize = new Size(440, 400);
+
+                int y = 10;
+                RadioButton[] orient = Group(f, "Orientation (DXF X axis)", ref y,
+                    "Along the longest straight edge (edge at the bottom)", "Along the WCS X axis");
+                RadioButton[] place = Group(f, "Part number position", ref y,
+                    "Automatic (largest clear area)", "Pick a point on the plate");
+                RadioButton[] text = Group(f, "Text output (labels and part number)", ref y,
+                    "Single-stroke vectors (for etching)", "DXF TEXT entities");
+
+                orient[cfg.XAlign == XAlignMode.Hint ? 1 : 0].Checked = true;
+                place[string.Equals(cfg.EtchPlacement, "Pick", StringComparison.OrdinalIgnoreCase) ? 1 : 0].Checked = true;
+                text[cfg.TextMode == TextMode.Text ? 1 : 0].Checked = true;
+
+                var verLabel = new Label { Text = "DXF version", Left = 14, Top = y + 4, Width = 90 };
+                var version = new ComboBox { Left = 110, Top = y, Width = 120, DropDownStyle = ComboBoxStyle.DropDownList };
+                version.Items.Add("R2000");
+                version.Items.Add("R12");
+                version.SelectedIndex = cfg.DxfVersion == DxfVersion.R12 ? 1 : 0;
+                f.Controls.Add(verLabel);
+                f.Controls.Add(version);
+                y += 34;
+
+                var folderLabel = new Label { Text = "Output folder", Left = 14, Top = y + 4, Width = 90 };
+                var folder = new TextBox { Left = 110, Top = y, Width = 270, Text = cfg.OutputFolder };
+                var browse = new Button { Text = "...", Left = 386, Top = y - 1, Width = 40, Height = 25 };
+                browse.Click += delegate
+                {
+                    using (var fb = new FolderBrowserDialog { SelectedPath = folder.Text, Description = "Folder for the DXF files" })
+                        if (fb.ShowDialog(f) == DialogResult.OK) folder.Text = fb.SelectedPath;
+                };
+                f.Controls.Add(folderLabel);
+                f.Controls.Add(folder);
+                f.Controls.Add(browse);
+                y += 44;
+
+                var ok = new Button { Text = "Export", Left = 250, Top = y, Width = 85, Height = 28, DialogResult = DialogResult.OK };
+                var cancel = new Button { Text = "Cancel", Left = 341, Top = y, Width = 85, Height = 28, DialogResult = DialogResult.Cancel };
+                f.Controls.Add(ok);
+                f.Controls.Add(cancel);
+                f.AcceptButton = ok;
+                f.CancelButton = cancel;
+                f.ClientSize = new Size(440, y + 40);
+
+                if (f.ShowDialog() != DialogResult.OK) return false;
+
+                cfg.XAlign = orient[1].Checked ? XAlignMode.Hint : XAlignMode.LongestEdge;
+                cfg.EtchPlacement = place[1].Checked ? "Pick" : "Auto";
+                cfg.TextMode = text[1].Checked ? TextMode.Text : TextMode.Stroke;
+                cfg.DxfVersion = version.SelectedIndex == 1 ? DxfVersion.R12 : DxfVersion.R2000;
+                if (folder.Text.Trim().Length > 0) cfg.OutputFolder = folder.Text.Trim();
+                return true;
+            }
+        }
+
+        static RadioButton[] Group(Form f, string title, ref int y, string first, string second)
+        {
+            var g = new GroupBox { Text = title, Left = 10, Top = y, Width = 420, Height = 72 };
+            var a = new RadioButton { Text = first, Left = 12, Top = 20, Width = 390 };
+            var b = new RadioButton { Text = second, Left = 12, Top = 44, Width = 390 };
+            g.Controls.Add(a);
+            g.Controls.Add(b);
+            f.Controls.Add(g);
+            y += 80;
+            return new[] { a, b };
         }
     }
 }
@@ -1073,6 +1235,47 @@ namespace LaserDxf.Core
             return fallback;
         }
 
+        /// <summary>Centres the etch text on a point the user picked: horizontal, else rotated 90 degrees,
+        /// shrinking to the minimum height if needed. Returns null (caller falls back to automatic)
+        /// if the point is not on the plate.</summary>
+        public static PlacedText PlaceEtchAt(string text, Vec2 at, Obstacles obs, LaserConfig c, List<string> warnings)
+        {
+            if (text.Trim().Length == 0) return null;
+            if (!Layout2.PointInPolygon(at, obs.Outer))
+            {
+                warnings.Add("The picked point (" + Fmt.N(at.X, 1) + ", " + Fmt.N(at.Y, 1) + ") is not on the plate - part number placed automatically.");
+                return null;
+            }
+            PlacedText best = null;
+            double minH = Math.Min(c.EtchMinHeight, c.EtchHeight);
+            for (double h = c.EtchHeight; h >= minH - 1e-9; h -= 0.5)
+            {
+                double w = StrokeFont.Measure(text, h);
+                foreach (double rot in c.EtchAllowRotate90 ? new[] { 0.0, 90.0 } : new[] { 0.0 })
+                {
+                    Rect2 box = Rect2.FromCenter(at, rot == 0 ? w : h, rot == 0 ? h : w);
+                    double clear = obs.Clearance(box, -1);
+                    var t = new PlacedText
+                    {
+                        Text = text, Height = h, RotationDeg = rot, Box = box, Clearance = clear,
+                        Origin = rot == 0 ? new Vec2(box.MinX, box.MinY) : new Vec2(box.MaxX, box.MinY),
+                        Position = (rot == 0 ? "horizontal" : "vertical") + " at the picked point (" + Fmt.N(at.X, 1) + ", " + Fmt.N(at.Y, 1) + ")"
+                    };
+                    if (clear >= c.EtchClearance)
+                    {
+                        t.Clear = true;
+                        if (h < c.EtchHeight) warnings.Add("Part number shrunk to " + Fmt.N(h, 1) + " mm high to fit at the picked point.");
+                        obs.Texts.Add(box);
+                        return t;
+                    }
+                    if (best == null || clear > best.Clearance) best = t;
+                }
+            }
+            warnings.Add("The part number overlaps something or is close to an edge at the picked point - check it in the DXF.");
+            obs.Texts.Add(best.Box);
+            return best;
+        }
+
         /// <summary>Grid search, refined twice around the best candidates.</summary>
         static double BestSpot(Obstacles obs, Bounds2 plate, double w, double h, out Vec2 centre)
         {
@@ -1194,6 +1397,7 @@ namespace LaserDxf.Core
         public string FeatureType = "";
         public string ClassName = "";
         public List<int> FaceIds = new List<int>();
+        public List<int> ParentIds = new List<int>();
         public List<KeyValuePair<string, string>> Props = new List<KeyValuePair<string, string>>();
 
         public string Prop(string key)
@@ -1302,7 +1506,7 @@ namespace LaserDxf.Core
                 var props = new JObj();
                 foreach (var kv in f.Props) props.Add(kv.Key, kv.Value);
                 feats.Add(new JObj().Add("id", (double)f.Id).Add("name", f.Name).Add("featureType", f.FeatureType)
-                    .Add("className", f.ClassName).Add("faces", Ints(f.FaceIds)).Add("props", props));
+                    .Add("className", f.ClassName).Add("faces", Ints(f.FaceIds)).Add("parents", Ints(f.ParentIds)).Add("props", props));
             }
 
             var attrs = new List<object>();
@@ -1360,7 +1564,8 @@ namespace LaserDxf.Core
                         Name = f.Str("name", ""),
                         FeatureType = f.Str("featureType", ""),
                         ClassName = f.Str("className", ""),
-                        FaceIds = ToInts(f.Get("faces"))
+                        FaceIds = ToInts(f.Get("faces")),
+                        ParentIds = ToInts(f.Get("parents"))
                     };
                     var props = f.Obj("props");
                     if (props != null) foreach (var kv in props.Items) fi.Props.Add(new KeyValuePair<string, string>(kv.Key, Convert.ToString(kv.Value, Fmt.Inv)));
@@ -1461,11 +1666,11 @@ namespace LaserDxf.Core
         public bool EtchAllowRotate90 = true;
 
         // attributes
-        public AttrRef IdAttr = new AttrRef("ID", "MCAD");
-        public AttrRef RevisionAttr = new AttrRef("Revision", "MCAD Revision");
+        public AttrRef IdAttr = new AttrRef("DB_PART_NO", "ONE4_MCAD");
+        public AttrRef RevisionAttr = new AttrRef("DB_PART_REV", "ONE4_MCADRevision");
         public AttrRef FallbackIdAttr = new AttrRef("Part_Number", "Lentus Attributes");
-        public AttrRef NameAttr = new AttrRef("DB_PART_NAME", "MCAD");
-        public AttrRef MaterialAttr = new AttrRef("Polar_Material", "MCAD Revision");
+        public AttrRef NameAttr = new AttrRef("DB_PART_NAME", "ONE4_MCAD");
+        public AttrRef MaterialAttr = new AttrRef("Polar_Material", "ONE4_MCADRevision");
         public AttrRef ThicknessAttr = new AttrRef("Matl_Thk", "Materials");
 
         // batch (phase 2)
@@ -1677,6 +1882,11 @@ namespace LaserDxf.Core
             c.EtchMinHeight = e.Num("minTextHeight", c.EtchMinHeight, 0.5, 100);
             c.EtchClearance = e.Num("clearance", c.EtchClearance, 0, 100);
             c.EtchPlacement = e.Str("placement", c.EtchPlacement);
+            if (!string.Equals(c.EtchPlacement, "Auto", StringComparison.OrdinalIgnoreCase) && !string.Equals(c.EtchPlacement, "Pick", StringComparison.OrdinalIgnoreCase))
+            {
+                warnings.Add("Config: etch.placement = \"" + c.EtchPlacement + "\" should be Auto or Pick - using Auto");
+                c.EtchPlacement = "Auto";
+            }
             c.EtchAllowRotate90 = e.Bool("allowRotate90", c.EtchAllowRotate90);
             e.Finish();
 
@@ -2162,7 +2372,8 @@ namespace LaserDxf.Core
 
     public static class ExportPipeline
     {
-        public static ExportRun Prepare(BodyModel m, int faceId, LaserConfig c, AnalysisOptions opt, string selectionNote)
+        /// <param name="etchPick">Optional point (model coordinates) the user picked for the part number.</param>
+        public static ExportRun Prepare(BodyModel m, int faceId, LaserConfig c, AnalysisOptions opt, string selectionNote, Vec3? etchPick = null)
         {
             var run = new ExportRun { Config = c, ConfigPath = c.SourcePath, PartName = m.PartName, SelectionNote = selectionNote };
 
@@ -2186,10 +2397,14 @@ namespace LaserDxf.Core
             string bad = StrokeFont.Unsupported(run.EtchText);
             if (bad.Length > 0 && c.TextMode == TextMode.Stroke)
                 run.Warnings.Add("The etch font has no glyph for \"" + bad + "\" - drawn as '?'.");
-            if (!string.Equals(c.EtchPlacement, "Auto", StringComparison.OrdinalIgnoreCase))
-                run.Warnings.Add("etch.placement \"" + c.EtchPlacement + "\" is not available yet - placed automatically.");
             var plate = new Bounds2 { MinX = 0, MinY = 0, MaxX = run.Profile.Width, MaxY = run.Profile.Height };
-            run.Etch = Annotator.PlaceEtch(run.EtchText, obs, plate, c, run.Warnings);
+            if (etchPick.HasValue)
+            {
+                Vec2 at = run.Analysis.Frame.ToLocal(etchPick.Value) * run.Profile.UnitScale;
+                run.Etch = Annotator.PlaceEtchAt(run.EtchText, at, obs, c, run.Warnings);
+            }
+            if (run.Etch == null)
+                run.Etch = Annotator.PlaceEtch(run.EtchText, obs, plate, c, run.Warnings);
             Annotator.Emit(run.Profile.Doc, run.Etch, c);
 
             run.FileName = FileNameFor(run.Identity, c, run.Warnings);
@@ -2296,6 +2511,21 @@ namespace LaserDxf.Core
                 foreach (var kv in byLabel) lp.Add(kv.Key + " x" + kv.Value);
                 L.Add("Labelled     : " + labelled + " of " + circles + " round holes" + (lp.Count > 0 ? "  (" + string.Join(", ", lp.ToArray()) + ")" : ""));
                 foreach (var kv in sources) L.Add("               " + kv.Key);
+                var unlabelled = new SortedDictionary<string, List<string>>();
+                foreach (var h in r.Profile.Holes)
+                {
+                    if (h.Circle == null || h.Label.Length > 0) continue;
+                    List<string> at;
+                    if (!unlabelled.TryGetValue(h.Note, out at)) unlabelled[h.Note] = at = new List<string>();
+                    at.Add("(" + Fmt.N(h.Center.X, 1) + ", " + Fmt.N(h.Center.Y, 1) + ")");
+                }
+                if (unlabelled.Count > 0)
+                {
+                    L.Add("Not labelled : (correct for plain clearance/fixing holes)");
+                    foreach (var kv in unlabelled)
+                        L.Add("               " + kv.Value.Count + " x " + kv.Key + "   at " +
+                              string.Join(" ", kv.Value.GetRange(0, Math.Min(4, kv.Value.Count)).ToArray()) + (kv.Value.Count > 4 ? " ..." : ""));
+                }
                 if (r.Etch != null)
                     L.Add("Etch         : \"" + r.Etch.Text + "\"  " + Fmt.N(r.Etch.Height, 1) + " mm high, " + r.Etch.Position);
                 L.Add("Entities     : " + r.Profile.Doc.Entities.Count + " (" + r.Profile.OuterEntityCount + " in the outer profile)");
@@ -2594,6 +2824,16 @@ namespace LaserDxf.Core
         {
             var d = new HoleFeatureData { FeatureName = f.Name };
             d.HoleType = Unquote(f.Prop("Types") ?? f.Prop("Type") ?? f.Prop("HoleType"));
+            if (d.HoleType.Length == 0)
+            {
+                // Different NX versions name it differently: take any *Type(s) property whose value is a hole type.
+                foreach (var kv in f.Props)
+                    if ((kv.Key.EndsWith("Type", StringComparison.Ordinal) || kv.Key.EndsWith("Types", StringComparison.Ordinal)) && Unquote(kv.Value).EndsWith("Hole", StringComparison.OrdinalIgnoreCase))
+                    {
+                        d.HoleType = Unquote(kv.Value);
+                        break;
+                    }
+            }
             if (d.HoleType.Length > 0)
             {
                 d.Form = Unquote(f.Prop(d.HoleType + "Form"));
@@ -2629,6 +2869,26 @@ namespace LaserDxf.Core
             return s;
         }
 
+        /// <summary>Hole features behind a hole: the features that made its wall faces, plus their
+        /// ancestors (a Pattern or Mirror instance points back to the Hole feature it copies).</summary>
+        static List<FeatureInfo> HoleFeaturesFor(CutHole ch, Dictionary<int, FeatureInfo> featById)
+        {
+            var result = new List<FeatureInfo>();
+            var seen = new IntSet();
+            var queue = new Queue<KeyValuePair<int, int>>();
+            foreach (int fid in ch.Hole.FeatureIds) queue.Enqueue(new KeyValuePair<int, int>(fid, 0));
+            while (queue.Count > 0)
+            {
+                var item = queue.Dequeue();
+                FeatureInfo f;
+                if (!seen.Add(item.Key) || !featById.TryGetValue(item.Key, out f)) continue;
+                if (f.ClassName == "HolePackage") result.Add(f);
+                if (item.Value < 4)
+                    foreach (int pid in f.ParentIds) queue.Enqueue(new KeyValuePair<int, int>(pid, item.Value + 1));
+            }
+            return result;
+        }
+
         public static void Classify(BodyModel m, ProfileResult profile, LaserConfig c, List<string> warnings)
         {
             var featById = new Dictionary<int, FeatureInfo>();
@@ -2637,14 +2897,26 @@ namespace LaserDxf.Core
             foreach (CutHole ch in profile.Holes)
             {
                 if (ch.Circle == null) continue; // labels are for round holes only
+                var why = new List<string>();
 
-                // 1. NX Hole feature
-                if (c.UseHoleFeatures)
+                // 1. NX Hole feature (directly, or behind a pattern/mirror)
+                List<FeatureInfo> holeFeats = HoleFeaturesFor(ch, featById);
+                if (holeFeats.Count == 0)
                 {
-                    foreach (int fid in ch.Hole.FeatureIds)
+                    var names = new List<string>();
+                    foreach (int fid in ch.Hole.FeatureIds) { FeatureInfo f; if (featById.TryGetValue(fid, out f)) names.Add(f.Name); }
+                    why.Add(names.Count > 0 ? "made by " + string.Join(", ", names.ToArray()) + " (no Hole feature)" : "no feature found for its faces");
+                }
+                else if (!c.UseHoleFeatures) why.Add("Hole feature data switched off in the config");
+                else
+                {
+                    foreach (FeatureInfo f in holeFeats)
                     {
-                        FeatureInfo f;
-                        if (!featById.TryGetValue(fid, out f) || f.ClassName != "HolePackage") continue;
+                        if (f.Props.Count == 0)
+                        {
+                            why.Add("Hole feature " + f.Name + ": its settings could not be read (see Notes)");
+                            continue;
+                        }
                         HoleFeatureData d = ParseHoleFeature(f);
                         if (d.IsThreaded && d.ThreadSize.Length > 0)
                         {
@@ -2659,6 +2931,9 @@ namespace LaserDxf.Core
                             ch.Label = c.CountersinkLabel;
                             ch.LabelSource = "hole feature " + f.Name + " (countersunk)";
                         }
+                        else
+                            why.Add("Hole feature " + f.Name + ": type \"" + d.HoleType + "\", form \"" + d.Form + "\"" +
+                                    (d.IsThreaded ? ", thread size not found" : ", not threaded or countersunk"));
                         if (ch.Label.Length > 0) break;
                     }
                 }
@@ -2685,6 +2960,15 @@ namespace LaserDxf.Core
                         ch.Label = best.Label;
                         ch.LabelSource = "table dia " + Fmt.N(best.Diameter, 3) + " +/- " + Fmt.N(best.Tolerance, 3);
                     }
+                    else
+                    {
+                        LabelRule nearest = null;
+                        foreach (var r in c.LabelTable)
+                            if (nearest == null || Math.Abs(ch.CutDiameter - r.Diameter) < Math.Abs(ch.CutDiameter - nearest.Diameter)) nearest = r;
+                        why.Add("dia " + Fmt.N(ch.CutDiameter, 3) + " is not in the label table" +
+                                (nearest == null ? "" : " (nearest: " + nearest.Label + " dia " + Fmt.N(nearest.Diameter, 3) + " +/- " + Fmt.N(nearest.Tolerance, 3) + ")"));
+                    }
+                    if (ch.Label.Length == 0) ch.Note = string.Join("; ", why.ToArray());
                 }
 
                 // Optional laser cut diameter for this label.
@@ -3993,7 +4277,10 @@ namespace LaserDxf.Core
             L.Add("Features on the body: " + m.Features.Count);
             foreach (var f in m.Features)
             {
-                L.Add("  [" + f.Id + "] " + f.Name + "  type=" + f.FeatureType + "  class=" + f.ClassName + "  faces=" + f.FaceIds.Count);
+                var pids = new List<string>();
+                foreach (int p in f.ParentIds) pids.Add(p.ToString());
+                L.Add("  [" + f.Id + "] " + f.Name + "  type=" + f.FeatureType + "  class=" + f.ClassName + "  faces=" + f.FaceIds.Count +
+                      (pids.Count > 0 ? "  parents=" + string.Join(",", pids.ToArray()) : ""));
                 if (!withProps) continue;
                 foreach (var kv in f.Props) L.Add("        " + kv.Key + " = " + kv.Value);
             }
@@ -4036,6 +4323,8 @@ namespace LaserDxf.Core
         public Vec2 Center;
         public string Label = "";
         public string LabelSource = "";
+        /// <summary>Why a round hole got no label (for the report).</summary>
+        public string Note = "";
         public DxfCircle Circle;
     }
 

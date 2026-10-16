@@ -187,3 +187,116 @@ namespace LaserDxf.Tests
         }
     }
 }
+
+namespace LaserDxf.Tests
+{
+    using System.Collections.Generic;
+    using LaserDxf.Core;
+
+    public static class PickTests
+    {
+        public static void TestEtchAtPickedPoint()
+        {
+            var s = new Synth(6);
+            s.Rectangle(200, 100);
+            s.SimpleHole(30, 50, 5.8);
+            s.M.Attributes = IdentityTests.Attrs();
+            var c = new LaserConfig { EtchPlacement = "Pick" };
+            // model point (150, 30) on the top face -> same in DXF coordinates for this plate
+            ExportRun r = ExportPipeline.Prepare(s.M, s.TopFace, c, c.ToAnalysisOptions(), "t", new Vec3(150, 30, 6));
+            Vec2 centre = r.Etch.Box.Center;
+            bool asModelled = centre.DistanceTo(new Vec2(150, 30)) < 1e-6;
+            bool rotated = centre.DistanceTo(new Vec2(50, 70)) < 1e-6; // both long edges tie: may be rotated 180
+            TestMain.Check(asModelled || rotated, "etch centred on the picked point: " + centre);
+
+            ExportRun off = ExportPipeline.Prepare(s.M, s.TopFace, c, c.ToAnalysisOptions(), "t", new Vec3(500, 30, 6));
+            TestMain.Check(off.Etch != null && off.Etch.Clear, "off-plate pick falls back to automatic");
+            bool warned = false;
+            foreach (string w in off.Warnings) if (w.Contains("not on the plate")) warned = true;
+            TestMain.Check(warned, "warning for an off-plate pick");
+        }
+
+        public static void TestPlacementValidated()
+        {
+            var w = new List<string>();
+            LaserConfig c = LaserConfig.Parse("{ \"etch\": { \"placement\": \"Manual\" } }", "t", w);
+            TestMain.Check(c.EtchPlacement == "Auto" && w.Count == 1, "bad placement reported");
+        }
+    }
+}
+
+namespace LaserDxf.Tests
+{
+    using System.Collections.Generic;
+    using LaserDxf.Core;
+
+    public static class HoleFeatureTests
+    {
+        static FeatureInfo ThreadedHole(int id)
+        {
+            var f = new FeatureInfo { Id = id, Name = "Hole(12)", ClassName = "HolePackage" };
+            f.Props.Add(new KeyValuePair<string, string>("Types", "ThreadedHole"));
+            f.Props.Add(new KeyValuePair<string, string>("ThreadSize", "\"M8 x 1.25\""));
+            return f;
+        }
+
+        /// <summary>The bug from the field: holes patterned from a Hole feature belong to the
+        /// Pattern feature, so the Hole data was never consulted and Ø6.8 matched no table row.</summary>
+        public static void TestPatternedHoleFeatureIsFollowed()
+        {
+            var s = new Synth(6);
+            s.Rectangle(200, 100);
+            s.SimpleHole(30, 50, 6.8);   // seed, made by the Hole feature
+            int seedCyl = s.M.Faces.Count;
+            s.SimpleHole(60, 50, 6.8);   // instance, made by the pattern
+            int instCyl = s.M.Faces.Count;
+            s.SimpleHole(90, 50, 9);     // plain clearance hole from an extrude
+            int extrCyl = s.M.Faces.Count;
+
+            FeatureInfo hole = ThreadedHole(1);
+            hole.FaceIds.Add(seedCyl);
+            var pattern = new FeatureInfo { Id = 2, Name = "Pattern Feature [Linear](13)", ClassName = "PatternFeature" };
+            pattern.FaceIds.Add(instCyl);
+            pattern.ParentIds.Add(1);
+            var extrude = new FeatureInfo { Id = 3, Name = "Extrude(5)", ClassName = "Extrude" };
+            extrude.FaceIds.Add(extrCyl);
+            s.M.Features.AddRange(new[] { hole, pattern, extrude });
+
+            s.M.Attributes = IdentityTests.Attrs();
+            var c = new LaserConfig();
+            ExportRun r = ExportPipeline.Prepare(s.M, s.TopFace, c, c.ToAnalysisOptions(), "t");
+            var labels = new Dictionary<double, string>();
+            foreach (var h in r.Profile.Holes) labels[System.Math.Round(h.Hole.Center.X)] = h.Label;
+            TestMain.Check(labels[30] == "M8", "seed hole labelled from the Hole feature");
+            TestMain.Check(labels[60] == "M8", "patterned instance labelled through its parent Hole feature");
+            TestMain.Check(labels[90] == "", "plain hole unlabelled");
+
+            string report = string.Join("\n", ExportReport.Summary(r).ToArray());
+            TestMain.Check(report.Contains("Not labelled") && report.Contains("made by Extrude(5)") && report.Contains("dia 9 is not in the label table"),
+                           "report says why the plain hole has no label:\n" + report);
+        }
+
+        public static void TestUnreadableHoleFeatureIsReported()
+        {
+            var s = new Synth(6);
+            s.Rectangle(100, 50);
+            s.SimpleHole(30, 25, 6.8);
+            var f = new FeatureInfo { Id = 1, Name = "Hole(3)", ClassName = "HolePackage" };
+            f.FaceIds.Add(s.M.Faces.Count);
+            s.M.Features.Add(f);
+            s.M.Attributes = IdentityTests.Attrs();
+            var c = new LaserConfig();
+            ExportRun r = ExportPipeline.Prepare(s.M, s.TopFace, c, c.ToAnalysisOptions(), "t");
+            TestMain.Check(r.Profile.Holes[0].Note.Contains("settings could not be read"), "note: " + r.Profile.Holes[0].Note);
+        }
+
+        public static void TestAlternativeTypePropertyName()
+        {
+            var f = new FeatureInfo { Name = "Hole(1)", ClassName = "HolePackage" };
+            f.Props.Add(new KeyValuePair<string, string>("HolePackageType", "ThreadedHole"));
+            f.Props.Add(new KeyValuePair<string, string>("ThreadSize", "\"M10 x 1.5\""));
+            HoleFeatureData d = HoleClassifier.ParseHoleFeature(f);
+            TestMain.Check(d.IsThreaded && d.ThreadSize == "M10 x 1.5", "type found under another property name");
+        }
+    }
+}

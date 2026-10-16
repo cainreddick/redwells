@@ -121,7 +121,10 @@ namespace LaserDxf.Core
             L.Add("Features on the body: " + m.Features.Count);
             foreach (var f in m.Features)
             {
-                L.Add("  [" + f.Id + "] " + f.Name + "  type=" + f.FeatureType + "  class=" + f.ClassName + "  faces=" + f.FaceIds.Count);
+                var pids = new List<string>();
+                foreach (int p in f.ParentIds) pids.Add(p.ToString());
+                L.Add("  [" + f.Id + "] " + f.Name + "  type=" + f.FeatureType + "  class=" + f.ClassName + "  faces=" + f.FaceIds.Count +
+                      (pids.Count > 0 ? "  parents=" + string.Join(",", pids.ToArray()) : ""));
                 if (!withProps) continue;
                 foreach (var kv in f.Props) L.Add("        " + kv.Key + " = " + kv.Value);
             }

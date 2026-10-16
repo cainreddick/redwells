@@ -11,7 +11,7 @@ namespace LaserDxf.Nx
 
     public static class ExportCommand
     {
-        public const string Version = "0.3 (steps 3-5: labels + part number)";
+        public const string Version = "0.4";
 
         public static void Run()
         {
@@ -25,6 +25,24 @@ namespace LaserDxf.Nx
 
             PlateSelection sel = NxPlate.Select(s, log);
             if (sel == null) return;
+
+            if (cfg.ShowOptionsDialog && !OptionsDialog.Show(cfg, NxUtil.PartLabel(sel.Part)))
+            {
+                lw.WriteLine("Laser DXF: cancelled.");
+                return;
+            }
+
+            Vec3? etchPick = null;
+            if (string.Equals(cfg.EtchPlacement, "Pick", StringComparison.OrdinalIgnoreCase))
+            {
+                Vec3 p;
+                if (sel.FromOccurrence)
+                    cfgWarnings.Add("Picking the part-number position only works with the plate part displayed on its own - placed automatically.");
+                else if (NxPlate.PickPoint("Click on the plate where the part number should go (Cancel = automatic)", out p))
+                    etchPick = p;
+                else
+                    cfgWarnings.Add("No point picked - part number placed automatically.");
+            }
 
             AnalysisOptions opt = cfg.ToAnalysisOptions();
             if (cfg.XAlign == XAlignMode.Hint)
@@ -40,7 +58,7 @@ namespace LaserDxf.Nx
             string note;
             int faceId = NxPlate.PlateFaceId(sel, ex, m, opt, log, out note);
 
-            ExportRun run = ExportPipeline.Prepare(m, faceId, cfg, opt, note);
+            ExportRun run = ExportPipeline.Prepare(m, faceId, cfg, opt, note, etchPick);
             run.Version = Version;
             run.Warnings.InsertRange(0, cfgWarnings);
             run.Notes.AddRange(log);

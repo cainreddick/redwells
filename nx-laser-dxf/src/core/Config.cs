@@ -69,11 +69,11 @@ namespace LaserDxf.Core
         public bool EtchAllowRotate90 = true;
 
         // attributes
-        public AttrRef IdAttr = new AttrRef("ID", "MCAD");
-        public AttrRef RevisionAttr = new AttrRef("Revision", "MCAD Revision");
+        public AttrRef IdAttr = new AttrRef("DB_PART_NO", "ONE4_MCAD");
+        public AttrRef RevisionAttr = new AttrRef("DB_PART_REV", "ONE4_MCADRevision");
         public AttrRef FallbackIdAttr = new AttrRef("Part_Number", "Lentus Attributes");
-        public AttrRef NameAttr = new AttrRef("DB_PART_NAME", "MCAD");
-        public AttrRef MaterialAttr = new AttrRef("Polar_Material", "MCAD Revision");
+        public AttrRef NameAttr = new AttrRef("DB_PART_NAME", "ONE4_MCAD");
+        public AttrRef MaterialAttr = new AttrRef("Polar_Material", "ONE4_MCADRevision");
         public AttrRef ThicknessAttr = new AttrRef("Matl_Thk", "Materials");
 
         // batch (phase 2)
@@ -285,6 +285,11 @@ namespace LaserDxf.Core
             c.EtchMinHeight = e.Num("minTextHeight", c.EtchMinHeight, 0.5, 100);
             c.EtchClearance = e.Num("clearance", c.EtchClearance, 0, 100);
             c.EtchPlacement = e.Str("placement", c.EtchPlacement);
+            if (!string.Equals(c.EtchPlacement, "Auto", StringComparison.OrdinalIgnoreCase) && !string.Equals(c.EtchPlacement, "Pick", StringComparison.OrdinalIgnoreCase))
+            {
+                warnings.Add("Config: etch.placement = \"" + c.EtchPlacement + "\" should be Auto or Pick - using Auto");
+                c.EtchPlacement = "Auto";
+            }
             c.EtchAllowRotate90 = e.Bool("allowRotate90", c.EtchAllowRotate90);
             e.Finish();
 

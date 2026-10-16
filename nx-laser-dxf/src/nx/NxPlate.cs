@@ -15,6 +15,8 @@ namespace LaserDxf.Nx
         /// <summary>The face the user picked, or null if they picked the body.</summary>
         public Face Face;
         public Part Part;
+        /// <summary>The user picked inside an assembly (geometry was mapped to the component part).</summary>
+        public bool FromOccurrence;
     }
 
     public static class NxPlate
@@ -73,11 +75,13 @@ namespace LaserDxf.Nx
             if (sel.Face != null && sel.Face.IsOccurrence)
             {
                 sel.Face = (Face)sel.Face.Prototype;
+                sel.FromOccurrence = true;
                 log.Add("Selection was an assembly occurrence; using the component part's face.");
             }
             if (sel.Body != null && sel.Body.IsOccurrence)
             {
                 sel.Body = (Body)sel.Body.Prototype;
+                sel.FromOccurrence = true;
                 log.Add("Selection was an assembly occurrence; using the component part's body.");
             }
             if (sel.Face != null)
@@ -92,6 +96,26 @@ namespace LaserDxf.Nx
             sel.Part = sel.Body.OwningPart as Part;
             if (sel.Part == null) throw new PlateException("Could not find the part that owns the selected body.");
             return sel;
+        }
+
+        /// <summary>Asks the user to click on the plate where the part number should go.
+        /// Returns false if they cancel. The point is NX's cursor position on the picked face.</summary>
+        public static bool PickPoint(string message, out Vec3 point)
+        {
+            point = Vec3.Zero;
+            Selection.MaskTriple[] mask =
+            {
+                new Selection.MaskTriple(UFConstants.UF_solid_type, 0, UFConstants.UF_UI_SEL_FEATURE_ANY_FACE)
+            };
+            TaggedObject picked;
+            Point3d cursor;
+            Selection.Response resp = UI.GetUI().SelectionManager.SelectTaggedObject(
+                message, "Laser DXF - part number position",
+                Selection.SelectionScope.AnyInAssembly, Selection.SelectionAction.ClearAndEnableSpecific,
+                false, false, mask, out picked, out cursor);
+            if (resp != Selection.Response.ObjectSelected && resp != Selection.Response.ObjectSelectedByName) return false;
+            point = new Vec3(cursor.X, cursor.Y, cursor.Z);
+            return true;
         }
 
         /// <summary>Picks the face to export: the selected one, or the plate face of the selected body.</summary>

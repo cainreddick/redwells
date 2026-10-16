@@ -37,6 +37,16 @@ namespace LaserDxf.Core
         {
             var d = new HoleFeatureData { FeatureName = f.Name };
             d.HoleType = Unquote(f.Prop("Types") ?? f.Prop("Type") ?? f.Prop("HoleType"));
+            if (d.HoleType.Length == 0)
+            {
+                // Different NX versions name it differently: take any *Type(s) property whose value is a hole type.
+                foreach (var kv in f.Props)
+                    if ((kv.Key.EndsWith("Type", StringComparison.Ordinal) || kv.Key.EndsWith("Types", StringComparison.Ordinal)) && Unquote(kv.Value).EndsWith("Hole", StringComparison.OrdinalIgnoreCase))
+                    {
+                        d.HoleType = Unquote(kv.Value);
+                        break;
+                    }
+            }
             if (d.HoleType.Length > 0)
             {
                 d.Form = Unquote(f.Prop(d.HoleType + "Form"));
@@ -72,6 +82,26 @@ namespace LaserDxf.Core
             return s;
         }
 
+        /// <summary>Hole features behind a hole: the features that made its wall faces, plus their
+        /// ancestors (a Pattern or Mirror instance points back to the Hole feature it copies).</summary>
+        static List<FeatureInfo> HoleFeaturesFor(CutHole ch, Dictionary<int, FeatureInfo> featById)
+        {
+            var result = new List<FeatureInfo>();
+            var seen = new IntSet();
+            var queue = new Queue<KeyValuePair<int, int>>();
+            foreach (int fid in ch.Hole.FeatureIds) queue.Enqueue(new KeyValuePair<int, int>(fid, 0));
+            while (queue.Count > 0)
+            {
+                var item = queue.Dequeue();
+                FeatureInfo f;
+                if (!seen.Add(item.Key) || !featById.TryGetValue(item.Key, out f)) continue;
+                if (f.ClassName == "HolePackage") result.Add(f);
+                if (item.Value < 4)
+                    foreach (int pid in f.ParentIds) queue.Enqueue(new KeyValuePair<int, int>(pid, item.Value + 1));
+            }
+            return result;
+        }
+
         public static void Classify(BodyModel m, ProfileResult profile, LaserConfig c, List<string> warnings)
         {
             var featById = new Dictionary<int, FeatureInfo>();
@@ -80,14 +110,26 @@ namespace LaserDxf.Core
             foreach (CutHole ch in profile.Holes)
             {
                 if (ch.Circle == null) continue; // labels are for round holes only
+                var why = new List<string>();
 
-                // 1. NX Hole feature
-                if (c.UseHoleFeatures)
+                // 1. NX Hole feature (directly, or behind a pattern/mirror)
+                List<FeatureInfo> holeFeats = HoleFeaturesFor(ch, featById);
+                if (holeFeats.Count == 0)
                 {
-                    foreach (int fid in ch.Hole.FeatureIds)
+                    var names = new List<string>();
+                    foreach (int fid in ch.Hole.FeatureIds) { FeatureInfo f; if (featById.TryGetValue(fid, out f)) names.Add(f.Name); }
+                    why.Add(names.Count > 0 ? "made by " + string.Join(", ", names.ToArray()) + " (no Hole feature)" : "no feature found for its faces");
+                }
+                else if (!c.UseHoleFeatures) why.Add("Hole feature data switched off in the config");
+                else
+                {
+                    foreach (FeatureInfo f in holeFeats)
                     {
-                        FeatureInfo f;
-                        if (!featById.TryGetValue(fid, out f) || f.ClassName != "HolePackage") continue;
+                        if (f.Props.Count == 0)
+                        {
+                            why.Add("Hole feature " + f.Name + ": its settings could not be read (see Notes)");
+                            continue;
+                        }
                         HoleFeatureData d = ParseHoleFeature(f);
                         if (d.IsThreaded && d.ThreadSize.Length > 0)
                         {
@@ -102,6 +144,9 @@ namespace LaserDxf.Core
                             ch.Label = c.CountersinkLabel;
                             ch.LabelSource = "hole feature " + f.Name + " (countersunk)";
                         }
+                        else
+                            why.Add("Hole feature " + f.Name + ": type \"" + d.HoleType + "\", form \"" + d.Form + "\"" +
+                                    (d.IsThreaded ? ", thread size not found" : ", not threaded or countersunk"));
                         if (ch.Label.Length > 0) break;
                     }
                 }
@@ -128,6 +173,15 @@ namespace LaserDxf.Core
                         ch.Label = best.Label;
                         ch.LabelSource = "table dia " + Fmt.N(best.Diameter, 3) + " +/- " + Fmt.N(best.Tolerance, 3);
                     }
+                    else
+                    {
+                        LabelRule nearest = null;
+                        foreach (var r in c.LabelTable)
+                            if (nearest == null || Math.Abs(ch.CutDiameter - r.Diameter) < Math.Abs(ch.CutDiameter - nearest.Diameter)) nearest = r;
+                        why.Add("dia " + Fmt.N(ch.CutDiameter, 3) + " is not in the label table" +
+                                (nearest == null ? "" : " (nearest: " + nearest.Label + " dia " + Fmt.N(nearest.Diameter, 3) + " +/- " + Fmt.N(nearest.Tolerance, 3) + ")"));
+                    }
+                    if (ch.Label.Length == 0) ch.Note = string.Join("; ", why.ToArray());
                 }
 
                 // Optional laser cut diameter for this label.

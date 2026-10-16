@@ -14,7 +14,7 @@ $MCS -target:library -r:System.dll -out:build/LaserDxf.Core.dll src/core/*.cs
 # 2) Every merged journal against the NXOpen stubs.
 $MCS -target:library -r:System.dll -out:build/NXOpenStubs.dll stubs/NXOpenStubs.cs
 for j in dist/*.cs; do
-  $MCS -target:library -r:System.dll -r:build/NXOpenStubs.dll -out:"build/$(basename "$j" .cs).dll" "$j"
+  $MCS -target:library -r:System.dll -r:System.Drawing.dll -r:System.Windows.Forms.dll -r:build/NXOpenStubs.dll -out:"build/$(basename "$j" .cs).dll" "$j"
   echo "compile-checked $j"
 done
 

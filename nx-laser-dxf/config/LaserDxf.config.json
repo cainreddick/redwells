@@ -7,7 +7,7 @@
   // also drops the separator before it, so "{ID}-{REV}" without a revision gives "{ID}".
   "fileNameFormat": "{ID}-{REV}.dxf",
   "askBeforeOverwrite": true,
-  "showOptionsDialog": true,          // step 5
+  "showOptionsDialog": true,          // options dialog before each export (orientation, etch position, text mode, DXF version, folder)
 
   "geometry": {
     "tolerance": 0.01,                // mm, matching/flatness tolerance
@@ -44,17 +44,19 @@
     "textHeight": 5,
     "minTextHeight": 3,
     "clearance": 3,
-    "placement": "Auto",              // "Auto" or "Pick"
+    "placement": "Auto",              // "Auto" (largest clear area) or "Pick" (click on the plate)
     "allowRotate90": true
   },
 
-  // Teamcenter attributes: title (or alias) + category, as shown in File > Properties > Attributes.
+  // Teamcenter attributes, by the names NX Open reports (not the dialog's display names):
+  // title (or alias) + category. If an ID or revision isn't found, the listing window prints
+  // every attribute with its real category and title.
   "attributes": {
-    "id":         { "title": "ID",             "category": "MCAD" },
-    "revision":   { "title": "Revision",       "category": "MCAD Revision" },
+    "id":         { "title": "DB_PART_NO",     "category": "ONE4_MCAD" },          // dialog: MCAD / ID
+    "revision":   { "title": "DB_PART_REV",    "category": "ONE4_MCADRevision" },  // dialog: MCAD Revision / Revision
     "fallbackId": { "title": "Part_Number",    "category": "Lentus Attributes", "ignoreValues": ["model-plain-1"] },
-    "name":       { "title": "DB_PART_NAME",   "category": "MCAD" },
-    "material":   { "title": "Polar_Material", "category": "MCAD Revision" },
+    "name":       { "title": "DB_PART_NAME",   "category": "ONE4_MCAD" },
+    "material":   { "title": "Polar_Material", "category": "ONE4_MCADRevision" },
     "thickness":  { "title": "Matl_Thk",       "category": "Materials" }
   },
 

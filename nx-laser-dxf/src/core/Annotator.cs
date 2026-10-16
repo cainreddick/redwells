@@ -183,6 +183,47 @@ namespace LaserDxf.Core
             return fallback;
         }
 
+        /// <summary>Centres the etch text on a point the user picked: horizontal, else rotated 90 degrees,
+        /// shrinking to the minimum height if needed. Returns null (caller falls back to automatic)
+        /// if the point is not on the plate.</summary>
+        public static PlacedText PlaceEtchAt(string text, Vec2 at, Obstacles obs, LaserConfig c, List<string> warnings)
+        {
+            if (text.Trim().Length == 0) return null;
+            if (!Layout2.PointInPolygon(at, obs.Outer))
+            {
+                warnings.Add("The picked point (" + Fmt.N(at.X, 1) + ", " + Fmt.N(at.Y, 1) + ") is not on the plate - part number placed automatically.");
+                return null;
+            }
+            PlacedText best = null;
+            double minH = Math.Min(c.EtchMinHeight, c.EtchHeight);
+            for (double h = c.EtchHeight; h >= minH - 1e-9; h -= 0.5)
+            {
+                double w = StrokeFont.Measure(text, h);
+                foreach (double rot in c.EtchAllowRotate90 ? new[] { 0.0, 90.0 } : new[] { 0.0 })
+                {
+                    Rect2 box = Rect2.FromCenter(at, rot == 0 ? w : h, rot == 0 ? h : w);
+                    double clear = obs.Clearance(box, -1);
+                    var t = new PlacedText
+                    {
+                        Text = text, Height = h, RotationDeg = rot, Box = box, Clearance = clear,
+                        Origin = rot == 0 ? new Vec2(box.MinX, box.MinY) : new Vec2(box.MaxX, box.MinY),
+                        Position = (rot == 0 ? "horizontal" : "vertical") + " at the picked point (" + Fmt.N(at.X, 1) + ", " + Fmt.N(at.Y, 1) + ")"
+                    };
+                    if (clear >= c.EtchClearance)
+                    {
+                        t.Clear = true;
+                        if (h < c.EtchHeight) warnings.Add("Part number shrunk to " + Fmt.N(h, 1) + " mm high to fit at the picked point.");
+                        obs.Texts.Add(box);
+                        return t;
+                    }
+                    if (best == null || clear > best.Clearance) best = t;
+                }
+            }
+            warnings.Add("The part number overlaps something or is close to an edge at the picked point - check it in the DXF.");
+            obs.Texts.Add(best.Box);
+            return best;
+        }
+
         /// <summary>Grid search, refined twice around the best candidates.</summary>
         static double BestSpot(Obstacles obs, Bounds2 plate, double w, double h, out Vec2 centre)
         {

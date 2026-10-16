@@ -12,6 +12,8 @@ namespace LaserDxf.Core
         public Vec2 Center;
         public string Label = "";
         public string LabelSource = "";
+        /// <summary>Why a round hole got no label (for the report).</summary>
+        public string Note = "";
         public DxfCircle Circle;
     }
 

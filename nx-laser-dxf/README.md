@@ -13,9 +13,9 @@ The design is described in [ARCHITECTURE.md](ARCHITECTURE.md).
 |---|---|---|
 | 1. Select a face, dump edge data | `dist/LaserDxfProbe.cs` | done: tested in NX 2412 |
 | 2. Plain profile DXF + config | `dist/LaserDxf.cs` | done: tested in NX 2412 |
-| 3. Hole classification | `dist/LaserDxf.cs` | **ready to test** |
-| 4. Hole labels | `dist/LaserDxf.cs` | **ready to test** |
-| 5. Part number etch (auto placement) | `dist/LaserDxf.cs` | **ready to test**; options dialog and pick-a-point come next |
+| 3. Hole classification | `dist/LaserDxf.cs` | tested in NX 2412 (table); Hole-feature path being fixed |
+| 4. Hole labels | `dist/LaserDxf.cs` | tested in NX 2412 |
+| 5. Part number etch, options dialog, pick-a-point | `dist/LaserDxf.cs` | etch tested; dialog and pick **ready to test** |
 
 ## Running it
 
@@ -24,13 +24,17 @@ The design is described in [ARCHITECTURE.md](ARCHITECTURE.md).
    set the environment variable `LASER_DXF_CONFIG`.
 2. Open a plate part and play `LaserDxf.cs` (Tools > Journal > Play).
 3. Select the plate face (or the body).
-4. The DXF is written to `<outputFolder>\{ID}-{REV}.dxf`. If the file already exists, you're
+4. The options dialog opens, pre-filled from the config: orientation (longest edge or WCS),
+   part-number position (automatic or pick a point), text output (vectors or DXF TEXT),
+   DXF version and output folder. Your choices apply to this run only. Set
+   `"showOptionsDialog": false` to skip the dialog.
+5. The DXF is written to `<outputFolder>\{ID}-{REV}.dxf`. If the file already exists, you're
    asked before it's overwritten.
    - **CUT** layer (colour 7): the profile and the through holes, as true lines, arcs and
      circles. Countersunk and counterbored holes are cut at the bore.
    - **ETCH** layer (colour 5): the hole labels and the part number. By default they are
      single-stroke vectors; set `"textMode": "Text"` for DXF TEXT entities.
-5. The listing window shows the part number and where it came from, the hole counts, what was
+6. The listing window shows the part number and where it came from, the hole counts, what was
    labelled and why, where the part number went, any warnings, and the output path. A
    detailed log is appended to `<outputFolder>\_logs\`.
 
@@ -44,7 +48,9 @@ For each round through hole, in this order:
 3. **Diameter table** (`labels.table`): the modelled bore diameter ± tolerance gives the
    label. A row's `cutDiameter`, if set, replaces the hole diameter in the DXF.
 
-Holes matching none of these get no label. Each label is tried right of the hole, then above,
+Holes matching none of these get no label, and the listing says why for each one, e.g.
+`made by Extrude(5) (no Hole feature); dia 9 is not in the label table`. Holes copied by a
+Pattern or Mirror feature are traced back to the Hole feature they came from. Each label is tried right of the hole, then above,
 left, below, then on the diagonals. The first spot clear of other holes, other labels and the
 plate edge is used. If there's no clear spot, the least bad one is used and a warning is
 listed.

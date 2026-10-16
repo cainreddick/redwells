@@ -86,6 +86,21 @@ namespace LaserDxf.Core
                 foreach (var kv in byLabel) lp.Add(kv.Key + " x" + kv.Value);
                 L.Add("Labelled     : " + labelled + " of " + circles + " round holes" + (lp.Count > 0 ? "  (" + string.Join(", ", lp.ToArray()) + ")" : ""));
                 foreach (var kv in sources) L.Add("               " + kv.Key);
+                var unlabelled = new SortedDictionary<string, List<string>>();
+                foreach (var h in r.Profile.Holes)
+                {
+                    if (h.Circle == null || h.Label.Length > 0) continue;
+                    List<string> at;
+                    if (!unlabelled.TryGetValue(h.Note, out at)) unlabelled[h.Note] = at = new List<string>();
+                    at.Add("(" + Fmt.N(h.Center.X, 1) + ", " + Fmt.N(h.Center.Y, 1) + ")");
+                }
+                if (unlabelled.Count > 0)
+                {
+                    L.Add("Not labelled : (correct for plain clearance/fixing holes)");
+                    foreach (var kv in unlabelled)
+                        L.Add("               " + kv.Value.Count + " x " + kv.Key + "   at " +
+                              string.Join(" ", kv.Value.GetRange(0, Math.Min(4, kv.Value.Count)).ToArray()) + (kv.Value.Count > 4 ? " ..." : ""));
+                }
                 if (r.Etch != null)
                     L.Add("Etch         : \"" + r.Etch.Text + "\"  " + Fmt.N(r.Etch.Height, 1) + " mm high, " + r.Etch.Position);
                 L.Add("Entities     : " + r.Profile.Doc.Entities.Count + " (" + r.Profile.OuterEntityCount + " in the outer profile)");

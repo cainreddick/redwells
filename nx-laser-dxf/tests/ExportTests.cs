@@ -84,16 +84,17 @@ namespace LaserDxf.Tests
 
     public static class IdentityTests
     {
+        /// <summary>Attributes as NX Open reported them for a real Teamcenter part (step 3 run).</summary>
         public static List<AttributeEntry> Attrs()
         {
             return new List<AttributeEntry>
             {
                 new AttributeEntry { Category = "Lentus Attributes", Title = "Part_Number", Value = "model-plain-1" },
-                new AttributeEntry { Category = "MCAD", Title = "ID", Value = "S180-06068-47009" },
-                new AttributeEntry { Category = "MCAD", Title = "DB_PART_NAME", Alias = "Name", Value = "RING SUPPORT - JIG" },
-                new AttributeEntry { Category = "MCAD Revision", Title = "Revision", Value = "1" },
-                new AttributeEntry { Category = "MCAD Revision", Title = "Polar_Material", Alias = "Material", Value = "MILD STEEL" },
-                new AttributeEntry { Category = "MCAD Revision", Title = "Treatment", Value = "", IsSet = false },
+                new AttributeEntry { Category = "ONE4_MCAD", Title = "DB_PART_NO", Alias = "Part Number", Value = "S180-06068-47009", Flags = "pdm" },
+                new AttributeEntry { Category = "ONE4_MCAD", Title = "DB_PART_NAME", Alias = "Part Name", Value = "RING SUPPORT - JIG", Flags = "pdm" },
+                new AttributeEntry { Category = "ONE4_MCADRevision", Title = "DB_PART_REV", Alias = "Part Revision", Value = "1", Flags = "pdm" },
+                new AttributeEntry { Category = "ONE4_MCADRevision", Title = "Polar_Material", Value = "MILD STEEL", Flags = "pdm" },
+                new AttributeEntry { Category = "ONE4_MCADRevision", Title = "Finish", Value = "", Flags = "pdm" },
                 new AttributeEntry { Category = "Materials", Title = "Matl_Thk", Value = "6" },
             };
         }
@@ -118,8 +119,13 @@ namespace LaserDxf.Tests
             TestMain.Check(p.Warnings.Count == 0, "no warnings");
 
             var byAlias = new LaserConfig();
-            byAlias.NameAttr = new AttrRef("name", "mcad"); // alias, different case
+            byAlias.NameAttr = new AttrRef("part name", "one4_mcad"); // alias, different case
             TestMain.Check(Identity.Resolve(m, byAlias).Name == "RING SUPPORT - JIG", "matches alias case-insensitively");
+
+            var wrongCategory = new LaserConfig();
+            wrongCategory.IdAttr = new AttrRef("DB_PART_NO", "MCAD"); // the dialog's display category
+            PartIdentity w = Identity.Resolve(m, wrongCategory);
+            TestMain.Check(w.Id == "S180-06068-47009" && w.Warnings.Count == 1 && w.Warnings[0].Contains("ONE4_MCAD"), "found in another category, with a note");
         }
 
         public static void TestFallbackChain()

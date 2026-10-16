@@ -231,6 +231,17 @@ namespace LaserDxf.Nx
             }
         }
 
+        /// <summary>Calls a parameterless method by reflection; null if missing or it throws.</summary>
+        public static object Call(object obj, string method)
+        {
+            try
+            {
+                MethodInfo mi = obj.GetType().GetMethod(method, Type.EmptyTypes);
+                return mi == null ? null : mi.Invoke(obj, null);
+            }
+            catch { return null; }
+        }
+
         /// <summary>Calls obj.method(title, AttributeType, -1) by reflection, trying the String then
         /// Any attribute type. Returns null if the method is missing or the attribute isn't there.</summary>
         public static object CallByTitle(object obj, string method, string title)
