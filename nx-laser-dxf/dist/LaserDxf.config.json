@@ -39,7 +39,7 @@
   },
 
   "etch": {                           // step 5
-    "format": "{ID}-{REV}",
+    "format": "{ID}-{REV}",           // {REV} = A, B... with revisionAsLetter; {REVRAW} = 1, 2... always
     "revisionAsLetter": true,         // 1 -> A, 2 -> B ... 27 -> AA
     "textHeight": 5,
     "minTextHeight": 3,
@@ -57,7 +57,8 @@
     "fallbackId": { "title": "Part_Number",    "category": "Lentus Attributes", "ignoreValues": ["model-plain-1"] },
     "name":       { "title": "DB_PART_NAME",   "category": "ONE4_MCAD" },
     "material":   { "title": "Polar_Material", "category": "ONE4_MCADRevision" },
-    "thickness":  { "title": "Matl_Thk",       "category": "Materials" }
+    "thickness":  { "title": "Matl_Thk",       "category": "Materials" },
+    "revisionFromPartName": true      // no revision attribute? use the "/1" of a part name like S180-06068-47020/1
   },
 
   "batch": {                          // phase 2

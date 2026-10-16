@@ -142,6 +142,24 @@ namespace LaserDxf.Tests
             TestMain.Check(p.Warnings.Count == 1, "one warning about the fallback");
         }
 
+        public static void TestRevisionFromPartName()
+        {
+            TestMain.Check(Identity.RevisionFromPartName("S180-06068-47020/1") == "1", "ID/REV");
+            TestMain.Check(Identity.RevisionFromPartName("S180-06068-47020/1-PIPE SUPPORT - JIG") == "1", "ID/REV-NAME");
+            TestMain.Check(Identity.RevisionFromPartName("S180-06068-47020") == null, "no revision");
+
+            var attrs = Attrs();
+            attrs.RemoveAll(a => a.Title == "DB_PART_REV");
+            var m = new BodyModel { PartName = "S180-06068-47009/2", Attributes = attrs };
+            PartIdentity p = Identity.Resolve(m, new LaserConfig());
+            TestMain.Check(p.Revision == "B" && p.RevisionRaw == "2", "revision from the part name, as a letter: " + p.Revision);
+            var t = p.Tokens();
+            TestMain.Check(Identity.Format("{ID}-{REV}", t, null) == "S180-06068-47009-B" && Identity.Format("{ID}-{REVRAW}", t, null) == "S180-06068-47009-2", "etch formats");
+
+            var off = new LaserConfig { RevisionFromPartName = false };
+            TestMain.Check(Identity.Resolve(m, off).Revision == "", "fallback can be switched off");
+        }
+
         public static void TestFormatDropsSeparatorForMissingValue()
         {
             var t = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { { "ID", "S180-1" }, { "REV", "" } };

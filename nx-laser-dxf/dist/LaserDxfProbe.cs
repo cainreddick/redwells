@@ -1672,6 +1672,8 @@ namespace LaserDxf.Core
         public AttrRef NameAttr = new AttrRef("DB_PART_NAME", "ONE4_MCAD");
         public AttrRef MaterialAttr = new AttrRef("Polar_Material", "ONE4_MCADRevision");
         public AttrRef ThicknessAttr = new AttrRef("Matl_Thk", "Materials");
+        /// <summary>If the revision attribute is missing, take it from a Teamcenter part name "ID/REV".</summary>
+        public bool RevisionFromPartName = true;
 
         // batch (phase 2)
         public double RequiredThickness = 6;
@@ -1897,6 +1899,7 @@ namespace LaserDxf.Core
             c.NameAttr = a.Attr("name", c.NameAttr);
             c.MaterialAttr = a.Attr("material", c.MaterialAttr);
             c.ThicknessAttr = a.Attr("thickness", c.ThicknessAttr);
+            c.RevisionFromPartName = a.Bool("revisionFromPartName", c.RevisionFromPartName);
             a.Finish();
 
             Section b = s.Sub("batch");
@@ -3524,6 +3527,18 @@ namespace LaserDxf.Core
             return slash > 0 ? s.Substring(0, slash) : s;
         }
 
+        /// <summary>Teamcenter part names look like "ID/REV" (e.g. "S180-06068-47020/1"); returns REV or null.</summary>
+        public static string RevisionFromPartName(string partName)
+        {
+            string s = (partName ?? "").Trim();
+            int slash = s.LastIndexOf('/');
+            if (slash <= 0 || slash == s.Length - 1) return null;
+            string rev = s.Substring(slash + 1).Trim();
+            int dash = rev.IndexOf('-');                 // "1-PIPE SUPPORT ..." style names
+            if (dash > 0) rev = rev.Substring(0, dash).Trim();
+            return rev.Length > 0 && rev.Length <= 4 ? rev : null;
+        }
+
         public static PartIdentity Resolve(BodyModel m, LaserConfig c)
         {
             var p = new PartIdentity();
@@ -3551,8 +3566,14 @@ namespace LaserDxf.Core
             string rev = Find(m.Attributes, c.RevisionAttr, p.Warnings);
             if (rev == null)
             {
-                p.Warnings.Add("Attribute " + c.RevisionAttr + " not found - revision left out.");
                 p.AttributesMissing = true;
+                string fromName = c.RevisionFromPartName ? RevisionFromPartName(m.PartName) : null;
+                if (fromName != null)
+                {
+                    rev = fromName;
+                    p.Warnings.Add("Attribute " + c.RevisionAttr + " not found - used the revision \"" + rev + "\" from the part name \"" + m.PartName + "\".");
+                }
+                else p.Warnings.Add("Attribute " + c.RevisionAttr + " not found - revision left out.");
             }
             p.RevisionRaw = rev ?? "";
             p.Revision = rev == null ? "" : (c.RevisionAsLetter ? RevisionLetters(rev) : rev);

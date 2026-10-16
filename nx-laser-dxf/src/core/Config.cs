@@ -75,6 +75,8 @@ namespace LaserDxf.Core
         public AttrRef NameAttr = new AttrRef("DB_PART_NAME", "ONE4_MCAD");
         public AttrRef MaterialAttr = new AttrRef("Polar_Material", "ONE4_MCADRevision");
         public AttrRef ThicknessAttr = new AttrRef("Matl_Thk", "Materials");
+        /// <summary>If the revision attribute is missing, take it from a Teamcenter part name "ID/REV".</summary>
+        public bool RevisionFromPartName = true;
 
         // batch (phase 2)
         public double RequiredThickness = 6;
@@ -300,6 +302,7 @@ namespace LaserDxf.Core
             c.NameAttr = a.Attr("name", c.NameAttr);
             c.MaterialAttr = a.Attr("material", c.MaterialAttr);
             c.ThicknessAttr = a.Attr("thickness", c.ThicknessAttr);
+            c.RevisionFromPartName = a.Bool("revisionFromPartName", c.RevisionFromPartName);
             a.Finish();
 
             Section b = s.Sub("batch");
