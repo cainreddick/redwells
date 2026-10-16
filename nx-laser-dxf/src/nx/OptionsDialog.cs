@@ -59,7 +59,11 @@ namespace LaserDxf.Nx
                 f.Controls.Add(browse);
                 y += 44;
 
-                var ok = new Button { Text = "Export", Left = 250, Top = y, Width = 85, Height = 28, DialogResult = DialogResult.OK };
+                var preview = new CheckBox { Text = "Preview and adjust the text before writing the DXF", Left = 14, Top = y, Width = 416, Checked = cfg.ShowPreview };
+                f.Controls.Add(preview);
+                y += 32;
+
+                var ok = new Button { Text = "Continue", Left = 250, Top = y, Width = 85, Height = 28, DialogResult = DialogResult.OK };
                 var cancel = new Button { Text = "Cancel", Left = 341, Top = y, Width = 85, Height = 28, DialogResult = DialogResult.Cancel };
                 f.Controls.Add(ok);
                 f.Controls.Add(cancel);
@@ -74,6 +78,7 @@ namespace LaserDxf.Nx
                 cfg.TextMode = text[1].Checked ? TextMode.Text : TextMode.Stroke;
                 cfg.DxfVersion = version.SelectedIndex == 1 ? DxfVersion.R12 : DxfVersion.R2000;
                 if (folder.Text.Trim().Length > 0) cfg.OutputFolder = folder.Text.Trim();
+                cfg.ShowPreview = preview.Checked;
                 return true;
             }
         }

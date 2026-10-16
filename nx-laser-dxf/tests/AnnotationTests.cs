@@ -300,3 +300,98 @@ namespace LaserDxf.Tests
         }
     }
 }
+
+namespace LaserDxf.Tests
+{
+    using System;
+    using LaserDxf.Core;
+
+    public static class EditorTests
+    {
+        static ExportRun Plate()
+        {
+            var s = new Synth(6);
+            s.Rectangle(200, 100);
+            s.SimpleHole(30, 50, 5.8);
+            s.SimpleHole(70, 50, 5.5);
+            s.M.Attributes = IdentityTests.Attrs();
+            var c = new LaserConfig();
+            return ExportPipeline.Prepare(s.M, s.TopFace, c, c.ToAnalysisOptions(), "t");
+        }
+
+        public static void TestHitMoveAndProblems()
+        {
+            ExportRun r = Plate();
+            var ed = new LayoutEditor(r);
+            TestMain.Check(ed.Items.Count == 3 && ed.Problems().Count == 0, "2 labels + part number, all clear initially");
+            PlacedText etch = ed.HitTest(r.Etch.Box.Center, 0.1);
+            TestMain.Check(etch == r.Etch, "hit test finds the part number");
+            TestMain.Check(ed.HitTest(new Vec2(-50, -50), 0.1) == null, "empty space hits nothing");
+
+            // Drag the part number across the plate edge: flagged red.
+            Vec2 c = etch.Box.Center;
+            ed.Move(etch, new Vec2(200 - etch.Box.MaxX + 5, 0));
+            TestMain.Check(ed.Status(etch) == ItemStatus.Overlap, "part number over the cut line is flagged: " + ed.Describe(etch));
+            TestMain.Check(ed.Problems().Count == 1, "one problem");
+
+            // Back inside, near a hole: tight / overlap, then somewhere clear: OK.
+            ed.Move(etch, c - etch.Box.Center);
+            TestMain.Check(ed.Status(etch) == ItemStatus.Ok, "moved back: OK");
+
+            // The edit reaches the DXF.
+            ed.Move(etch, new Vec2(-10, 0));
+            ed.Apply();
+            TestMain.Check(r.EditSummary.Contains("1 item(s) moved"), r.EditSummary);
+            TestMain.Near(r.Etch.Origin.X, etch.Origin.X, 0, "same object");
+            int inNew = 0, leftBehind = 0;
+            Rect2 vacated = new Rect2(etch.Box.MaxX + 0.01, etch.Box.MinY, etch.Box.MaxX + 10, etch.Box.MaxY);
+            foreach (var e in r.Profile.Doc.Entities)
+            {
+                var pl = e as DxfPolyline;
+                if (pl == null || pl.Layer != "ETCH") continue;
+                bool all = true;
+                foreach (var p in pl.Points)
+                {
+                    if (Layout2.PointRect(p, etch.Box) > 1e-6) all = false;
+                    if (Layout2.PointRect(p, vacated) == 0) leftBehind++;
+                }
+                if (all) inNew++;
+            }
+            TestMain.Check(inNew == StrokeFont.Render(etch.Text, new Vec2(0, 0), etch.Height, 0).Count, "every part-number stroke at the new place (" + inNew + ")");
+            TestMain.Check(leftBehind == 0, "nothing left at the old place");
+        }
+
+        public static void TestRotateEditDeleteReset()
+        {
+            ExportRun r = Plate();
+            var ed = new LayoutEditor(r);
+            PlacedText etch = r.Etch;
+            Vec2 c = etch.Box.Center;
+            double w = etch.Box.Width, h = etch.Box.Height;
+            ed.Rotate90(etch);
+            TestMain.Near(etch.Box.Center.X, c.X, 1e-9, "rotates about its centre (x)");
+            TestMain.Near(etch.Box.Center.Y, c.Y, 1e-9, "rotates about its centre (y)");
+            TestMain.Near(etch.Box.Width, h, 1e-9, "box turned: width = old height");
+            TestMain.Near(etch.Box.Height, w, 1e-9, "box turned: height = old width");
+            foreach (var st in StrokeFont.Render(etch.Text, etch.Origin, etch.Height, etch.RotationDeg))
+                foreach (var p in st)
+                    TestMain.Check(Layout2.PointRect(p, etch.Box) < 1e-6, "rendered strokes stay in the rotated box");
+            ed.Rotate90(etch); ed.Rotate90(etch); ed.Rotate90(etch);
+            TestMain.Near(etch.RotationDeg, 0, 1e-12, "four turns = back to horizontal");
+            TestMain.Near(etch.Box.Center.X, c.X, 1e-9, "still centred");
+
+            PlacedText label = r.Labels[0];
+            ed.SetText(label, "R6.1");
+            TestMain.Check(label.Text == "R6.1" && Math.Abs(label.Box.Width - StrokeFont.Measure("R6.1", label.Height)) < 1e-9, "text edited, box resized");
+            ed.Delete(r.Labels[1]);
+            ed.Apply();
+            int etchEntities = 0;
+            foreach (var e in r.Profile.Doc.Entities) if (e.Layer == "ETCH") etchEntities++;
+            int expected = StrokeFont.Render("R6.1", new Vec2(0, 0), 3, 0).Count + StrokeFont.Render(etch.Text, new Vec2(0, 0), 5, 0).Count;
+            TestMain.Check(etchEntities == expected, "deleted label left out of the DXF (" + etchEntities + " vs " + expected + ")");
+
+            ed.Reset();
+            TestMain.Check(!r.Labels[1].Deleted && label.Text == "R6" && Math.Abs(etch.Box.Center.X - c.X) < 1e-9, "reset restores everything");
+        }
+    }
+}

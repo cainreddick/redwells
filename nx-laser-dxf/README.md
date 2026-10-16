@@ -16,6 +16,8 @@ The design is described in [ARCHITECTURE.md](ARCHITECTURE.md).
 | 3. Hole classification | `dist/LaserDxf.cs` | tested in NX 2412 (table); Hole-feature path being fixed |
 | 4. Hole labels | `dist/LaserDxf.cs` | tested in NX 2412 |
 | 5. Part number etch, options dialog, pick-a-point | `dist/LaserDxf.cs` | etch tested; dialog and pick **ready to test** |
+| 6. Preview & adjust window | `dist/LaserDxf.cs` | **ready to test** |
+| 7. NX drawing-sheet layout + export from the sheet | | planned |
 
 ## Running it
 
@@ -28,13 +30,23 @@ The design is described in [ARCHITECTURE.md](ARCHITECTURE.md).
    part-number position (automatic or pick a point), text output (vectors or DXF TEXT),
    DXF version and output folder. Your choices apply to this run only. Set
    `"showOptionsDialog": false` to skip the dialog.
-5. The DXF is written to `<outputFolder>\{ID}-{REV}.dxf`. If the file already exists, you're
+5. The **preview window** shows the finished plate (unless switched off). Click a label or
+   the part number to select it, then:
+   - drag it, or nudge it with the arrow keys (0.5 mm, or 5 mm with Shift)
+   - `R` turns it 90°, `F2` or a double-click edits the text, `Del` deletes it
+   - *Reset all* undoes every edit
+   - the mouse wheel zooms, right-drag pans, and *Fit view* (Home) shows the whole plate
+
+   Text that crosses the cut line, a hole or other text is boxed in **red**; text that is too
+   close is boxed in **orange**. *Export DXF* warns if anything is still flagged. Nothing is
+   written until you click it, and *Cancel* writes nothing.
+6. The DXF is written to `<outputFolder>\{ID}-{REV}.dxf`. If the file already exists, you're
    asked before it's overwritten.
    - **CUT** layer (colour 7): the profile and the through holes, as true lines, arcs and
      circles. Countersunk and counterbored holes are cut at the bore.
    - **ETCH** layer (colour 5): the hole labels and the part number. By default they are
      single-stroke vectors; set `"textMode": "Text"` for DXF TEXT entities.
-6. The listing window shows the part number and where it came from, the hole counts, what was
+7. The listing window shows the part number and where it came from, the hole counts, what was
    labelled and why, where the part number went, any warnings, and the output path. A
    detailed log is appended to `<outputFolder>\_logs\`.
 
@@ -57,7 +69,9 @@ listed.
 
 ### Part number
 
-The text comes from `etch.format` (default `{ID}-{REV}`, with the revision as a letter). It is
+The text comes from `etch.format`, default `{ID}-{REV}`, e.g. `S180-06068-47005-1`. Set
+`revisionAsLetter` for `-A` style revisions. If the revision attribute is missing, the
+revision in the Teamcenter part name (`.../1`) is used. It is
 placed in the clearest spot on the plate: horizontal if it fits, otherwise turned 90°,
 otherwise shrunk down to `etch.minTextHeight`.
 

@@ -24,8 +24,8 @@ namespace LaserDxf.Core
             // Labels and part number.
             HoleClassifier.Classify(m, run.Profile, c, run.Warnings);
             Obstacles obs = Obstacles.From(m, run.Analysis, run.Profile);
+            run.Geometry = Obstacles.From(m, run.Analysis, run.Profile);
             run.Labels = Annotator.PlaceLabels(run.Profile, obs, c, run.Warnings);
-            foreach (var t in run.Labels) Annotator.Emit(run.Profile.Doc, t, c);
 
             run.EtchText = Identity.Format(c.EtchFormat, run.Identity.Tokens(), run.Warnings);
             string bad = StrokeFont.Unsupported(run.EtchText);
@@ -39,11 +39,23 @@ namespace LaserDxf.Core
             }
             if (run.Etch == null)
                 run.Etch = Annotator.PlaceEtch(run.EtchText, obs, plate, c, run.Warnings);
-            Annotator.Emit(run.Profile.Doc, run.Etch, c);
+            if (run.Etch != null) run.Etch.IsEtch = true;
 
             run.FileName = FileNameFor(run.Identity, c, run.Warnings);
-            run.DxfText = DxfWriter.Write(run.Profile.Doc, c.DxfVersion);
+            Finish(run);
             return run;
+        }
+
+        /// <summary>(Re)builds the DXF from the cut geometry and the current text items, so hand
+        /// edits made in the preview end up in the file. Deleted items are left out.</summary>
+        public static void Finish(ExportRun run)
+        {
+            DxfDocument doc = run.Profile.Doc;
+            doc.Entities.Clear();
+            doc.Entities.AddRange(run.Profile.CutEntities);
+            foreach (var t in run.Labels) if (!t.Deleted) Annotator.Emit(doc, t, run.Config);
+            if (run.Etch != null && !run.Etch.Deleted) Annotator.Emit(doc, run.Etch, run.Config);
+            run.DxfText = DxfWriter.Write(doc, run.Config.DxfVersion);
         }
 
         public static string FileNameFor(PartIdentity id, LaserConfig c, List<string> warnings)

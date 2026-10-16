@@ -114,7 +114,9 @@ namespace LaserDxf.Tests
         {
             var m = new BodyModel { PartName = "S180-06068-47009/1", Attributes = Attrs() };
             PartIdentity p = Identity.Resolve(m, new LaserConfig());
-            TestMain.Check(p.Id == "S180-06068-47009" && p.Revision == "A" && p.RevisionRaw == "1", "id + rev letter");
+            TestMain.Check(p.Id == "S180-06068-47009" && p.Revision == "1" && p.RevisionRaw == "1", "id + rev number (default)");
+            var letters = new LaserConfig { RevisionAsLetter = true };
+            TestMain.Check(Identity.Resolve(m, letters).Revision == "A", "rev letter when enabled");
             TestMain.Check(p.Name == "RING SUPPORT - JIG" && p.Material == "MILD STEEL" && p.Thickness == "6", "other attributes");
             TestMain.Check(p.Warnings.Count == 0, "no warnings");
 
@@ -152,9 +154,9 @@ namespace LaserDxf.Tests
             attrs.RemoveAll(a => a.Title == "DB_PART_REV");
             var m = new BodyModel { PartName = "S180-06068-47009/2", Attributes = attrs };
             PartIdentity p = Identity.Resolve(m, new LaserConfig());
-            TestMain.Check(p.Revision == "B" && p.RevisionRaw == "2", "revision from the part name, as a letter: " + p.Revision);
+            TestMain.Check(p.Revision == "2" && p.RevisionRaw == "2", "revision from the part name: " + p.Revision);
             var t = p.Tokens();
-            TestMain.Check(Identity.Format("{ID}-{REV}", t, null) == "S180-06068-47009-B" && Identity.Format("{ID}-{REVRAW}", t, null) == "S180-06068-47009-2", "etch formats");
+            TestMain.Check(Identity.Format("{ID}-{REV}", t, null) == "S180-06068-47009-2", "etch format");
 
             var off = new LaserConfig { RevisionFromPartName = false };
             TestMain.Check(Identity.Resolve(m, off).Revision == "", "fallback can be switched off");
@@ -212,10 +214,10 @@ namespace LaserDxf.Tests
             ExportRun r = Run(s, s.TopFace, new LaserConfig());
             DxfDocument d = r.Profile.Doc;
             TestMain.Check(Count<DxfLine>(d) == 4 + 4, "4 outer + 4 slot lines, got " + Count<DxfLine>(d));
-            TestMain.Check(r.Etch != null && r.Etch.Clear && r.Etch.Text == "S180-06068-47009-A", "part number etched");
+            TestMain.Check(r.Etch != null && r.Etch.Clear && r.Etch.Text == "S180-06068-47009-1", "part number etched");
             TestMain.Check(Count<DxfCircle>(d) == 4, "4 round through holes (blind one skipped), got " + Count<DxfCircle>(d));
             TestMain.Check(r.Profile.SkippedLoops == 1, "blind hole skipped");
-            TestMain.Check(r.FileName == "S180-06068-47009-A.dxf", "file name " + r.FileName);
+            TestMain.Check(r.FileName == "S180-06068-47009-1.dxf", "file name " + r.FileName);
             bool csAtBore = false;
             foreach (var h in r.Profile.Holes) if (h.Hole.HasCone && Math.Abs(h.CutDiameter - 6.6) < 1e-9) csAtBore = true;
             TestMain.Check(csAtBore, "countersunk hole cut at the bore");

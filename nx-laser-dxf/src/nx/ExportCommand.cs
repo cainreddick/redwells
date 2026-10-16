@@ -11,7 +11,7 @@ namespace LaserDxf.Nx
 
     public static class ExportCommand
     {
-        public const string Version = "0.4";
+        public const string Version = "0.5";
 
         public static void Run()
         {
@@ -60,6 +60,17 @@ namespace LaserDxf.Nx
 
             ExportRun run = ExportPipeline.Prepare(m, faceId, cfg, opt, note, etchPick);
             run.Version = Version;
+
+            if (cfg.ShowPreview)
+            {
+                var editor = new LayoutEditor(run);
+                if (!PreviewWindow.Show(editor, run.Identity.Id + "  (" + run.FileName + ")"))
+                {
+                    lw.WriteLine("Laser DXF: cancelled in the preview - nothing written.");
+                    return;
+                }
+                editor.Apply();
+            }
             run.Warnings.InsertRange(0, cfgWarnings);
             run.Notes.AddRange(log);
 

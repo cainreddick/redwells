@@ -19,7 +19,10 @@ namespace LaserDxf.Core
 
     public sealed class ProfileResult
     {
+        /// <summary>The final document: CutEntities plus the text written by ExportPipeline.Finish.</summary>
         public DxfDocument Doc = new DxfDocument();
+        /// <summary>Profile and holes only (CUT layer).</summary>
+        public List<DxfEntity> CutEntities = new List<DxfEntity>();
         public List<CutHole> Holes = new List<CutHole>();
         public int OuterEntityCount;
         public int SkippedLoops;
@@ -84,6 +87,7 @@ namespace LaserDxf.Core
                 r.Holes.Add(ch);
             }
 
+            r.CutEntities.AddRange(r.Doc.Entities);
             r.Width = a.Bounds.Width * k;
             r.Height = a.Bounds.Height * k;
             return r;

@@ -36,6 +36,7 @@ namespace LaserDxf.Core
         public string FileNameFormat = "{ID}-{REV}.dxf";
         public bool AskBeforeOverwrite = true;
         public bool ShowOptionsDialog = true;
+        public bool ShowPreview = true;
 
         // geometry
         public double Tolerance = 0.01;
@@ -61,7 +62,7 @@ namespace LaserDxf.Core
 
         // etch
         public string EtchFormat = "{ID}-{REV}";
-        public bool RevisionAsLetter = true;
+        public bool RevisionAsLetter = false;
         public double EtchHeight = 5;
         public double EtchMinHeight = 3;
         public double EtchClearance = 3;
@@ -231,6 +232,7 @@ namespace LaserDxf.Core
             c.FileNameFormat = s.Str("fileNameFormat", c.FileNameFormat);
             c.AskBeforeOverwrite = s.Bool("askBeforeOverwrite", c.AskBeforeOverwrite);
             c.ShowOptionsDialog = s.Bool("showOptionsDialog", c.ShowOptionsDialog);
+            c.ShowPreview = s.Bool("showPreview", c.ShowPreview);
 
             Section g = s.Sub("geometry");
             c.Tolerance = g.Num("tolerance", c.Tolerance, 1e-5, 1);

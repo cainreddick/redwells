@@ -30,3 +30,11 @@ python3 tests/validate_dxf.py build/test-output
 mkdir -p samples
 cp build/test-output/testplate_R2000.dxf build/test-output/irregular_R2000.dxf build/test-output/irregular_R12.dxf samples/
 cp build/test-output/irregular_TEXT_R2000.dxf samples/
+
+# 6) UI smoke test (preview window + options dialog) when an X server can be faked.
+if command -v xvfb-run >/dev/null 2>&1; then
+  mcs -noconfig -nologo -langversion:5 -target:exe -main:LaserDxf.Tests.PreviewSmoke -r:System.dll -r:System.Drawing.dll \
+    -r:System.Windows.Forms.dll -r:build/LaserDxf.Core.dll -out:build/smoke.exe \
+    tests/ui/PreviewSmoke.cs src/nx/PreviewWindow.cs src/nx/OptionsDialog.cs tests/Synth.cs tests/ExportTests.cs tests/CoreTests.cs
+  (cd build && timeout 120 xvfb-run -a -s "-screen 0 1300x950x24" mono smoke.exe test-output 2>/dev/null | grep -v "^$")
+fi

@@ -34,7 +34,7 @@ namespace LaserDxf.Nx
 
     public static class ExportCommand
     {
-        public const string Version = "0.4";
+        public const string Version = "0.5";
 
         public static void Run()
         {
@@ -83,6 +83,17 @@ namespace LaserDxf.Nx
 
             ExportRun run = ExportPipeline.Prepare(m, faceId, cfg, opt, note, etchPick);
             run.Version = Version;
+
+            if (cfg.ShowPreview)
+            {
+                var editor = new LayoutEditor(run);
+                if (!PreviewWindow.Show(editor, run.Identity.Id + "  (" + run.FileName + ")"))
+                {
+                    lw.WriteLine("Laser DXF: cancelled in the preview - nothing written.");
+                    return;
+                }
+                editor.Apply();
+            }
             run.Warnings.InsertRange(0, cfgWarnings);
             run.Notes.AddRange(log);
 
@@ -905,7 +916,11 @@ namespace LaserDxf.Nx
                 f.Controls.Add(browse);
                 y += 44;
 
-                var ok = new Button { Text = "Export", Left = 250, Top = y, Width = 85, Height = 28, DialogResult = DialogResult.OK };
+                var preview = new CheckBox { Text = "Preview and adjust the text before writing the DXF", Left = 14, Top = y, Width = 416, Checked = cfg.ShowPreview };
+                f.Controls.Add(preview);
+                y += 32;
+
+                var ok = new Button { Text = "Continue", Left = 250, Top = y, Width = 85, Height = 28, DialogResult = DialogResult.OK };
                 var cancel = new Button { Text = "Cancel", Left = 341, Top = y, Width = 85, Height = 28, DialogResult = DialogResult.Cancel };
                 f.Controls.Add(ok);
                 f.Controls.Add(cancel);
@@ -920,6 +935,7 @@ namespace LaserDxf.Nx
                 cfg.TextMode = text[1].Checked ? TextMode.Text : TextMode.Stroke;
                 cfg.DxfVersion = version.SelectedIndex == 1 ? DxfVersion.R12 : DxfVersion.R2000;
                 if (folder.Text.Trim().Length > 0) cfg.OutputFolder = folder.Text.Trim();
+                cfg.ShowPreview = preview.Checked;
                 return true;
             }
         }
@@ -934,6 +950,323 @@ namespace LaserDxf.Nx
             f.Controls.Add(g);
             y += 80;
             return new[] { a, b };
+        }
+    }
+}
+
+// ----- nx/PreviewWindow.cs -----
+// Preview & adjust window (Windows Forms): shows the finished layout and lets the
+// user drag, rotate, edit or delete the hole labels and the part number before the
+// DXF is written. All editing logic lives in LaserDxf.Core.LayoutEditor; this file
+// only draws and handles the mouse/keyboard. It deliberately doesn't import NXOpen.
+namespace LaserDxf.Nx
+{
+    using System;
+    using System.Collections.Generic;
+    using System.Drawing;
+    using System.Drawing.Drawing2D;
+    using System.Windows.Forms;
+    using LaserDxf.Core;
+
+    public static class PreviewWindow
+    {
+        /// <summary>Returns true if the user clicked Export.</summary>
+        public static bool Show(LayoutEditor editor, string title)
+        {
+            using (var f = new PreviewForm(editor, title))
+                return f.ShowDialog() == DialogResult.OK;
+        }
+    }
+
+    sealed class PreviewCanvas : Panel
+    {
+        public PreviewCanvas()
+        {
+            DoubleBuffered = true;
+            ResizeRedraw = true;
+            SetStyle(ControlStyles.Selectable, true);
+            TabStop = true;
+        }
+    }
+
+    sealed class PreviewForm : Form
+    {
+        readonly LayoutEditor ed;
+        readonly PreviewCanvas canvas;
+        readonly Label status;
+        readonly Button rotateBtn, editBtn, deleteBtn;
+
+        double scale = 1, offX, offY;
+        bool userZoomed;
+        PlacedText selected;
+        Point lastMouse;
+        bool dragging, panning;
+
+        static readonly Color CutColour = Color.Black;
+        static readonly Color OkColour = Color.FromArgb(0, 70, 230);
+        static readonly Color CloseColour = Color.FromArgb(230, 120, 0);
+        static readonly Color OverlapColour = Color.FromArgb(220, 0, 0);
+
+        public PreviewForm(LayoutEditor editor, string title)
+        {
+            ed = editor;
+            Text = "Laser DXF preview - " + title;
+            StartPosition = FormStartPosition.CenterScreen;
+            Size = new Size(1200, 850);
+            MinimumSize = new Size(700, 480);
+            TopMost = true;
+            KeyPreview = true;
+            Font = new Font("Segoe UI", 9f);
+
+            canvas = new PreviewCanvas { Dock = DockStyle.Fill, BackColor = Color.FromArgb(236, 234, 224) };
+            status = new Label { Dock = DockStyle.Bottom, Height = 46, Padding = new Padding(8, 4, 8, 4), BackColor = SystemColors.Info };
+            var bar = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 42, Padding = new Padding(6, 6, 6, 0), FlowDirection = FlowDirection.LeftToRight };
+
+            rotateBtn = MakeButton(bar, "Rotate 90° (R)", delegate { if (selected != null) { ed.Rotate90(selected); Changed(); } });
+            editBtn = MakeButton(bar, "Edit text... (F2)", delegate { EditSelected(); });
+            deleteBtn = MakeButton(bar, "Delete (Del)", delegate { if (selected != null) { ed.Delete(selected); selected = null; Changed(); } });
+            MakeButton(bar, "Reset all", delegate { ed.Reset(); selected = null; Changed(); });
+            MakeButton(bar, "Fit view (Home)", delegate { userZoomed = false; FitAll(); canvas.Invalidate(); });
+            bar.Controls.Add(new Label { Width = 60 });
+            Button export = MakeButton(bar, "Export DXF", delegate { TryExport(); });
+            export.Font = new Font(Font, FontStyle.Bold);
+            Button cancel = MakeButton(bar, "Cancel", delegate { DialogResult = DialogResult.Cancel; });
+            CancelButton = cancel;
+
+            // Fill control first, bottom bars after: WinForms docks the last-added control first.
+            Controls.Add(canvas);
+            Controls.Add(status);
+            Controls.Add(bar);
+
+            canvas.Paint += OnPaint;
+            canvas.MouseDown += OnMouseDown;
+            canvas.MouseMove += OnMouseMove;
+            canvas.MouseUp += delegate { dragging = false; panning = false; };
+            canvas.MouseWheel += OnWheel;
+            canvas.MouseDoubleClick += delegate (object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left && selected != null) EditSelected(); };
+            canvas.Resize += delegate { if (!userZoomed) FitAll(); };
+            Shown += delegate { FitAll(); Changed(); canvas.Focus(); };
+        }
+
+        static Button MakeButton(Control parent, string text, EventHandler click)
+        {
+            var b = new Button { Text = text, AutoSize = true, Height = 28, Margin = new Padding(3, 0, 3, 0) };
+            b.Click += click;
+            parent.Controls.Add(b);
+            return b;
+        }
+
+        // ------------------------------------------------------------ view transform
+
+        void FitAll()
+        {
+            double w = Math.Max(ed.Run.Profile.Width, 1), h = Math.Max(ed.Run.Profile.Height, 1);
+            double cw = Math.Max(canvas.ClientSize.Width - 40, 50), ch = Math.Max(canvas.ClientSize.Height - 40, 50);
+            scale = Math.Min(cw / w, ch / h);
+            offX = (canvas.ClientSize.Width - w * scale) / 2;
+            offY = canvas.ClientSize.Height - (canvas.ClientSize.Height - h * scale) / 2;
+        }
+
+        PointF S(Vec2 p) { return new PointF((float)(offX + p.X * scale), (float)(offY - p.Y * scale)); }
+        Vec2 M(Point s) { return new Vec2((s.X - offX) / scale, (offY - s.Y) / scale); }
+
+        // ------------------------------------------------------------ drawing
+
+        void OnPaint(object sender, PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            using (var pen = new Pen(CutColour, 1f))
+            {
+                foreach (DxfEntity ent in ed.Run.Profile.CutEntities) DrawEntity(g, pen, ent);
+            }
+            foreach (PlacedText t in ed.Items)
+            {
+                if (t.Deleted) continue;
+                ItemStatus st = ed.Status(t);
+                Color c = st == ItemStatus.Ok ? OkColour : st == ItemStatus.Close ? CloseColour : OverlapColour;
+                using (var pen = new Pen(c, 1.2f))
+                {
+                    foreach (var stroke in StrokeFont.Render(t.Text, t.Origin, t.Height, t.RotationDeg))
+                    {
+                        var pts = new PointF[stroke.Count];
+                        for (int i = 0; i < stroke.Count; i++) pts[i] = S(stroke[i]);
+                        if (pts.Length >= 2) g.DrawLines(pen, pts);
+                    }
+                }
+                if (t == selected || st != ItemStatus.Ok)
+                {
+                    using (var pen = new Pen(t == selected ? Color.FromArgb(40, 40, 40) : c, 1f))
+                    {
+                        if (t == selected) pen.DashStyle = DashStyle.Dash;
+                        PointF a = S(new Vec2(t.Box.MinX, t.Box.MaxY)), b = S(new Vec2(t.Box.MaxX, t.Box.MinY));
+                        g.DrawRectangle(pen, a.X - 2, a.Y - 2, b.X - a.X + 4, b.Y - a.Y + 4);
+                    }
+                }
+            }
+        }
+
+        void DrawEntity(Graphics g, Pen pen, DxfEntity ent)
+        {
+            var line = ent as DxfLine;
+            var circle = ent as DxfCircle;
+            var arc = ent as DxfArc;
+            var poly = ent as DxfPolyline;
+            if (line != null) g.DrawLine(pen, S(line.A), S(line.B));
+            else if (circle != null)
+            {
+                PointF tl = S(new Vec2(circle.Center.X - circle.Radius, circle.Center.Y + circle.Radius));
+                float d = (float)(2 * circle.Radius * scale);
+                g.DrawEllipse(pen, tl.X, tl.Y, d, d);
+            }
+            else if (arc != null)
+            {
+                double sweep = (arc.EndDeg - arc.StartDeg) % 360;
+                if (sweep <= 0) sweep += 360;
+                int n = Math.Max(4, (int)(sweep / 3));
+                var pts = new PointF[n + 1];
+                for (int i = 0; i <= n; i++) pts[i] = S(arc.PointAt(arc.StartDeg + sweep * i / n));
+                g.DrawLines(pen, pts);
+            }
+            else if (poly != null && poly.Points.Count >= 2)
+            {
+                var pts = new List<PointF>();
+                foreach (var p in poly.Points) pts.Add(S(p));
+                if (poly.Closed) pts.Add(pts[0]);
+                g.DrawLines(pen, pts.ToArray());
+            }
+        }
+
+        // ------------------------------------------------------------ mouse & keys
+
+        void OnMouseDown(object sender, MouseEventArgs e)
+        {
+            canvas.Focus();
+            lastMouse = e.Location;
+            if (e.Button == MouseButtons.Left)
+            {
+                selected = ed.HitTest(M(e.Location), 4 / scale);
+                dragging = selected != null;
+                Changed();
+            }
+            else if (e.Button == MouseButtons.Right || e.Button == MouseButtons.Middle) panning = true;
+        }
+
+        void OnMouseMove(object sender, MouseEventArgs e)
+        {
+            int dx = e.X - lastMouse.X, dy = e.Y - lastMouse.Y;
+            lastMouse = e.Location;
+            if (dragging && selected != null)
+            {
+                ed.Move(selected, new Vec2(dx / scale, -dy / scale));
+                Changed();
+            }
+            else if (panning)
+            {
+                offX += dx;
+                offY += dy;
+                userZoomed = true;
+                canvas.Invalidate();
+            }
+        }
+
+        void OnWheel(object sender, MouseEventArgs e)
+        {
+            Vec2 m = M(e.Location);
+            scale *= Math.Pow(1.2, e.Delta / 120.0);
+            offX = e.X - m.X * scale;
+            offY = e.Y + m.Y * scale;
+            userZoomed = true;
+            canvas.Invalidate();
+        }
+
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            Keys key = keyData & Keys.KeyCode;
+            bool shift = (keyData & Keys.Shift) != 0;
+            if (key == Keys.Home) { userZoomed = false; FitAll(); canvas.Invalidate(); return true; }
+            if (selected != null)
+            {
+                double step = shift ? 5 : 0.5;
+                Vec2 d = new Vec2(0, 0);
+                if (key == Keys.Left) d = new Vec2(-step, 0);
+                else if (key == Keys.Right) d = new Vec2(step, 0);
+                else if (key == Keys.Up) d = new Vec2(0, step);
+                else if (key == Keys.Down) d = new Vec2(0, -step);
+                if (d.X != 0 || d.Y != 0) { ed.Move(selected, d); Changed(); return true; }
+                if (key == Keys.R) { ed.Rotate90(selected); Changed(); return true; }
+                if (key == Keys.Delete) { ed.Delete(selected); selected = null; Changed(); return true; }
+                if (key == Keys.F2) { EditSelected(); return true; }
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
+        }
+
+        // ------------------------------------------------------------ actions
+
+        void EditSelected()
+        {
+            if (selected == null) return;
+            string text = Prompt("Edit text", selected.IsEtch ? "Part number:" : "Hole label:", selected.Text);
+            if (text == null) return;
+            ed.SetText(selected, text);
+            if (selected.Deleted) selected = null;
+            Changed();
+        }
+
+        string Prompt(string title, string label, string value)
+        {
+            using (var f = new Form())
+            {
+                f.Text = title;
+                f.FormBorderStyle = FormBorderStyle.FixedDialog;
+                f.StartPosition = FormStartPosition.CenterParent;
+                f.MinimizeBox = f.MaximizeBox = false;
+                f.ShowInTaskbar = false;
+                f.TopMost = true;
+                f.Font = Font;
+                f.ClientSize = new Size(380, 100);
+                f.Controls.Add(new Label { Text = label, Left = 10, Top = 12, Width = 360 });
+                var box = new TextBox { Text = value, Left = 10, Top = 32, Width = 360 };
+                var ok = new Button { Text = "OK", Left = 214, Top = 64, Width = 75, DialogResult = DialogResult.OK };
+                var cancel = new Button { Text = "Cancel", Left = 295, Top = 64, Width = 75, DialogResult = DialogResult.Cancel };
+                f.Controls.Add(box);
+                f.Controls.Add(ok);
+                f.Controls.Add(cancel);
+                f.AcceptButton = ok;
+                f.CancelButton = cancel;
+                return f.ShowDialog(this) == DialogResult.OK ? box.Text : null;
+            }
+        }
+
+        void TryExport()
+        {
+            List<PlacedText> problems = ed.Problems();
+            if (problems.Count > 0)
+            {
+                string list = "";
+                for (int i = 0; i < Math.Min(problems.Count, 8); i++) list += "\n  - " + ed.Describe(problems[i]);
+                if (problems.Count > 8) list += "\n  - ...";
+                DialogResult r = MessageBox.Show(this, problems.Count + " text item(s) still need attention:" + list + "\n\nExport anyway?",
+                    "Laser DXF", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                if (r != DialogResult.Yes) return;
+            }
+            DialogResult = DialogResult.OK;
+        }
+
+        void Changed()
+        {
+            bool has = selected != null;
+            rotateBtn.Enabled = editBtn.Enabled = deleteBtn.Enabled = has;
+            if (has) status.Text = ed.Describe(selected) + "\nDrag or use the arrow keys to move (Shift = 5 mm steps), R to rotate, F2 or double-click to edit, Del to delete.";
+            else
+            {
+                int n = 0;
+                foreach (var t in ed.Items) if (!t.Deleted) n++;
+                int p = ed.Problems().Count;
+                status.Text = n + " text item(s)" + (p > 0 ? ", " + p + " need attention (orange = tight, red = crossing something)." : ", all clear.") +
+                              "\nClick a label or the part number to select it. Mouse wheel zooms, right-drag pans, Home fits the view.";
+            }
+            canvas.Invalidate();
         }
     }
 }
@@ -1069,6 +1402,24 @@ namespace LaserDxf.Core
         public double Clearance;
         public bool Clear;
         public CutHole Hole;
+        public bool IsEtch;
+        public bool Deleted;
+        public bool Edited;
+
+        /// <summary>Recomputes Box from Origin, Text, Height and RotationDeg (any multiple of 90).</summary>
+        public void UpdateBox()
+        {
+            Box = BoxAt(Origin, StrokeFont.Measure(Text, Height), Height, RotationDeg);
+        }
+
+        public static Rect2 BoxAt(Vec2 origin, double w, double h, double rotationDeg)
+        {
+            double r = rotationDeg * Math.PI / 180, cos = Math.Cos(r), sin = Math.Sin(r);
+            Bounds2 b = Bounds2.Empty;
+            foreach (var p in new[] { new Vec2(0, 0), new Vec2(w, 0), new Vec2(w, h), new Vec2(0, h) })
+                b.Add(new Vec2(origin.X + p.X * cos - p.Y * sin, origin.Y + p.X * sin + p.Y * cos));
+            return new Rect2(Math.Round(b.MinX, 9), Math.Round(b.MinY, 9), Math.Round(b.MaxX, 9), Math.Round(b.MaxY, 9));
+        }
     }
 
     /// <summary>Everything text must keep away from, in DXF (mm) coordinates.</summary>
@@ -1633,6 +1984,7 @@ namespace LaserDxf.Core
         public string FileNameFormat = "{ID}-{REV}.dxf";
         public bool AskBeforeOverwrite = true;
         public bool ShowOptionsDialog = true;
+        public bool ShowPreview = true;
 
         // geometry
         public double Tolerance = 0.01;
@@ -1658,7 +2010,7 @@ namespace LaserDxf.Core
 
         // etch
         public string EtchFormat = "{ID}-{REV}";
-        public bool RevisionAsLetter = true;
+        public bool RevisionAsLetter = false;
         public double EtchHeight = 5;
         public double EtchMinHeight = 3;
         public double EtchClearance = 3;
@@ -1828,6 +2180,7 @@ namespace LaserDxf.Core
             c.FileNameFormat = s.Str("fileNameFormat", c.FileNameFormat);
             c.AskBeforeOverwrite = s.Bool("askBeforeOverwrite", c.AskBeforeOverwrite);
             c.ShowOptionsDialog = s.Bool("showOptionsDialog", c.ShowOptionsDialog);
+            c.ShowPreview = s.Bool("showPreview", c.ShowPreview);
 
             Section g = s.Sub("geometry");
             c.Tolerance = g.Num("tolerance", c.Tolerance, 1e-5, 1);
@@ -2393,8 +2746,8 @@ namespace LaserDxf.Core
             // Labels and part number.
             HoleClassifier.Classify(m, run.Profile, c, run.Warnings);
             Obstacles obs = Obstacles.From(m, run.Analysis, run.Profile);
+            run.Geometry = Obstacles.From(m, run.Analysis, run.Profile);
             run.Labels = Annotator.PlaceLabels(run.Profile, obs, c, run.Warnings);
-            foreach (var t in run.Labels) Annotator.Emit(run.Profile.Doc, t, c);
 
             run.EtchText = Identity.Format(c.EtchFormat, run.Identity.Tokens(), run.Warnings);
             string bad = StrokeFont.Unsupported(run.EtchText);
@@ -2408,11 +2761,23 @@ namespace LaserDxf.Core
             }
             if (run.Etch == null)
                 run.Etch = Annotator.PlaceEtch(run.EtchText, obs, plate, c, run.Warnings);
-            Annotator.Emit(run.Profile.Doc, run.Etch, c);
+            if (run.Etch != null) run.Etch.IsEtch = true;
 
             run.FileName = FileNameFor(run.Identity, c, run.Warnings);
-            run.DxfText = DxfWriter.Write(run.Profile.Doc, c.DxfVersion);
+            Finish(run);
             return run;
+        }
+
+        /// <summary>(Re)builds the DXF from the cut geometry and the current text items, so hand
+        /// edits made in the preview end up in the file. Deleted items are left out.</summary>
+        public static void Finish(ExportRun run)
+        {
+            DxfDocument doc = run.Profile.Doc;
+            doc.Entities.Clear();
+            doc.Entities.AddRange(run.Profile.CutEntities);
+            foreach (var t in run.Labels) if (!t.Deleted) Annotator.Emit(doc, t, run.Config);
+            if (run.Etch != null && !run.Etch.Deleted) Annotator.Emit(doc, run.Etch, run.Config);
+            run.DxfText = DxfWriter.Write(doc, run.Config.DxfVersion);
         }
 
         public static string FileNameFor(PartIdentity id, LaserConfig c, List<string> warnings)
@@ -2445,6 +2810,9 @@ namespace LaserDxf.Core
         public List<PlacedText> Labels = new List<PlacedText>();
         public string EtchText = "";
         public PlacedText Etch;
+        /// <summary>Holes, cut-outs and plate outline (no text) - used to check hand edits.</summary>
+        public Obstacles Geometry;
+        public string EditSummary = "";
         /// <summary>Attribute table shown when the ID or revision can't be found.</summary>
         public List<string> AttributeDump = new List<string>();
         public string FileName = "";
@@ -2536,6 +2904,7 @@ namespace LaserDxf.Core
             if (r.Config != null)
                 L.Add("DXF format   : " + r.Config.DxfVersion + ", text as " + (r.Config.TextMode == TextMode.Stroke ? "single-stroke vectors" : "DXF TEXT") + ", mm, layers " + r.Config.CutLayer.Name + " (colour " + r.Config.CutLayer.Color + ") / " +
                       r.Config.EtchLayer.Name + " (colour " + r.Config.EtchLayer.Color + ")");
+            if (r.EditSummary.Length > 0) L.Add("Hand edits   : " + r.EditSummary);
             L.Add("Output       : " + (r.OutputPath.Length > 0 ? r.OutputPath : "-") + (r.Outcome.Length > 0 ? "   [" + r.Outcome + "]" : ""));
             if (r.Warnings.Count > 0)
             {
@@ -3425,6 +3794,161 @@ namespace LaserDxf.Core
         public static bool RectInPolygon(Rect2 r, List<Vec2> poly)
         {
             return PointInPolygon(r.Center, poly) && PolylineRect(poly, r) > 0;
+        }
+    }
+}
+
+// ----- core/LayoutEditor.cs -----
+// Hand edits to the text layout before export (used by the preview window).
+// Pure logic: hit testing, move / rotate / edit / delete / reset, and checking
+// each item against the plate edge, the holes and the other text.
+namespace LaserDxf.Core
+{
+    using System;
+    using System.Collections.Generic;
+
+    public enum ItemStatus { Ok, Close, Overlap }
+
+    public sealed class LayoutEditor
+    {
+        sealed class Snapshot
+        {
+            public Vec2 Origin;
+            public double Rotation;
+            public string Text;
+            public Rect2 Box;
+        }
+
+        readonly ExportRun run;
+        readonly Dictionary<PlacedText, Snapshot> original = new Dictionary<PlacedText, Snapshot>();
+        public readonly List<PlacedText> Items = new List<PlacedText>();
+
+        public LayoutEditor(ExportRun run)
+        {
+            this.run = run;
+            Items.AddRange(run.Labels);
+            if (run.Etch != null) Items.Add(run.Etch);
+            foreach (var t in Items)
+                original[t] = new Snapshot { Origin = t.Origin, Rotation = t.RotationDeg, Text = t.Text, Box = t.Box };
+        }
+
+        public ExportRun Run { get { return run; } }
+
+        /// <summary>Topmost (last drawn) non-deleted item whose box, grown by tol, contains p.</summary>
+        public PlacedText HitTest(Vec2 p, double tol)
+        {
+            for (int i = Items.Count - 1; i >= 0; i--)
+            {
+                PlacedText t = Items[i];
+                if (!t.Deleted && Layout2.PointRect(p, t.Box) <= tol) return t;
+            }
+            return null;
+        }
+
+        public void Move(PlacedText t, Vec2 d)
+        {
+            t.Origin = t.Origin + d;
+            t.Box = new Rect2(t.Box.MinX + d.X, t.Box.MinY + d.Y, t.Box.MaxX + d.X, t.Box.MaxY + d.Y);
+            t.Edited = true;
+        }
+
+        /// <summary>Turns the text 90 degrees anticlockwise about the centre of its box.</summary>
+        public void Rotate90(PlacedText t)
+        {
+            Vec2 c = t.Box.Center;
+            t.RotationDeg = (t.RotationDeg + 90) % 360;
+            Rect2 atZero = PlacedText.BoxAt(new Vec2(0, 0), StrokeFont.Measure(t.Text, t.Height), t.Height, t.RotationDeg);
+            t.Origin = c - atZero.Center;
+            t.UpdateBox();
+            t.Edited = true;
+        }
+
+        /// <summary>Changes the text, keeping it centred where it was.</summary>
+        public void SetText(PlacedText t, string text)
+        {
+            text = (text ?? "").Trim();
+            if (text.Length == 0) { Delete(t); return; }
+            Vec2 c = t.Box.Center;
+            t.Text = text;
+            Rect2 atZero = PlacedText.BoxAt(new Vec2(0, 0), StrokeFont.Measure(t.Text, t.Height), t.Height, t.RotationDeg);
+            t.Origin = c - atZero.Center;
+            t.UpdateBox();
+            t.Edited = true;
+        }
+
+        public void Delete(PlacedText t)
+        {
+            t.Deleted = true;
+            t.Edited = true;
+        }
+
+        public void Reset()
+        {
+            foreach (var t in Items)
+            {
+                Snapshot s = original[t];
+                t.Origin = s.Origin;
+                t.RotationDeg = s.Rotation;
+                t.Text = s.Text;
+                t.Box = s.Box;
+                t.Deleted = false;
+                t.Edited = false;
+            }
+        }
+
+        /// <summary>Room around the item: to the plate edge, holes, cut-outs and other text.</summary>
+        public double Clearance(PlacedText t)
+        {
+            double d = run.Geometry.Clearance(t.Box, -1);
+            foreach (var o in Items)
+                if (o != t && !o.Deleted) d = Math.Min(d, Layout2.RectRect(o.Box, t.Box));
+            return d;
+        }
+
+        public double Required(PlacedText t)
+        {
+            return t.IsEtch ? run.Config.EtchClearance : run.Config.HoleClearance;
+        }
+
+        public ItemStatus Status(PlacedText t)
+        {
+            double d = Clearance(t);
+            if (d <= 0) return ItemStatus.Overlap;
+            return d < Required(t) - 1e-9 ? ItemStatus.Close : ItemStatus.Ok;
+        }
+
+        public string Describe(PlacedText t)
+        {
+            double d = Clearance(t);
+            string what = t.IsEtch ? "Part number" : "Label";
+            string where = " at (" + Fmt.N(t.Box.Center.X, 1) + ", " + Fmt.N(t.Box.Center.Y, 1) + ")";
+            switch (Status(t))
+            {
+                case ItemStatus.Overlap: return what + " \"" + t.Text + "\"" + where + ": crosses the cut line, a hole or other text, or is off the plate";
+                case ItemStatus.Close: return what + " \"" + t.Text + "\"" + where + ": only " + Fmt.N(d, 1) + " mm clear (wanted " + Fmt.N(Required(t), 1) + " mm)";
+                default: return what + " \"" + t.Text + "\"" + where + ": OK, " + Fmt.N(Math.Min(d, 999), 1) + " mm clear";
+            }
+        }
+
+        public List<PlacedText> Problems()
+        {
+            var l = new List<PlacedText>();
+            foreach (var t in Items) if (!t.Deleted && Status(t) != ItemStatus.Ok) l.Add(t);
+            return l;
+        }
+
+        /// <summary>Applies the edits to the run: rebuilds the DXF and records what changed.</summary>
+        public void Apply()
+        {
+            int moved = 0, deleted = 0;
+            foreach (var t in Items)
+            {
+                if (!t.Edited) continue;
+                if (t.Deleted) deleted++; else moved++;
+            }
+            run.EditSummary = moved + deleted == 0 ? "" : moved + " item(s) moved/rotated/edited, " + deleted + " deleted in the preview";
+            foreach (var t in Problems()) run.Warnings.Add("After hand edits: " + Describe(t));
+            ExportPipeline.Finish(run);
         }
     }
 }
@@ -4351,7 +4875,10 @@ namespace LaserDxf.Core
 
     public sealed class ProfileResult
     {
+        /// <summary>The final document: CutEntities plus the text written by ExportPipeline.Finish.</summary>
         public DxfDocument Doc = new DxfDocument();
+        /// <summary>Profile and holes only (CUT layer).</summary>
+        public List<DxfEntity> CutEntities = new List<DxfEntity>();
         public List<CutHole> Holes = new List<CutHole>();
         public int OuterEntityCount;
         public int SkippedLoops;
@@ -4416,6 +4943,7 @@ namespace LaserDxf.Core
                 r.Holes.Add(ch);
             }
 
+            r.CutEntities.AddRange(r.Doc.Entities);
             r.Width = a.Bounds.Width * k;
             r.Height = a.Bounds.Height * k;
             return r;

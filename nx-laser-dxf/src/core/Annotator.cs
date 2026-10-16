@@ -17,6 +17,24 @@ namespace LaserDxf.Core
         public double Clearance;
         public bool Clear;
         public CutHole Hole;
+        public bool IsEtch;
+        public bool Deleted;
+        public bool Edited;
+
+        /// <summary>Recomputes Box from Origin, Text, Height and RotationDeg (any multiple of 90).</summary>
+        public void UpdateBox()
+        {
+            Box = BoxAt(Origin, StrokeFont.Measure(Text, Height), Height, RotationDeg);
+        }
+
+        public static Rect2 BoxAt(Vec2 origin, double w, double h, double rotationDeg)
+        {
+            double r = rotationDeg * Math.PI / 180, cos = Math.Cos(r), sin = Math.Sin(r);
+            Bounds2 b = Bounds2.Empty;
+            foreach (var p in new[] { new Vec2(0, 0), new Vec2(w, 0), new Vec2(w, h), new Vec2(0, h) })
+                b.Add(new Vec2(origin.X + p.X * cos - p.Y * sin, origin.Y + p.X * sin + p.Y * cos));
+            return new Rect2(Math.Round(b.MinX, 9), Math.Round(b.MinY, 9), Math.Round(b.MaxX, 9), Math.Round(b.MaxY, 9));
+        }
     }
 
     /// <summary>Everything text must keep away from, in DXF (mm) coordinates.</summary>

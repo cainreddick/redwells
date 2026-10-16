@@ -8,6 +8,7 @@
   "fileNameFormat": "{ID}-{REV}.dxf",
   "askBeforeOverwrite": true,
   "showOptionsDialog": true,          // options dialog before each export (orientation, etch position, text mode, DXF version, folder)
+  "showPreview": true,                // preview window: drag/rotate/edit the text before the DXF is written
 
   "geometry": {
     "tolerance": 0.01,                // mm, matching/flatness tolerance
@@ -39,8 +40,8 @@
   },
 
   "etch": {                           // step 5
-    "format": "{ID}-{REV}",           // {REV} = A, B... with revisionAsLetter; {REVRAW} = 1, 2... always
-    "revisionAsLetter": true,         // 1 -> A, 2 -> B ... 27 -> AA
+    "format": "{ID}-{REV}",           // e.g. S180-06068-47005-1. {REVRAW} is always the number.
+    "revisionAsLetter": false,        // true: 1 -> A, 2 -> B ... 27 -> AA
     "textHeight": 5,
     "minTextHeight": 3,
     "clearance": 3,

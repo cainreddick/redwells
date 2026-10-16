@@ -17,6 +17,9 @@ namespace LaserDxf.Core
         public List<PlacedText> Labels = new List<PlacedText>();
         public string EtchText = "";
         public PlacedText Etch;
+        /// <summary>Holes, cut-outs and plate outline (no text) - used to check hand edits.</summary>
+        public Obstacles Geometry;
+        public string EditSummary = "";
         /// <summary>Attribute table shown when the ID or revision can't be found.</summary>
         public List<string> AttributeDump = new List<string>();
         public string FileName = "";
@@ -108,6 +111,7 @@ namespace LaserDxf.Core
             if (r.Config != null)
                 L.Add("DXF format   : " + r.Config.DxfVersion + ", text as " + (r.Config.TextMode == TextMode.Stroke ? "single-stroke vectors" : "DXF TEXT") + ", mm, layers " + r.Config.CutLayer.Name + " (colour " + r.Config.CutLayer.Color + ") / " +
                       r.Config.EtchLayer.Name + " (colour " + r.Config.EtchLayer.Color + ")");
+            if (r.EditSummary.Length > 0) L.Add("Hand edits   : " + r.EditSummary);
             L.Add("Output       : " + (r.OutputPath.Length > 0 ? r.OutputPath : "-") + (r.Outcome.Length > 0 ? "   [" + r.Outcome + "]" : ""));
             if (r.Warnings.Count > 0)
             {

@@ -227,6 +227,12 @@ parts.
 2. Plain profile DXF (CUT layer) + config file + part number/file name from attributes. *(done, tested in NX 2412)*
 3. Hole classification (feature data → countersink geometry → table, cut diameter override). *(current)*
 4. Hole labels with collision-avoiding placement. *(current)*
-5. Part-number etch with auto placement *(current)*; still to come: the options dialog and pick-a-point placement.
+5. Part-number etch with auto placement, options dialog, pick-a-point. *(etch tested in NX 2412)*
+6. Preview & adjust window: `LayoutEditor` (pure, unit-tested) + a thin WinForms view
+   (smoke-tested under Mono/Xvfb). `ExportPipeline` is split into `Prepare` (geometry + layout)
+   and `Finish` (DXF from the cut geometry + the current, possibly hand-edited, text).
+7. *Planned*: NX drawing-sheet route. One journal lays the profile and text out on a drawing
+   sheet for editing with NX drafting tools, and a second exports that sheet with our DXF
+   writer.
 
 Each step ships as `dist/*.cs` plus a note on what to check and what to send back.
