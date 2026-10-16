@@ -131,7 +131,7 @@ several plates in one go:
 
    **Setup:** save your request-list workbook as `Jig Part Request List.xlsx` (a real `.xlsx`,
    not `.xls`) in the same folder as the config file. Which columns get which CSV column, the
-   first row, the total cell and the file name are set in the `requestList` section of the
+   first row, the title and total cells, and the file name are set in the `requestList` section of the
    config. If the template isn't found, the batch still runs and the listing says where it
    looked. `samples/request_list_example.xlsx` is an example made from a stand-in template.
 
