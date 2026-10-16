@@ -41,6 +41,45 @@ namespace LaserDxf.Nx
             NxPlate.Run(RunInner);
         }
 
+        /// <summary>Fills the jig part request list template from the (merged) CSV. Returns the file written, or null.</summary>
+        static string WriteRequestList(Session s, LaserConfig cfg, PartIdentity assembly, string folder, string csv, List<string> warnings)
+        {
+            string template = cfg.RequestListTemplate;
+            if (!Path.IsPathRooted(template))
+            {
+                string baseDir = File.Exists(cfg.SourcePath) ? Path.GetDirectoryName(cfg.SourcePath) : null;
+                if (baseDir == null)
+                {
+                    string journal = NxReflect.ExecutingJournal(s);
+                    if (!string.IsNullOrEmpty(journal)) baseDir = Path.GetDirectoryName(journal);
+                }
+                template = Path.Combine(baseDir ?? "", template);
+            }
+            if (!File.Exists(template))
+            {
+                warnings.Add("Request list not written: template \"" + template + "\" not found. Put your Jig Part Request List .xlsx there (or set requestList.template).");
+                return null;
+            }
+            string name = Identity.SafeFileName(Identity.Format(cfg.RequestListFileFormat, assembly.Tokens(), warnings));
+            if (name.Length == 0 || name.Equals(".xlsx", StringComparison.OrdinalIgnoreCase)) name = "Jig Part Request List";
+            if (!name.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase)) name += ".xlsx";
+            string path = Path.Combine(folder, name);
+            try
+            {
+                List<List<string>> table = Batch.ParseCsv(csv);
+                List<string> header = table[0];
+                table.RemoveAt(0);
+                byte[] xlsx = Xlsx.FillTemplate(File.ReadAllBytes(template), cfg.RequestList, header, table, warnings);
+                File.WriteAllBytes(path, xlsx);
+                return path;
+            }
+            catch (Exception ex)
+            {
+                warnings.Add("Request list not written (" + path + "): " + ex.Message + " (is it open in Excel?)");
+                return null;
+            }
+        }
+
         static void RunInner(Session s, ListingWindow lw, List<string> log)
         {
             var cfgWarnings = new List<string>();
@@ -192,32 +231,37 @@ namespace LaserDxf.Nx
                 }
             }
 
-            // 4. CSV for the laser shop + listing.
-            string csvPath = null;
+            // 4. CSV for the laser shop, and the jig part request list (Excel) made from it.
+            string csvPath = null, xlsxPath = null;
             int exported = 0;
             foreach (var it in items) if (it.Status == BatchStatus.Exported) exported++;
-            if (cfg.WriteCsv && exported > 0)
+            if (exported > 0)
             {
+                string csvFile = Path.Combine(folder, Batch.CsvFileName(assembly, cfg, cfgWarnings));
+                string csv = Batch.CsvSummary(items, cfg);
                 try
                 {
-                    csvPath = Path.Combine(folder, Batch.CsvFileName(assembly, cfg, cfgWarnings));
-                    string csv = Batch.CsvSummary(items, cfg);
-                    if (File.Exists(csvPath))
+                    if (File.Exists(csvFile))
                     {
                         int kept;
-                        csv = Batch.MergeCsv(File.ReadAllText(csvPath), csv, cfg, out kept);
+                        csv = Batch.MergeCsv(File.ReadAllText(csvFile), csv, cfg, out kept);
                         if (kept > 0) log.Add("CSV: kept " + kept + " row(s) from the earlier batch for plates not exported this time.");
                     }
-                    File.WriteAllText(csvPath, csv, new UTF8Encoding(true)); // BOM so Excel reads UTF-8
+                    if (cfg.WriteCsv)
+                    {
+                        File.WriteAllText(csvFile, csv, new UTF8Encoding(true)); // BOM so Excel reads UTF-8
+                        csvPath = csvFile;
+                    }
                 }
                 catch (Exception ex)
                 {
-                    log.Add("Could not write the CSV summary " + csvPath + ": " + ex.Message + " (is it open in Excel?)");
-                    csvPath = null;
+                    log.Add("Could not write the CSV summary " + csvFile + ": " + ex.Message + " (is it open in Excel?)");
                 }
+                if (cfg.RequestListEnabled) xlsxPath = WriteRequestList(s, cfg, assembly, folder, csv, cfgWarnings);
             }
 
             List<string> lines = Batch.Summary(items, Version, cfg.SourcePath, csvPath, assemblyLabel, folder);
+            if (xlsxPath != null) lines.Insert(lines.FindIndex(delegate (string l) { return l.StartsWith("Plates"); }) + 1, "Request list : " + xlsxPath);
             var notes = new List<string>(cfgWarnings);
             notes.AddRange(log);
             if (notes.Count > 0)
@@ -3075,6 +3119,23 @@ namespace LaserDxf.Core
         public string BatchFolderFormat = "{ID}-{REV}";
         /// <summary>Component attributes that mean "not in the parts list": such components aren't counted in Qty.</summary>
         public List<string> QtyExcludeAttributes = new List<string> { "REFERENCE_COMPONENT", "PLIST_IGNORE_MEMBER" };
+
+        // Jig part request list (Excel), filled from the batch CSV
+        public bool RequestListEnabled = true;
+        /// <summary>Template workbook; a relative path is relative to the config file's folder.</summary>
+        public string RequestListTemplate = "Jig Part Request List.xlsx";
+        public string RequestListFileFormat = "{ID}-{REV}.xlsx";
+        public RequestListSpec RequestList = DefaultRequestList();
+
+        public static RequestListSpec DefaultRequestList()
+        {
+            var r = new RequestListSpec { FirstRow = 4, TotalCell = "H1", DataSheetName = "DXF list" };
+            r.Columns.Add(new KeyValuePair<string, string>("A", "ID"));
+            r.Columns.Add(new KeyValuePair<string, string>("B", "Material"));
+            r.Columns.Add(new KeyValuePair<string, string>("C", "Thickness"));
+            r.Columns.Add(new KeyValuePair<string, string>("D", "Qty"));
+            return r;
+        }
         public string BatchCsvFileFormat = "{ID}-{REV}.csv";
         public double ThicknessTolerance = 0.1;
         public bool WriteCsv = true;
@@ -3179,6 +3240,14 @@ namespace LaserDxf.Core
                     if (string.Equals(value.ToString(), s, StringComparison.OrdinalIgnoreCase)) return value;
                 warnings.Add("Config: " + Where(key) + " = \"" + s + "\" is not one of " + string.Join(", ", Enum.GetNames(typeof(T))) + " - using " + def);
                 return def;
+            }
+
+            /// <summary>The raw object under key (marked as used), or null.</summary>
+            public JObj RawObj(string key)
+            {
+                object v = Take(key);
+                if (v != null && !(v is JObj)) warnings.Add("Config: " + Where(key) + " should be an object { ... }");
+                return v as JObj;
             }
 
             public Section Sub(string key)
@@ -3375,6 +3444,32 @@ namespace LaserDxf.Core
             c.ThicknessTolerance = b.Num("thicknessTolerance", c.ThicknessTolerance, 0, 100);
             c.WriteCsv = b.Bool("writeCsv", c.WriteCsv);
             b.Finish();
+
+            Section rl = s.Sub("requestList");
+            c.RequestListEnabled = rl.Bool("enabled", c.RequestListEnabled);
+            c.RequestListTemplate = rl.Str("template", c.RequestListTemplate);
+            c.RequestListFileFormat = rl.Str("fileName", c.RequestListFileFormat);
+            c.RequestList.SheetName = rl.Str("sheet", c.RequestList.SheetName);
+            c.RequestList.FirstRow = (int)rl.Num("firstRow", c.RequestList.FirstRow, 1, 100000);
+            c.RequestList.TotalCell = rl.Str("totalCell", c.RequestList.TotalCell);
+            c.RequestList.DataSheetName = rl.Str("dataSheet", c.RequestList.DataSheetName);
+            JObj rlCols = rl.RawObj("columns");
+            if (rlCols != null)
+            {
+                c.RequestList.Columns.Clear();
+                foreach (var kv in rlCols.Items)
+                {
+                    if (!System.Text.RegularExpressions.Regex.IsMatch(kv.Key, "^[A-Za-z]{1,3}$") || !(kv.Value is string))
+                        warnings.Add("Config: requestList.columns entry \"" + kv.Key + "\" should be a column letter with a CSV column name, e.g. \"A\": \"ID\"");
+                    else c.RequestList.Columns.Add(new KeyValuePair<string, string>(kv.Key.ToUpperInvariant(), (string)kv.Value));
+                }
+            }
+            if (c.RequestList.TotalCell.Trim().Length > 0 && !System.Text.RegularExpressions.Regex.IsMatch(c.RequestList.TotalCell.Trim(), "^[A-Za-z]{1,3}[0-9]+$"))
+            {
+                warnings.Add("Config: requestList.totalCell \"" + c.RequestList.TotalCell + "\" is not a cell like H1 - ignored");
+                c.RequestList.TotalCell = "";
+            }
+            rl.Finish();
 
             Section dbg = s.Sub("debug");
             c.SaveBodyJson = dbg.Bool("saveBodyJson", c.SaveBodyJson);
@@ -7021,6 +7116,524 @@ namespace LaserDxf.Core
                 x += g.Width + SpacingUnits;
             }
             return result;
+        }
+    }
+}
+
+// ----- core/Xlsx.cs -----
+// Fills an Excel (.xlsx) template - e.g. the "Jig Part Request List" - with rows of data,
+// and adds a plain data sheet. Only the cells written are touched: logos, borders, merged
+// cells, print setup etc. of the template are kept as they are.
+namespace LaserDxf.Core
+{
+    using System;
+    using System.Collections.Generic;
+    using System.Globalization;
+    using System.Text;
+    using System.Text.RegularExpressions;
+
+    public sealed class RequestListSpec
+    {
+        /// <summary>Sheet to fill ("" = the first sheet).</summary>
+        public string SheetName = "";
+        /// <summary>First data row (1-based), e.g. 4 below a header in row 3.</summary>
+        public int FirstRow = 4;
+        /// <summary>Column letter -> CSV column header, e.g. A -> "ID".</summary>
+        public List<KeyValuePair<string, string>> Columns = new List<KeyValuePair<string, string>>();
+        /// <summary>Cell for the number of part numbers (e.g. "H1"); left alone if it holds a formula. "" = none.</summary>
+        public string TotalCell = "";
+        /// <summary>Name of the extra sheet with the full CSV table ("" = none).</summary>
+        public string DataSheetName = "DXF list";
+    }
+
+    public static class Xlsx
+    {
+        const string MainNs = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+        const string RelNs = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+        const string WorksheetRelType = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet";
+        const string WorksheetContentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml";
+
+        // ------------------------------------------------------------ helpers
+
+        public static string Esc(string s)
+        {
+            return (s ?? "").Replace("&", "&amp;").Replace("<", "&lt;").Replace(">", "&gt;").Replace("\"", "&quot;");
+        }
+
+        static string Attr(string tag, string name)
+        {
+            Match m = Regex.Match(tag, @"(?:^|\s)" + Regex.Escape(name) + @"\s*=\s*""([^""]*)""");
+            return m.Success ? m.Groups[1].Value : null;
+        }
+
+        static string SetAttr(string attrs, string name, string value)
+        {
+            var re = new Regex(@"(\s)" + Regex.Escape(name) + @"\s*=\s*""[^""]*""");
+            if (re.IsMatch(attrs)) return re.Replace(attrs, "$1" + name + "=\"" + value + "\"", 1);
+            return attrs + " " + name + "=\"" + value + "\"";
+        }
+
+        static string RemoveAttr(string attrs, string name)
+        {
+            return Regex.Replace(attrs, @"\s" + Regex.Escape(name) + @"\s*=\s*""[^""]*""", "");
+        }
+
+        public static int ColumnIndex(string letters)
+        {
+            int n = 0;
+            foreach (char ch in letters.ToUpperInvariant())
+            {
+                if (ch < 'A' || ch > 'Z') break;
+                n = n * 26 + (ch - 'A' + 1);
+            }
+            return n;
+        }
+
+        public static string ColumnLetters(int index)
+        {
+            var sb = new StringBuilder();
+            while (index > 0)
+            {
+                index--;
+                sb.Insert(0, (char)('A' + index % 26));
+                index /= 26;
+            }
+            return sb.ToString();
+        }
+
+        static void SplitRef(string cellRef, out string col, out int row)
+        {
+            Match m = Regex.Match(cellRef.Trim().ToUpperInvariant(), @"^([A-Z]+)(\d+)$");
+            if (!m.Success) throw new FormatException("Not a cell reference: " + cellRef);
+            col = m.Groups[1].Value;
+            row = int.Parse(m.Groups[2].Value, CultureInfo.InvariantCulture);
+        }
+
+        static bool IsPlainNumber(string s)
+        {
+            return Regex.IsMatch(s ?? "", @"^-?\d+(\.\d+)?$");
+        }
+
+        static string CellXml(string colRow, string style, string value)
+        {
+            string s = style == null ? "" : " s=\"" + style + "\"";
+            if (value == null || value.Length == 0) return "<c r=\"" + colRow + "\"" + s + "/>";
+            if (IsPlainNumber(value)) return "<c r=\"" + colRow + "\"" + s + "><v>" + value + "</v></c>";
+            return "<c r=\"" + colRow + "\"" + s + " t=\"inlineStr\"><is><t xml:space=\"preserve\">" + Esc(value) + "</t></is></c>";
+        }
+
+        // ------------------------------------------------------------ sheet model
+
+        sealed class Cell
+        {
+            public int Col;
+            public string Xml;
+            public string Style { get { return Attr(Regex.Match(Xml, @"^<c\b[^>]*").Value, "s"); } }
+            public bool HasFormula { get { return Xml.Contains("<f"); } }
+        }
+
+        sealed class Row
+        {
+            public int R;
+            public string Attrs;   // attributes of <row ...> (without r)
+            public List<Cell> Cells = new List<Cell>();
+
+            public Cell Get(int col)
+            {
+                foreach (var c in Cells) if (c.Col == col) return c;
+                return null;
+            }
+
+            public void Put(Cell cell)
+            {
+                for (int i = 0; i < Cells.Count; i++)
+                {
+                    if (Cells[i].Col == cell.Col) { Cells[i] = cell; return; }
+                    if (Cells[i].Col > cell.Col) { Cells.Insert(i, cell); return; }
+                }
+                Cells.Add(cell);
+            }
+
+            public string ToXml()
+            {
+                var sb = new StringBuilder("<row r=\"" + R + "\"" + Attrs);
+                if (Cells.Count == 0) return sb.Append("/>").ToString();
+                sb.Append('>');
+                foreach (var c in Cells) sb.Append(c.Xml);
+                return sb.Append("</row>").ToString();
+            }
+        }
+
+        static List<Row> ParseRows(string sheetData)
+        {
+            var rows = new List<Row>();
+            foreach (Match m in Regex.Matches(sheetData, @"<row\b([^>]*?)(?:/>|>(.*?)</row>)", RegexOptions.Singleline))
+            {
+                string attrs = m.Groups[1].Value;
+                var row = new Row { R = int.Parse(Attr(attrs, "r"), CultureInfo.InvariantCulture), Attrs = RemoveAttr(" " + attrs.Trim(), "r") };
+                if (row.Attrs.Trim().Length == 0) row.Attrs = "";
+                foreach (Match cm in Regex.Matches(m.Groups[2].Value, @"<c\b[^>]*?(?:/>|>.*?</c>)", RegexOptions.Singleline))
+                {
+                    string r = Attr(Regex.Match(cm.Value, @"^<c\b[^>]*").Value, "r");
+                    string col; int rr;
+                    SplitRef(r, out col, out rr);
+                    row.Cells.Add(new Cell { Col = ColumnIndex(col), Xml = cm.Value });
+                }
+                rows.Add(row);
+            }
+            rows.Sort(delegate (Row a, Row b) { return a.R.CompareTo(b.R); });
+            return rows;
+        }
+
+        static Row FindRow(List<Row> rows, int r)
+        {
+            foreach (var row in rows) if (row.R == r) return row;
+            return null;
+        }
+
+        // ------------------------------------------------------------ fill
+
+        /// <summary>Copies the template and writes rows (from the CSV table: header + rows) into the
+        /// request-list sheet, then adds the data sheet. Returns the new .xlsx file.</summary>
+        public static byte[] FillTemplate(byte[] template, RequestListSpec spec, List<string> header, List<List<string>> rows, List<string> warnings)
+        {
+            List<ZipEntryData> entries = Zip.Read(template);
+            var byName = new Dictionary<string, ZipEntryData>(StringComparer.OrdinalIgnoreCase);
+            foreach (var e in entries) byName[e.Name] = e;
+            Func<string, string> text = delegate (string name) { return Encoding.UTF8.GetString(byName[name].Data); };
+            Action<string, string> put = delegate (string name, string value)
+            {
+                ZipEntryData e;
+                if (!byName.TryGetValue(name, out e)) { e = new ZipEntryData { Name = name }; entries.Add(e); byName[name] = e; }
+                e.Data = new UTF8Encoding(false).GetBytes(value);
+            };
+            if (!byName.ContainsKey("xl/workbook.xml") || !byName.ContainsKey("xl/_rels/workbook.xml.rels"))
+                throw new FormatException("The template is not an Excel .xlsx workbook.");
+
+            string workbook = text("xl/workbook.xml");
+            string rels = text("xl/_rels/workbook.xml.rels");
+
+            // Which sheet? (the first one unless named)
+            MatchCollection sheets = Regex.Matches(workbook, @"<sheet\b[^>]*/?>");
+            if (sheets.Count == 0) throw new FormatException("The template has no sheets.");
+            string sheetTag = sheets[0].Value;
+            if (spec.SheetName.Length > 0)
+            {
+                sheetTag = null;
+                foreach (Match sm in sheets)
+                    if (string.Equals(Attr(sm.Value, "name"), spec.SheetName, StringComparison.OrdinalIgnoreCase)) sheetTag = sm.Value;
+                if (sheetTag == null)
+                {
+                    warnings.Add("Request list: the template has no sheet called \"" + spec.SheetName + "\" - used the first sheet.");
+                    sheetTag = sheets[0].Value;
+                }
+            }
+            string relPrefix = Regex.Match(sheetTag, @"\s(\w+):id\s*=").Groups[1].Value;
+            if (relPrefix.Length == 0) relPrefix = "r";
+            string rid = Attr(sheetTag, relPrefix + ":id");
+            string target = null;
+            foreach (Match rm in Regex.Matches(rels, @"<Relationship\b[^>]*/?>"))
+                if (Attr(rm.Value, "Id") == rid) target = Attr(rm.Value, "Target");
+            if (target == null) throw new FormatException("Could not find the request-list sheet in the template.");
+            string sheetPath = target.StartsWith("/") ? target.Substring(1) : "xl/" + target;
+
+            // Fill the sheet.
+            string sheet = text(sheetPath);
+            sheet = FillSheet(sheet, spec, header, rows, warnings);
+            put(sheetPath, sheet);
+
+            // If the list now runs past the print area, extend it so every row prints.
+            int sheetIndex = 0;
+            for (int i = 0; i < sheets.Count; i++) if (sheets[i].Value == sheetTag) sheetIndex = i;
+            int lastRow = spec.FirstRow + rows.Count - 1;
+            workbook = Regex.Replace(workbook,
+                @"(<definedName\b[^>]*name=""_xlnm\.Print_Area""[^>]*localSheetId=""" + sheetIndex + @"""[^>]*>[^<]*?![$]?[A-Z]+[$]?\d+:[$]?[A-Z]+[$]?)(\d+)(</definedName>)",
+                delegate (Match pm)
+                {
+                    int end = int.Parse(pm.Groups[2].Value, CultureInfo.InvariantCulture);
+                    return end >= lastRow ? pm.Value : pm.Groups[1].Value + lastRow + pm.Groups[3].Value;
+                });
+
+            // Extra sheet with the whole CSV table.
+            if (spec.DataSheetName.Trim().Length > 0)
+            {
+                string name = spec.DataSheetName.Trim();
+                bool taken = false;
+                foreach (Match sm in sheets) if (string.Equals(Attr(sm.Value, "name"), name, StringComparison.OrdinalIgnoreCase)) taken = true;
+                if (taken) warnings.Add("Request list: the template already has a sheet called \"" + name + "\" - data sheet not added.");
+                else
+                {
+                    int n = 1;
+                    while (byName.ContainsKey("xl/worksheets/sheet" + n + ".xml")) n++;
+                    string path = "xl/worksheets/sheet" + n + ".xml";
+                    put(path, DataSheet(header, rows));
+
+                    int maxRid = 0, maxSheetId = 0;
+                    foreach (Match rm in Regex.Matches(rels, @"\bId=""rId(\d+)""")) maxRid = Math.Max(maxRid, int.Parse(rm.Groups[1].Value, CultureInfo.InvariantCulture));
+                    foreach (Match sm in sheets) { int id; if (int.TryParse(Attr(sm.Value, "sheetId"), out id)) maxSheetId = Math.Max(maxSheetId, id); }
+                    string newRid = "rId" + (maxRid + 1);
+                    rels = rels.Replace("</Relationships>", "<Relationship Id=\"" + newRid + "\" Type=\"" + WorksheetRelType + "\" Target=\"worksheets/sheet" + n + ".xml\"/></Relationships>");
+                    // Declare the relationships prefix on the element itself: some writers declare it per <sheet>, not on <workbook>.
+                    workbook = workbook.Replace("</sheets>", "<sheet xmlns:" + relPrefix + "=\"" + RelNs + "\" name=\"" + Esc(name) + "\" sheetId=\"" + (maxSheetId + 1) + "\" " + relPrefix + ":id=\"" + newRid + "\"/></sheets>");
+                    string ct = text("[Content_Types].xml");
+                    put("[Content_Types].xml", ct.Replace("</Types>", "<Override PartName=\"/" + path + "\" ContentType=\"" + WorksheetContentType + "\"/></Types>"));
+                }
+            }
+
+            // Let Excel recalculate on open (e.g. the "Total Part No.'s" formula), and drop the
+            // calculation chain, which Excel rebuilds.
+            workbook = ForceRecalc(workbook);
+            if (byName.ContainsKey("xl/calcChain.xml"))
+            {
+                entries.Remove(byName["xl/calcChain.xml"]);
+                byName.Remove("xl/calcChain.xml");
+                rels = Regex.Replace(rels, @"<Relationship\b[^>]*calcChain[^>]*/>", "");
+                put("[Content_Types].xml", Regex.Replace(text("[Content_Types].xml"), @"<Override\b[^>]*calcChain[^>]*/>", ""));
+            }
+            put("xl/workbook.xml", workbook);
+            put("xl/_rels/workbook.xml.rels", rels);
+            return Zip.Write(entries);
+        }
+
+        static string ForceRecalc(string workbook)
+        {
+            Match calc = Regex.Match(workbook, @"<calcPr\b[^>]*?/?>");
+            if (calc.Success)
+            {
+                string tag = calc.Value;
+                bool selfClosing = tag.EndsWith("/>");
+                string attrs = tag.Substring(7, tag.Length - 7 - (selfClosing ? 2 : 1));
+                attrs = SetAttr(attrs, "fullCalcOnLoad", "1");
+                return workbook.Substring(0, calc.Index) + "<calcPr" + attrs + (selfClosing ? "/>" : ">") + workbook.Substring(calc.Index + calc.Length);
+            }
+            // calcPr comes after sheets / externalReferences / definedNames in the schema order.
+            foreach (string after in new[] { "</definedNames>", "</externalReferences>", "</sheets>" })
+            {
+                int i = workbook.IndexOf(after, StringComparison.Ordinal);
+                if (i >= 0) return workbook.Insert(i + after.Length, "<calcPr fullCalcOnLoad=\"1\"/>");
+            }
+            return workbook;
+        }
+
+        static string FillSheet(string sheet, RequestListSpec spec, List<string> header, List<List<string>> rows, List<string> warnings)
+        {
+            Match sd = Regex.Match(sheet, @"<sheetData\s*/>|<sheetData\b[^>]*>(.*?)</sheetData>", RegexOptions.Singleline);
+            if (!sd.Success) throw new FormatException("The request-list sheet has no cell data.");
+            List<Row> sheetRows = ParseRows(sd.Groups[1].Value);
+
+            // Columns to fill: letter -> index in the CSV row.
+            var cols = new List<KeyValuePair<int, int>>();
+            foreach (var kv in spec.Columns)
+            {
+                int idx = header.FindIndex(delegate (string h) { return string.Equals(h, kv.Value, StringComparison.OrdinalIgnoreCase); });
+                if (idx < 0) { warnings.Add("Request list: no CSV column \"" + kv.Value + "\" for column " + kv.Key + " - left empty."); continue; }
+                cols.Add(new KeyValuePair<int, int>(ColumnIndex(kv.Key), idx));
+            }
+
+            // The last template row of the list is the pattern for any extra rows needed.
+            Row pattern = null;
+            foreach (var r in sheetRows) if (r.R >= spec.FirstRow) pattern = r;
+
+            for (int i = 0; i < rows.Count; i++)
+            {
+                int rr = spec.FirstRow + i;
+                Row row = FindRow(sheetRows, rr);
+                if (row == null)
+                {
+                    row = new Row { R = rr, Attrs = pattern != null ? pattern.Attrs : "" };
+                    if (pattern != null)
+                        foreach (var c in pattern.Cells)
+                            row.Cells.Add(new Cell { Col = c.Col, Xml = CellXml(ColumnLetters(c.Col) + rr, c.Style, null) });
+                    sheetRows.Add(row);
+                }
+                foreach (var kv in cols)
+                {
+                    Cell existing = row.Get(kv.Key);
+                    string style = existing != null ? existing.Style : (pattern != null && pattern.Get(kv.Key) != null ? pattern.Get(kv.Key).Style : null);
+                    string value = kv.Value < rows[i].Count ? rows[i][kv.Value] : "";
+                    row.Put(new Cell { Col = kv.Key, Xml = CellXml(ColumnLetters(kv.Key) + rr, style, value) });
+                }
+            }
+
+            if (spec.TotalCell.Trim().Length > 0)
+            {
+                string tc; int tr;
+                SplitRef(spec.TotalCell, out tc, out tr);
+                Row row = FindRow(sheetRows, tr);
+                if (row == null) { row = new Row { R = tr, Attrs = "" }; sheetRows.Add(row); }
+                Cell existing = row.Get(ColumnIndex(tc));
+                if (existing == null || !existing.HasFormula)
+                    row.Put(new Cell { Col = ColumnIndex(tc), Xml = CellXml(tc + tr, existing != null ? existing.Style : null, rows.Count.ToString(CultureInfo.InvariantCulture)) });
+            }
+
+            sheetRows.Sort(delegate (Row a, Row b) { return a.R.CompareTo(b.R); });
+            var sb = new StringBuilder();
+            foreach (var r in sheetRows) sb.Append(r.ToXml());
+            string open = sd.Value.StartsWith("<sheetData/") || sd.Value.StartsWith("<sheetData /") ? "<sheetData>" : Regex.Match(sd.Value, @"^<sheetData\b[^>]*>").Value;
+            sheet = sheet.Substring(0, sd.Index) + open + sb + "</sheetData>" + sheet.Substring(sd.Index + sd.Length);
+
+            // Keep the declared used range in step with the rows written.
+            int lastRow = spec.FirstRow + rows.Count - 1;
+            Match dim = Regex.Match(sheet, @"<dimension ref=""([A-Z]+\d+):([A-Z]+)(\d+)""");
+            if (dim.Success && lastRow > int.Parse(dim.Groups[3].Value, CultureInfo.InvariantCulture))
+                sheet = sheet.Substring(0, dim.Index) + "<dimension ref=\"" + dim.Groups[1].Value + ":" + dim.Groups[2].Value + lastRow + "\"" + sheet.Substring(dim.Index + dim.Length);
+            return sheet;
+        }
+
+        static string DataSheet(List<string> header, List<List<string>> rows)
+        {
+            var widths = new List<int>();
+            foreach (string h in header) widths.Add(Math.Max(8, h.Length + 2));
+            foreach (var r in rows)
+                for (int i = 0; i < r.Count && i < widths.Count; i++) widths[i] = Math.Min(80, Math.Max(widths[i], r[i].Length + 2));
+            var sb = new StringBuilder();
+            sb.Append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n");
+            sb.Append("<worksheet xmlns=\"" + MainNs + "\" xmlns:r=\"" + RelNs + "\"><cols>");
+            for (int i = 0; i < widths.Count; i++)
+                sb.Append("<col min=\"" + (i + 1) + "\" max=\"" + (i + 1) + "\" width=\"" + widths[i] + "\" customWidth=\"1\"/>");
+            sb.Append("</cols><sheetData>");
+            var all = new List<List<string>> { header };
+            all.AddRange(rows);
+            for (int r = 0; r < all.Count; r++)
+            {
+                sb.Append("<row r=\"" + (r + 1) + "\">");
+                for (int c = 0; c < all[r].Count; c++) sb.Append(CellXml(ColumnLetters(c + 1) + (r + 1), null, all[r][c]));
+                sb.Append("</row>");
+            }
+            sb.Append("</sheetData></worksheet>");
+            return sb.ToString();
+        }
+    }
+}
+
+// ----- core/Zip.cs -----
+// Minimal ZIP reader/writer (enough for .xlsx files): stored and deflated entries,
+// no ZIP64, no encryption. Uses DeflateStream from System.dll; System.IO.Compression's
+// ZipArchive lives in an assembly an NX journal may not reference.
+namespace LaserDxf.Core
+{
+    using System;
+    using System.Collections.Generic;
+    using System.IO;
+    using System.IO.Compression;
+    using System.Text;
+
+    public sealed class ZipEntryData
+    {
+        public string Name;
+        public byte[] Data;
+    }
+
+    public static class Zip
+    {
+        static uint[] crcTable;
+
+        public static uint Crc32(byte[] data)
+        {
+            if (crcTable == null)
+            {
+                var t = new uint[256];
+                for (uint n = 0; n < 256; n++)
+                {
+                    uint c = n;
+                    for (int k = 0; k < 8; k++) c = (c & 1) != 0 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+                    t[n] = c;
+                }
+                crcTable = t;
+            }
+            uint crc = 0xFFFFFFFFu;
+            foreach (byte b in data) crc = crcTable[(crc ^ b) & 0xFF] ^ (crc >> 8);
+            return crc ^ 0xFFFFFFFFu;
+        }
+
+        static ushort U16(byte[] b, int o) { return (ushort)(b[o] | b[o + 1] << 8); }
+        static uint U32(byte[] b, int o) { return (uint)(b[o] | b[o + 1] << 8 | b[o + 2] << 16 | b[o + 3] << 24); }
+
+        /// <summary>Reads all entries, in archive order.</summary>
+        public static List<ZipEntryData> Read(byte[] zip)
+        {
+            int eocd = -1;
+            for (int i = zip.Length - 22; i >= Math.Max(0, zip.Length - 22 - 65535); i--)
+                if (U32(zip, i) == 0x06054b50) { eocd = i; break; }
+            if (eocd < 0) throw new InvalidDataException("Not a ZIP file (no end-of-central-directory record).");
+            int count = U16(zip, eocd + 10);
+            int pos = (int)U32(zip, eocd + 16);
+            var entries = new List<ZipEntryData>();
+            for (int i = 0; i < count; i++)
+            {
+                if (U32(zip, pos) != 0x02014b50) throw new InvalidDataException("Bad ZIP central directory.");
+                int method = U16(zip, pos + 10);
+                int csize = (int)U32(zip, pos + 20);
+                int usize = (int)U32(zip, pos + 24);
+                int nameLen = U16(zip, pos + 28), extraLen = U16(zip, pos + 30), commentLen = U16(zip, pos + 32);
+                int local = (int)U32(zip, pos + 42);
+                string name = Encoding.UTF8.GetString(zip, pos + 46, nameLen);
+                pos += 46 + nameLen + extraLen + commentLen;
+
+                if (U32(zip, local) != 0x04034b50) throw new InvalidDataException("Bad ZIP local header for " + name);
+                int dataStart = local + 30 + U16(zip, local + 26) + U16(zip, local + 28);
+                byte[] data;
+                if (method == 0)
+                {
+                    data = new byte[usize];
+                    Buffer.BlockCopy(zip, dataStart, data, 0, usize);
+                }
+                else if (method == 8)
+                {
+                    using (var ms = new MemoryStream(zip, dataStart, csize))
+                    using (var ds = new DeflateStream(ms, CompressionMode.Decompress))
+                    using (var outMs = new MemoryStream(usize > 0 ? usize : 1024))
+                    {
+                        var buf = new byte[65536];
+                        int r;
+                        while ((r = ds.Read(buf, 0, buf.Length)) > 0) outMs.Write(buf, 0, r);
+                        data = outMs.ToArray();
+                    }
+                }
+                else throw new InvalidDataException("Unsupported ZIP compression method " + method + " for " + name);
+                entries.Add(new ZipEntryData { Name = name, Data = data });
+            }
+            return entries;
+        }
+
+        static void W16(Stream s, int v) { s.WriteByte((byte)v); s.WriteByte((byte)(v >> 8)); }
+        static void W32(Stream s, uint v) { W16(s, (int)(v & 0xFFFF)); W16(s, (int)(v >> 16)); }
+
+        /// <summary>Writes the entries (deflated) to a new ZIP archive.</summary>
+        public static byte[] Write(List<ZipEntryData> entries)
+        {
+            var ms = new MemoryStream();
+            var central = new MemoryStream();
+            // DOS date/time: 1980-01-01 00:00 (fixed, so output is reproducible)
+            const int dosTime = 0, dosDate = (0 << 9) | (1 << 5) | 1;
+            foreach (var e in entries)
+            {
+                byte[] name = Encoding.UTF8.GetBytes(e.Name);
+                byte[] comp;
+                using (var cms = new MemoryStream())
+                {
+                    using (var ds = new DeflateStream(cms, CompressionMode.Compress, true)) ds.Write(e.Data, 0, e.Data.Length);
+                    comp = cms.ToArray();
+                }
+                uint crc = Crc32(e.Data);
+                uint offset = (uint)ms.Position;
+
+                W32(ms, 0x04034b50); W16(ms, 20); W16(ms, 0x0800); W16(ms, 8); W16(ms, dosTime); W16(ms, dosDate);
+                W32(ms, crc); W32(ms, (uint)comp.Length); W32(ms, (uint)e.Data.Length); W16(ms, name.Length); W16(ms, 0);
+                ms.Write(name, 0, name.Length);
+                ms.Write(comp, 0, comp.Length);
+
+                W32(central, 0x02014b50); W16(central, 20); W16(central, 20); W16(central, 0x0800); W16(central, 8);
+                W16(central, dosTime); W16(central, dosDate); W32(central, crc); W32(central, (uint)comp.Length); W32(central, (uint)e.Data.Length);
+                W16(central, name.Length); W16(central, 0); W16(central, 0); W16(central, 0); W16(central, 0); W32(central, 0); W32(central, offset);
+                central.Write(name, 0, name.Length);
+            }
+            uint cdOffset = (uint)ms.Position;
+            byte[] cd = central.ToArray();
+            ms.Write(cd, 0, cd.Length);
+            W32(ms, 0x06054b50); W16(ms, 0); W16(ms, 0); W16(ms, entries.Count); W16(ms, entries.Count);
+            W32(ms, (uint)cd.Length); W32(ms, cdOffset); W16(ms, 0);
+            return ms.ToArray();
         }
     }
 }

@@ -109,6 +109,20 @@
     ]
   },
 
+  // Jig part request list: an Excel workbook written next to the batch CSV, made from your own
+  // template (logos, borders and print setup are kept). The template goes in the same folder as
+  // this config file (or give a full path). Columns map a sheet column to a CSV column header.
+  "requestList": {
+    "enabled": true,
+    "template": "Jig Part Request List.xlsx",
+    "fileName": "{ID}-{REV}.xlsx",    // named after the assembly, like the CSV
+    "sheet": "",                      // sheet to fill; "" = the first sheet
+    "firstRow": 4,                    // first empty row under the headers
+    "columns": { "A": "ID", "B": "Material", "C": "Thickness", "D": "Qty" },
+    "totalCell": "H1",                // "Total Part No.'s" - left alone if it holds a formula
+    "dataSheet": "DXF list"           // extra sheet with the full CSV table; "" = none
+  },
+
   "debug": {
     "saveBodyJson": true,             // copy of the plate geometry in <outputFolder>\_debug
     "writeLog": true                  // <outputFolder>\_logs\LaserDxf_<date>.log

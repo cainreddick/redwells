@@ -108,6 +108,23 @@ namespace LaserDxf.Core
         public string BatchFolderFormat = "{ID}-{REV}";
         /// <summary>Component attributes that mean "not in the parts list": such components aren't counted in Qty.</summary>
         public List<string> QtyExcludeAttributes = new List<string> { "REFERENCE_COMPONENT", "PLIST_IGNORE_MEMBER" };
+
+        // Jig part request list (Excel), filled from the batch CSV
+        public bool RequestListEnabled = true;
+        /// <summary>Template workbook; a relative path is relative to the config file's folder.</summary>
+        public string RequestListTemplate = "Jig Part Request List.xlsx";
+        public string RequestListFileFormat = "{ID}-{REV}.xlsx";
+        public RequestListSpec RequestList = DefaultRequestList();
+
+        public static RequestListSpec DefaultRequestList()
+        {
+            var r = new RequestListSpec { FirstRow = 4, TotalCell = "H1", DataSheetName = "DXF list" };
+            r.Columns.Add(new KeyValuePair<string, string>("A", "ID"));
+            r.Columns.Add(new KeyValuePair<string, string>("B", "Material"));
+            r.Columns.Add(new KeyValuePair<string, string>("C", "Thickness"));
+            r.Columns.Add(new KeyValuePair<string, string>("D", "Qty"));
+            return r;
+        }
         public string BatchCsvFileFormat = "{ID}-{REV}.csv";
         public double ThicknessTolerance = 0.1;
         public bool WriteCsv = true;
@@ -212,6 +229,14 @@ namespace LaserDxf.Core
                     if (string.Equals(value.ToString(), s, StringComparison.OrdinalIgnoreCase)) return value;
                 warnings.Add("Config: " + Where(key) + " = \"" + s + "\" is not one of " + string.Join(", ", Enum.GetNames(typeof(T))) + " - using " + def);
                 return def;
+            }
+
+            /// <summary>The raw object under key (marked as used), or null.</summary>
+            public JObj RawObj(string key)
+            {
+                object v = Take(key);
+                if (v != null && !(v is JObj)) warnings.Add("Config: " + Where(key) + " should be an object { ... }");
+                return v as JObj;
             }
 
             public Section Sub(string key)
@@ -408,6 +433,32 @@ namespace LaserDxf.Core
             c.ThicknessTolerance = b.Num("thicknessTolerance", c.ThicknessTolerance, 0, 100);
             c.WriteCsv = b.Bool("writeCsv", c.WriteCsv);
             b.Finish();
+
+            Section rl = s.Sub("requestList");
+            c.RequestListEnabled = rl.Bool("enabled", c.RequestListEnabled);
+            c.RequestListTemplate = rl.Str("template", c.RequestListTemplate);
+            c.RequestListFileFormat = rl.Str("fileName", c.RequestListFileFormat);
+            c.RequestList.SheetName = rl.Str("sheet", c.RequestList.SheetName);
+            c.RequestList.FirstRow = (int)rl.Num("firstRow", c.RequestList.FirstRow, 1, 100000);
+            c.RequestList.TotalCell = rl.Str("totalCell", c.RequestList.TotalCell);
+            c.RequestList.DataSheetName = rl.Str("dataSheet", c.RequestList.DataSheetName);
+            JObj rlCols = rl.RawObj("columns");
+            if (rlCols != null)
+            {
+                c.RequestList.Columns.Clear();
+                foreach (var kv in rlCols.Items)
+                {
+                    if (!System.Text.RegularExpressions.Regex.IsMatch(kv.Key, "^[A-Za-z]{1,3}$") || !(kv.Value is string))
+                        warnings.Add("Config: requestList.columns entry \"" + kv.Key + "\" should be a column letter with a CSV column name, e.g. \"A\": \"ID\"");
+                    else c.RequestList.Columns.Add(new KeyValuePair<string, string>(kv.Key.ToUpperInvariant(), (string)kv.Value));
+                }
+            }
+            if (c.RequestList.TotalCell.Trim().Length > 0 && !System.Text.RegularExpressions.Regex.IsMatch(c.RequestList.TotalCell.Trim(), "^[A-Za-z]{1,3}[0-9]+$"))
+            {
+                warnings.Add("Config: requestList.totalCell \"" + c.RequestList.TotalCell + "\" is not a cell like H1 - ignored");
+                c.RequestList.TotalCell = "";
+            }
+            rl.Finish();
 
             Section dbg = s.Sub("debug");
             c.SaveBodyJson = dbg.Bool("saveBodyJson", c.SaveBodyJson);

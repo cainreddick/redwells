@@ -23,8 +23,9 @@ $MCS -target:exe -r:System.dll -r:build/LaserDxf.Core.dll -out:build/tests.exe t
 cp build/LaserDxf.Core.dll build/ 2>/dev/null || true
 mono build/tests.exe build/test-output
 
-# 4) Validate the sample DXFs with ezdxf.
+# 4) Validate the sample DXFs with ezdxf, and the filled request lists with openpyxl.
 python3 tests/validate_dxf.py build/test-output
+python3 tests/validate_xlsx.py build/test-output
 python3 tests/validate_pdf.py build/test-output
 
 # 5) Keep the sample DXFs in the repo so they can be tried in the laser CAM software.
@@ -40,3 +41,4 @@ if command -v xvfb-run >/dev/null 2>&1; then
     tests/ui/PreviewSmoke.cs src/nx/PreviewWindow.cs src/nx/OptionsDialog.cs tests/Synth.cs tests/ExportTests.cs tests/CoreTests.cs
   (cd build && timeout 120 xvfb-run -a -s "-screen 0 1300x950x24" mono smoke.exe test-output 2>/dev/null | grep -v "^$")
 fi
+cp build/test-output/request_list_6.xlsx samples/request_list_example.xlsx

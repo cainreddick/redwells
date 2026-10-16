@@ -18,6 +18,45 @@ namespace LaserDxf.Nx
             NxPlate.Run(RunInner);
         }
 
+        /// <summary>Fills the jig part request list template from the (merged) CSV. Returns the file written, or null.</summary>
+        static string WriteRequestList(Session s, LaserConfig cfg, PartIdentity assembly, string folder, string csv, List<string> warnings)
+        {
+            string template = cfg.RequestListTemplate;
+            if (!Path.IsPathRooted(template))
+            {
+                string baseDir = File.Exists(cfg.SourcePath) ? Path.GetDirectoryName(cfg.SourcePath) : null;
+                if (baseDir == null)
+                {
+                    string journal = NxReflect.ExecutingJournal(s);
+                    if (!string.IsNullOrEmpty(journal)) baseDir = Path.GetDirectoryName(journal);
+                }
+                template = Path.Combine(baseDir ?? "", template);
+            }
+            if (!File.Exists(template))
+            {
+                warnings.Add("Request list not written: template \"" + template + "\" not found. Put your Jig Part Request List .xlsx there (or set requestList.template).");
+                return null;
+            }
+            string name = Identity.SafeFileName(Identity.Format(cfg.RequestListFileFormat, assembly.Tokens(), warnings));
+            if (name.Length == 0 || name.Equals(".xlsx", StringComparison.OrdinalIgnoreCase)) name = "Jig Part Request List";
+            if (!name.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase)) name += ".xlsx";
+            string path = Path.Combine(folder, name);
+            try
+            {
+                List<List<string>> table = Batch.ParseCsv(csv);
+                List<string> header = table[0];
+                table.RemoveAt(0);
+                byte[] xlsx = Xlsx.FillTemplate(File.ReadAllBytes(template), cfg.RequestList, header, table, warnings);
+                File.WriteAllBytes(path, xlsx);
+                return path;
+            }
+            catch (Exception ex)
+            {
+                warnings.Add("Request list not written (" + path + "): " + ex.Message + " (is it open in Excel?)");
+                return null;
+            }
+        }
+
         static void RunInner(Session s, ListingWindow lw, List<string> log)
         {
             var cfgWarnings = new List<string>();
@@ -169,32 +208,37 @@ namespace LaserDxf.Nx
                 }
             }
 
-            // 4. CSV for the laser shop + listing.
-            string csvPath = null;
+            // 4. CSV for the laser shop, and the jig part request list (Excel) made from it.
+            string csvPath = null, xlsxPath = null;
             int exported = 0;
             foreach (var it in items) if (it.Status == BatchStatus.Exported) exported++;
-            if (cfg.WriteCsv && exported > 0)
+            if (exported > 0)
             {
+                string csvFile = Path.Combine(folder, Batch.CsvFileName(assembly, cfg, cfgWarnings));
+                string csv = Batch.CsvSummary(items, cfg);
                 try
                 {
-                    csvPath = Path.Combine(folder, Batch.CsvFileName(assembly, cfg, cfgWarnings));
-                    string csv = Batch.CsvSummary(items, cfg);
-                    if (File.Exists(csvPath))
+                    if (File.Exists(csvFile))
                     {
                         int kept;
-                        csv = Batch.MergeCsv(File.ReadAllText(csvPath), csv, cfg, out kept);
+                        csv = Batch.MergeCsv(File.ReadAllText(csvFile), csv, cfg, out kept);
                         if (kept > 0) log.Add("CSV: kept " + kept + " row(s) from the earlier batch for plates not exported this time.");
                     }
-                    File.WriteAllText(csvPath, csv, new UTF8Encoding(true)); // BOM so Excel reads UTF-8
+                    if (cfg.WriteCsv)
+                    {
+                        File.WriteAllText(csvFile, csv, new UTF8Encoding(true)); // BOM so Excel reads UTF-8
+                        csvPath = csvFile;
+                    }
                 }
                 catch (Exception ex)
                 {
-                    log.Add("Could not write the CSV summary " + csvPath + ": " + ex.Message + " (is it open in Excel?)");
-                    csvPath = null;
+                    log.Add("Could not write the CSV summary " + csvFile + ": " + ex.Message + " (is it open in Excel?)");
                 }
+                if (cfg.RequestListEnabled) xlsxPath = WriteRequestList(s, cfg, assembly, folder, csv, cfgWarnings);
             }
 
             List<string> lines = Batch.Summary(items, Version, cfg.SourcePath, csvPath, assemblyLabel, folder);
+            if (xlsxPath != null) lines.Insert(lines.FindIndex(delegate (string l) { return l.StartsWith("Plates"); }) + 1, "Request list : " + xlsxPath);
             var notes = new List<string>(cfgWarnings);
             notes.AddRange(log);
             if (notes.Count > 0)

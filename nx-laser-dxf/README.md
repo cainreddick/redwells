@@ -110,10 +110,27 @@ several plates in one go:
    ```
    C:\Laser DXF\S180-06068-37003-1\
        S180-06068-37003-1.csv
+       S180-06068-37003-1.xlsx      (Jig Part Request List)
        S180-06068-47002-1.dxf
        S180-06068-47003-1.dxf
        ...
    ```
+
+   The folder also gets **`S180-06068-37003-1.xlsx`**, your **Jig Part Request List** filled
+   in. It is made from your own workbook, so the logos, borders and print setup stay as they
+   are:
+   - **Sheet 1 (your template):** rows from row 4 get Part Number (ID with revision),
+     Material, Thickness and Quantity. More rows are added, with the same borders, if there
+     are more parts than the template has rows, and the print area grows to match.
+     "Total Part No.'s" (H1) recalculates if it's a formula, or gets the number of parts if
+     it isn't.
+   - **Sheet 2 "DXF list":** the full CSV table.
+
+   **Setup:** save your request-list workbook as `Jig Part Request List.xlsx` (a real `.xlsx`,
+   not `.xls`) in the same folder as the config file. Which columns get which CSV column, the
+   first row, the total cell and the file name are set in the `requestList` section of the
+   config. If the template isn't found, the batch still runs and the listing says where it
+   looked. `samples/request_list_example.xlsx` is an example made from a stand-in template.
 
    Running the batch again on the same assembly (e.g. to redo one plate) updates that plate's
    row in the CSV and keeps the others. Logs and debug files stay in the output folder's
