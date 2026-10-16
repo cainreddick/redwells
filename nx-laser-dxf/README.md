@@ -98,13 +98,29 @@ several plates in one go:
 5. The **preview** opens for each plate in turn ("plate 2 of 5"), with the same editing
    tools, plus **Export DXF**, **Skip plate** and **Cancel batch**. Each DXF is written as
    soon as you approve it. Cancel batch keeps the plates already written.
-6. The listing shows one line per plate (exported / skipped / failed, with reasons and
-   warnings). `LaserDxf_batch_<date-time>.csv` is written next to the DXFs:
+6. Everything goes in a **folder named after the assembly** (the displayed part's ID and
+   revision), inside the output folder, holding the DXFs and a CSV with the same name:
+
+   ```
+   C:\Laser DXF\S180-06068-37003-1\
+       S180-06068-37003-1.csv
+       S180-06068-47002-1.dxf
+       S180-06068-47003-1.dxf
+       ...
+   ```
+
+   Running the batch again on the same assembly (e.g. to redo one plate) updates that plate's
+   row in the CSV and keeps the others. Logs and debug files stay in the output folder's
+   `_logs` / `_debug`, not in the assembly folder. Names are set by `batch.folderFormat` and
+   `batch.csvFileName` (`"folderFormat": ""` writes straight into the output folder).
+
+   The listing shows the assembly, the folder, and one line per plate (exported / skipped /
+   failed, with reasons and warnings). The CSV:
 
    | ID | Revision | Name | Material | Thickness | DXF path |
    |---|---|---|---|---|---|
-   | S180-06068-47002-1 | 1 | RING SUPPORT - JIG VALVE ASSEMBLY | | 6mm | C:\Laser DXF\S180-06068-47002-1.dxf |
-   | S180-06068-47003-1 | 1 | RING SUPPORT - JIG VALVE ASSEMBLY | | 3mm | C:\Laser DXF\S180-06068-47003-1.dxf |
+   | S180-06068-47002-1 | 1 | RING SUPPORT - JIG VALVE ASSEMBLY | | 6mm | C:\Laser DXF\S180-06068-37003-1\S180-06068-47002-1.dxf |
+   | S180-06068-47003-1 | 1 | RING SUPPORT - JIG VALVE ASSEMBLY | | 3mm | C:\Laser DXF\S180-06068-37003-1\S180-06068-47003-1.dxf |
 
    Rows are grouped by thickness (6 mm first), then sorted by ID. The columns are set in
    `batch.csvColumns` (header + value with `{ID}`, `{REV}`, `{REVRAW}`, `{NAME}`, `{MATERIAL}`,

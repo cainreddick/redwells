@@ -52,9 +52,14 @@ namespace LaserDxf.Nx
             return l;
         }
 
-        /// <summary>Writes the DXF (and the PDF sheet if the run has one), the debug body model
-        /// and the log entry. write = false records that overwriting was declined.</summary>
+        /// <summary>Writes the DXF (and the PDF sheet if the run has one) to folder, and the debug body
+        /// model under supportFolder\_debug. write = false records that overwriting was declined.</summary>
         public static void Write(PlateJob job, LaserConfig cfg, string folder, bool write)
+        {
+            Write(job, cfg, folder, write, folder);
+        }
+
+        public static void Write(PlateJob job, LaserConfig cfg, string folder, bool write, string supportFolder)
         {
             ExportRun run = job.Run;
             run.Notes.AddRange(job.Log);
@@ -99,7 +104,7 @@ namespace LaserDxf.Nx
             {
                 try
                 {
-                    string dbg = NxUtil.EnsureFolder(Path.Combine(folder, "_debug"), run.Notes);
+                    string dbg = NxUtil.EnsureFolder(Path.Combine(supportFolder, "_debug"), run.Notes);
                     JObj json = job.Model.ToJson();
                     json.Add("selectedFaceId", (double)job.FaceId);
                     string jp = Path.Combine(dbg, Path.GetFileNameWithoutExtension(run.FileName) + "_" + stamp + "_body.json");

@@ -60,7 +60,18 @@ namespace LaserDxf.Nx
                 cfgWarnings.Add("Picking the part-number position isn't available in batch mode - placed automatically (move it in the preview if needed).");
                 cfg.EtchPlacement = "Auto";
             }
-            string folder = NxUtil.EnsureFolder(cfg.OutputFolder, cfgWarnings);
+            string root = NxUtil.EnsureFolder(cfg.OutputFolder, cfgWarnings);
+
+            // The batch goes in a folder named after the assembly (the displayed part): <root>\S180-...-1\
+            Part assemblyPart = s.Parts.Display ?? s.Parts.Work;
+            var asmModel = new BodyModel { PartName = NxUtil.PartLabel(assemblyPart) };
+            var asmLog = new List<string>();
+            NxAttributes.Read(assemblyPart, asmModel, asmLog, cfg.AttributeTitles());
+            PartIdentity assembly = Identity.Resolve(asmModel, cfg);
+            foreach (string w in assembly.Warnings) cfgWarnings.Add("Assembly: " + w);
+            string assemblyLabel = Identity.Format("{ID}-{REV}", assembly.Tokens(), null) + (assembly.Name.Length > 0 ? "  " + assembly.Name : "");
+            string sub = Batch.FolderName(assembly, cfg, cfgWarnings);
+            string folder = sub.Length == 0 ? root : NxUtil.EnsureFolder(Path.Combine(root, sub), cfgWarnings);
 
             // 1. Read and lay out every plate first, so file names (and clashes) are known up front.
             var items = new List<BatchItem>();
@@ -162,9 +173,9 @@ namespace LaserDxf.Nx
                 }
                 try
                 {
-                    PlateJobs.Write(job, cfg, folder, true);
+                    PlateJobs.Write(job, cfg, folder, true, root);
                     List<string> summary = ExportReport.Summary(job.Run);
-                    PlateJobs.AppendLog(job, cfg, folder, summary);
+                    PlateJobs.AppendLog(job, cfg, root, summary);
                 }
                 catch (Exception ex)
                 {
@@ -181,17 +192,24 @@ namespace LaserDxf.Nx
             {
                 try
                 {
-                    csvPath = Path.Combine(folder, "LaserDxf_batch_" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".csv");
-                    File.WriteAllText(csvPath, Batch.CsvSummary(items, cfg), new UTF8Encoding(true)); // BOM so Excel reads UTF-8
+                    csvPath = Path.Combine(folder, Batch.CsvFileName(assembly, cfg, cfgWarnings));
+                    string csv = Batch.CsvSummary(items, cfg);
+                    if (File.Exists(csvPath))
+                    {
+                        int kept;
+                        csv = Batch.MergeCsv(File.ReadAllText(csvPath), csv, cfg, out kept);
+                        if (kept > 0) log.Add("CSV: kept " + kept + " row(s) from the earlier batch for plates not exported this time.");
+                    }
+                    File.WriteAllText(csvPath, csv, new UTF8Encoding(true)); // BOM so Excel reads UTF-8
                 }
                 catch (Exception ex)
                 {
-                    log.Add("Could not write the CSV summary: " + ex.Message);
+                    log.Add("Could not write the CSV summary " + csvPath + ": " + ex.Message + " (is it open in Excel?)");
                     csvPath = null;
                 }
             }
 
-            List<string> lines = Batch.Summary(items, Version, cfg.SourcePath, csvPath);
+            List<string> lines = Batch.Summary(items, Version, cfg.SourcePath, csvPath, assemblyLabel, folder);
             var notes = new List<string>(cfgWarnings);
             notes.AddRange(log);
             if (notes.Count > 0)
@@ -201,7 +219,7 @@ namespace LaserDxf.Nx
                 foreach (string l in notes) lines.Add("  " + l);
             }
             lines.Add("");
-            lines.Add("Per-plate details are in " + Path.Combine(Path.Combine(folder, "_logs"), "LaserDxf_" + DateTime.Now.ToString("yyyyMMdd") + ".log"));
+            lines.Add("Per-plate details are in " + Path.Combine(Path.Combine(root, "_logs"), "LaserDxf_" + DateTime.Now.ToString("yyyyMMdd") + ".log"));
             foreach (string l in lines) lw.WriteLine(l);
         }
     }
@@ -1196,9 +1214,14 @@ namespace LaserDxf.Nx
             return l;
         }
 
-        /// <summary>Writes the DXF (and the PDF sheet if the run has one), the debug body model
-        /// and the log entry. write = false records that overwriting was declined.</summary>
+        /// <summary>Writes the DXF (and the PDF sheet if the run has one) to folder, and the debug body
+        /// model under supportFolder\_debug. write = false records that overwriting was declined.</summary>
         public static void Write(PlateJob job, LaserConfig cfg, string folder, bool write)
+        {
+            Write(job, cfg, folder, write, folder);
+        }
+
+        public static void Write(PlateJob job, LaserConfig cfg, string folder, bool write, string supportFolder)
         {
             ExportRun run = job.Run;
             run.Notes.AddRange(job.Log);
@@ -1243,7 +1266,7 @@ namespace LaserDxf.Nx
             {
                 try
                 {
-                    string dbg = NxUtil.EnsureFolder(Path.Combine(folder, "_debug"), run.Notes);
+                    string dbg = NxUtil.EnsureFolder(Path.Combine(supportFolder, "_debug"), run.Notes);
                     JObj json = job.Model.ToJson();
                     json.Add("selectedFaceId", (double)job.FaceId);
                     string jp = Path.Combine(dbg, Path.GetFileNameWithoutExtension(run.FileName) + "_" + stamp + "_body.json");
@@ -2414,7 +2437,117 @@ namespace LaserDxf.Core
             return sb.ToString();
         }
 
+        /// <summary>Sub-folder name for the batch from the assembly's identity ("" = none).</summary>
+        public static string FolderName(PartIdentity assembly, LaserConfig c, List<string> warnings)
+        {
+            if (c.BatchFolderFormat.Trim().Length == 0) return "";
+            return Identity.SafeFileName(Identity.Format(c.BatchFolderFormat, assembly.Tokens(), warnings));
+        }
+
+        public static string CsvFileName(PartIdentity assembly, LaserConfig c, List<string> warnings)
+        {
+            string name = Identity.SafeFileName(Identity.Format(c.BatchCsvFileFormat, assembly.Tokens(), warnings));
+            if (name.Length == 0 || name.Equals(".csv", StringComparison.OrdinalIgnoreCase)) name = "LaserDxf_batch";
+            if (!name.EndsWith(".csv", StringComparison.OrdinalIgnoreCase)) name += ".csv";
+            return name;
+        }
+
+        /// <summary>Parses CSV text (quoted fields, doubled quotes, CRLF/LF, optional BOM).</summary>
+        public static List<List<string>> ParseCsv(string text)
+        {
+            var rows = new List<List<string>>();
+            var row = new List<string>();
+            var cell = new StringBuilder();
+            bool quoted = false, any = false;
+            text = (text ?? "").TrimStart('\uFEFF');
+            for (int i = 0; i < text.Length; i++)
+            {
+                char ch = text[i];
+                if (quoted)
+                {
+                    if (ch == '"' && i + 1 < text.Length && text[i + 1] == '"') { cell.Append('"'); i++; }
+                    else if (ch == '"') quoted = false;
+                    else cell.Append(ch);
+                    continue;
+                }
+                if (ch == '"') { quoted = true; any = true; }
+                else if (ch == ',') { row.Add(cell.ToString()); cell.Length = 0; any = true; }
+                else if (ch == '\r' || ch == '\n')
+                {
+                    if (ch == '\r' && i + 1 < text.Length && text[i + 1] == '\n') i++;
+                    if (any || cell.Length > 0) { row.Add(cell.ToString()); rows.Add(row); }
+                    row = new List<string>();
+                    cell.Length = 0;
+                    any = false;
+                }
+                else { cell.Append(ch); any = true; }
+            }
+            if (any || cell.Length > 0) { row.Add(cell.ToString()); rows.Add(row); }
+            return rows;
+        }
+
+        static int ColumnOf(LaserConfig c, string token)
+        {
+            for (int i = 0; i < c.CsvColumns.Count; i++)
+                if (c.CsvColumns[i].Value.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0) return i;
+            return -1;
+        }
+
+        /// <summary>Merges a new batch CSV into the one already in the folder: rows for plates exported
+        /// again are replaced, the others kept. Rows are re-sorted (thickest first, then by ID).
+        /// If the existing file has different columns it is simply replaced.</summary>
+        public static string MergeCsv(string existing, string fresh, LaserConfig c, out int kept)
+        {
+            kept = 0;
+            List<List<string>> oldRows = ParseCsv(existing), newRows = ParseCsv(fresh);
+            if (oldRows.Count == 0 || newRows.Count == 0 || string.Join(",", oldRows[0].ToArray()) != string.Join(",", newRows[0].ToArray()))
+                return fresh;
+            int idCol = Math.Max(0, ColumnOf(c, "{ID}"));
+            int thkCol = ColumnOf(c, "{THICKNESS}");
+            var rows = new List<List<string>>();
+            var ids = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 1; i < newRows.Count; i++)
+            {
+                rows.Add(newRows[i]);
+                if (idCol < newRows[i].Count) ids[newRows[i][idCol]] = true;
+            }
+            for (int i = 1; i < oldRows.Count; i++)
+            {
+                if (idCol < oldRows[i].Count && ids.ContainsKey(oldRows[i][idCol])) continue;
+                rows.Add(oldRows[i]);
+                kept++;
+            }
+            rows.Sort(delegate (List<string> x, List<string> y)
+            {
+                if (thkCol >= 0)
+                {
+                    double tx = thkCol < x.Count ? ParseThickness(x[thkCol]) : double.NaN;
+                    double ty = thkCol < y.Count ? ParseThickness(y[thkCol]) : double.NaN;
+                    if (double.IsNaN(tx)) tx = -1;
+                    if (double.IsNaN(ty)) ty = -1;
+                    if (Math.Abs(tx - ty) > 1e-9) return ty.CompareTo(tx);
+                }
+                string ix = idCol < x.Count ? x[idCol] : "", iy = idCol < y.Count ? y[idCol] : "";
+                return string.Compare(ix, iy, StringComparison.OrdinalIgnoreCase);
+            });
+            var sb = new StringBuilder();
+            var all = new List<List<string>> { newRows[0] };
+            all.AddRange(rows);
+            foreach (var r in all)
+            {
+                var cells = new List<string>();
+                foreach (string v in r) cells.Add(Csv(v));
+                sb.Append(string.Join(",", cells.ToArray())).Append("\r\n");
+            }
+            return sb.ToString();
+        }
+
         public static List<string> Summary(List<BatchItem> items, string version, string configPath, string csvPath)
+        {
+            return Summary(items, version, configPath, csvPath, null, null);
+        }
+
+        public static List<string> Summary(List<BatchItem> items, string version, string configPath, string csvPath, string assembly, string folder)
         {
             var L = new List<string>();
             int exported = 0, skipped = 0, failed = 0, cancelled = 0;
@@ -2427,6 +2560,8 @@ namespace LaserDxf.Core
             }
             L.Add("=== Laser DXF batch " + version + " ===   " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
             L.Add("Config       : " + configPath);
+            if (assembly != null) L.Add("Assembly     : " + assembly);
+            if (folder != null) L.Add("Folder       : " + folder);
             L.Add("Plates       : " + items.Count + " selected - " + exported + " exported, " + skipped + " skipped" +
                   (failed > 0 ? ", " + failed + " failed" : "") + (cancelled > 0 ? ", " + cancelled + " not done (batch cancelled)" : ""));
             if (csvPath != null) L.Add("CSV summary  : " + csvPath);
@@ -2815,6 +2950,9 @@ namespace LaserDxf.Core
         public List<double> AllowedThicknesses = new List<double> { 6, 3 };
         /// <summary>CSV columns: header + {TOKEN} template ({ID} {REV} {REVRAW} {NAME} {MATERIAL} {THICKNESS} {DXF} {DXFNAME}).</summary>
         public List<KeyValuePair<string, string>> CsvColumns = DefaultCsvColumns();
+        /// <summary>Batch sub-folder (inside OutputFolder) and CSV name, from the assembly's {ID}/{REV}. Empty folder = no sub-folder.</summary>
+        public string BatchFolderFormat = "{ID}-{REV}";
+        public string BatchCsvFileFormat = "{ID}-{REV}.csv";
         public double ThicknessTolerance = 0.1;
         public bool WriteCsv = true;
 
@@ -3077,6 +3215,8 @@ namespace LaserDxf.Core
             pdf.Finish();
 
             Section b = s.Sub("batch");
+            c.BatchFolderFormat = b.Str("folderFormat", c.BatchFolderFormat);
+            c.BatchCsvFileFormat = b.Str("csvFileName", c.BatchCsvFileFormat);
             List<object> thk = b.Arr("allowedThicknesses");
             if (thk != null)
             {

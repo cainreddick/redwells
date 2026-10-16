@@ -111,7 +111,117 @@ namespace LaserDxf.Core
             return sb.ToString();
         }
 
+        /// <summary>Sub-folder name for the batch from the assembly's identity ("" = none).</summary>
+        public static string FolderName(PartIdentity assembly, LaserConfig c, List<string> warnings)
+        {
+            if (c.BatchFolderFormat.Trim().Length == 0) return "";
+            return Identity.SafeFileName(Identity.Format(c.BatchFolderFormat, assembly.Tokens(), warnings));
+        }
+
+        public static string CsvFileName(PartIdentity assembly, LaserConfig c, List<string> warnings)
+        {
+            string name = Identity.SafeFileName(Identity.Format(c.BatchCsvFileFormat, assembly.Tokens(), warnings));
+            if (name.Length == 0 || name.Equals(".csv", StringComparison.OrdinalIgnoreCase)) name = "LaserDxf_batch";
+            if (!name.EndsWith(".csv", StringComparison.OrdinalIgnoreCase)) name += ".csv";
+            return name;
+        }
+
+        /// <summary>Parses CSV text (quoted fields, doubled quotes, CRLF/LF, optional BOM).</summary>
+        public static List<List<string>> ParseCsv(string text)
+        {
+            var rows = new List<List<string>>();
+            var row = new List<string>();
+            var cell = new StringBuilder();
+            bool quoted = false, any = false;
+            text = (text ?? "").TrimStart('\uFEFF');
+            for (int i = 0; i < text.Length; i++)
+            {
+                char ch = text[i];
+                if (quoted)
+                {
+                    if (ch == '"' && i + 1 < text.Length && text[i + 1] == '"') { cell.Append('"'); i++; }
+                    else if (ch == '"') quoted = false;
+                    else cell.Append(ch);
+                    continue;
+                }
+                if (ch == '"') { quoted = true; any = true; }
+                else if (ch == ',') { row.Add(cell.ToString()); cell.Length = 0; any = true; }
+                else if (ch == '\r' || ch == '\n')
+                {
+                    if (ch == '\r' && i + 1 < text.Length && text[i + 1] == '\n') i++;
+                    if (any || cell.Length > 0) { row.Add(cell.ToString()); rows.Add(row); }
+                    row = new List<string>();
+                    cell.Length = 0;
+                    any = false;
+                }
+                else { cell.Append(ch); any = true; }
+            }
+            if (any || cell.Length > 0) { row.Add(cell.ToString()); rows.Add(row); }
+            return rows;
+        }
+
+        static int ColumnOf(LaserConfig c, string token)
+        {
+            for (int i = 0; i < c.CsvColumns.Count; i++)
+                if (c.CsvColumns[i].Value.IndexOf(token, StringComparison.OrdinalIgnoreCase) >= 0) return i;
+            return -1;
+        }
+
+        /// <summary>Merges a new batch CSV into the one already in the folder: rows for plates exported
+        /// again are replaced, the others kept. Rows are re-sorted (thickest first, then by ID).
+        /// If the existing file has different columns it is simply replaced.</summary>
+        public static string MergeCsv(string existing, string fresh, LaserConfig c, out int kept)
+        {
+            kept = 0;
+            List<List<string>> oldRows = ParseCsv(existing), newRows = ParseCsv(fresh);
+            if (oldRows.Count == 0 || newRows.Count == 0 || string.Join(",", oldRows[0].ToArray()) != string.Join(",", newRows[0].ToArray()))
+                return fresh;
+            int idCol = Math.Max(0, ColumnOf(c, "{ID}"));
+            int thkCol = ColumnOf(c, "{THICKNESS}");
+            var rows = new List<List<string>>();
+            var ids = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 1; i < newRows.Count; i++)
+            {
+                rows.Add(newRows[i]);
+                if (idCol < newRows[i].Count) ids[newRows[i][idCol]] = true;
+            }
+            for (int i = 1; i < oldRows.Count; i++)
+            {
+                if (idCol < oldRows[i].Count && ids.ContainsKey(oldRows[i][idCol])) continue;
+                rows.Add(oldRows[i]);
+                kept++;
+            }
+            rows.Sort(delegate (List<string> x, List<string> y)
+            {
+                if (thkCol >= 0)
+                {
+                    double tx = thkCol < x.Count ? ParseThickness(x[thkCol]) : double.NaN;
+                    double ty = thkCol < y.Count ? ParseThickness(y[thkCol]) : double.NaN;
+                    if (double.IsNaN(tx)) tx = -1;
+                    if (double.IsNaN(ty)) ty = -1;
+                    if (Math.Abs(tx - ty) > 1e-9) return ty.CompareTo(tx);
+                }
+                string ix = idCol < x.Count ? x[idCol] : "", iy = idCol < y.Count ? y[idCol] : "";
+                return string.Compare(ix, iy, StringComparison.OrdinalIgnoreCase);
+            });
+            var sb = new StringBuilder();
+            var all = new List<List<string>> { newRows[0] };
+            all.AddRange(rows);
+            foreach (var r in all)
+            {
+                var cells = new List<string>();
+                foreach (string v in r) cells.Add(Csv(v));
+                sb.Append(string.Join(",", cells.ToArray())).Append("\r\n");
+            }
+            return sb.ToString();
+        }
+
         public static List<string> Summary(List<BatchItem> items, string version, string configPath, string csvPath)
+        {
+            return Summary(items, version, configPath, csvPath, null, null);
+        }
+
+        public static List<string> Summary(List<BatchItem> items, string version, string configPath, string csvPath, string assembly, string folder)
         {
             var L = new List<string>();
             int exported = 0, skipped = 0, failed = 0, cancelled = 0;
@@ -124,6 +234,8 @@ namespace LaserDxf.Core
             }
             L.Add("=== Laser DXF batch " + version + " ===   " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
             L.Add("Config       : " + configPath);
+            if (assembly != null) L.Add("Assembly     : " + assembly);
+            if (folder != null) L.Add("Folder       : " + folder);
             L.Add("Plates       : " + items.Count + " selected - " + exported + " exported, " + skipped + " skipped" +
                   (failed > 0 ? ", " + failed + " failed" : "") + (cancelled > 0 ? ", " + cancelled + " not done (batch cancelled)" : ""));
             if (csvPath != null) L.Add("CSV summary  : " + csvPath);

@@ -85,6 +85,10 @@
   },
 
   "batch": {                          // LaserDxfBatch.cs
+    // DXFs and the CSV go in a folder named after the assembly (the displayed part), e.g.
+    // <outputFolder>\S180-06068-37003-1\S180-06068-37003-1.csv. "" = straight into outputFolder.
+    "folderFormat": "{ID}-{REV}",
+    "csvFileName": "{ID}-{REV}.csv",  // re-running the batch updates the rows of the plates exported again
     "allowedThicknesses": [6, 3],     // mm (Matl_Thk); other plates are skipped. [] = any thickness
     "thicknessTolerance": 0.1,
     "writeCsv": true,

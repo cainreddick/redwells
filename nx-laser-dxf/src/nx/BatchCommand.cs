@@ -37,7 +37,18 @@ namespace LaserDxf.Nx
                 cfgWarnings.Add("Picking the part-number position isn't available in batch mode - placed automatically (move it in the preview if needed).");
                 cfg.EtchPlacement = "Auto";
             }
-            string folder = NxUtil.EnsureFolder(cfg.OutputFolder, cfgWarnings);
+            string root = NxUtil.EnsureFolder(cfg.OutputFolder, cfgWarnings);
+
+            // The batch goes in a folder named after the assembly (the displayed part): <root>\S180-...-1\
+            Part assemblyPart = s.Parts.Display ?? s.Parts.Work;
+            var asmModel = new BodyModel { PartName = NxUtil.PartLabel(assemblyPart) };
+            var asmLog = new List<string>();
+            NxAttributes.Read(assemblyPart, asmModel, asmLog, cfg.AttributeTitles());
+            PartIdentity assembly = Identity.Resolve(asmModel, cfg);
+            foreach (string w in assembly.Warnings) cfgWarnings.Add("Assembly: " + w);
+            string assemblyLabel = Identity.Format("{ID}-{REV}", assembly.Tokens(), null) + (assembly.Name.Length > 0 ? "  " + assembly.Name : "");
+            string sub = Batch.FolderName(assembly, cfg, cfgWarnings);
+            string folder = sub.Length == 0 ? root : NxUtil.EnsureFolder(Path.Combine(root, sub), cfgWarnings);
 
             // 1. Read and lay out every plate first, so file names (and clashes) are known up front.
             var items = new List<BatchItem>();
@@ -139,9 +150,9 @@ namespace LaserDxf.Nx
                 }
                 try
                 {
-                    PlateJobs.Write(job, cfg, folder, true);
+                    PlateJobs.Write(job, cfg, folder, true, root);
                     List<string> summary = ExportReport.Summary(job.Run);
-                    PlateJobs.AppendLog(job, cfg, folder, summary);
+                    PlateJobs.AppendLog(job, cfg, root, summary);
                 }
                 catch (Exception ex)
                 {
@@ -158,17 +169,24 @@ namespace LaserDxf.Nx
             {
                 try
                 {
-                    csvPath = Path.Combine(folder, "LaserDxf_batch_" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".csv");
-                    File.WriteAllText(csvPath, Batch.CsvSummary(items, cfg), new UTF8Encoding(true)); // BOM so Excel reads UTF-8
+                    csvPath = Path.Combine(folder, Batch.CsvFileName(assembly, cfg, cfgWarnings));
+                    string csv = Batch.CsvSummary(items, cfg);
+                    if (File.Exists(csvPath))
+                    {
+                        int kept;
+                        csv = Batch.MergeCsv(File.ReadAllText(csvPath), csv, cfg, out kept);
+                        if (kept > 0) log.Add("CSV: kept " + kept + " row(s) from the earlier batch for plates not exported this time.");
+                    }
+                    File.WriteAllText(csvPath, csv, new UTF8Encoding(true)); // BOM so Excel reads UTF-8
                 }
                 catch (Exception ex)
                 {
-                    log.Add("Could not write the CSV summary: " + ex.Message);
+                    log.Add("Could not write the CSV summary " + csvPath + ": " + ex.Message + " (is it open in Excel?)");
                     csvPath = null;
                 }
             }
 
-            List<string> lines = Batch.Summary(items, Version, cfg.SourcePath, csvPath);
+            List<string> lines = Batch.Summary(items, Version, cfg.SourcePath, csvPath, assemblyLabel, folder);
             var notes = new List<string>(cfgWarnings);
             notes.AddRange(log);
             if (notes.Count > 0)
@@ -178,7 +196,7 @@ namespace LaserDxf.Nx
                 foreach (string l in notes) lines.Add("  " + l);
             }
             lines.Add("");
-            lines.Add("Per-plate details are in " + Path.Combine(Path.Combine(folder, "_logs"), "LaserDxf_" + DateTime.Now.ToString("yyyyMMdd") + ".log"));
+            lines.Add("Per-plate details are in " + Path.Combine(Path.Combine(root, "_logs"), "LaserDxf_" + DateTime.Now.ToString("yyyyMMdd") + ".log"));
             foreach (string l in lines) lw.WriteLine(l);
         }
     }

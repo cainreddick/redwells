@@ -121,3 +121,66 @@ namespace LaserDxf.Tests
         }
     }
 }
+
+namespace LaserDxf.Tests
+{
+    using System.Collections.Generic;
+    using LaserDxf.Core;
+
+    public static class BatchFolderTests
+    {
+        static PartIdentity Assembly(string id, string rev)
+        {
+            var m = new BodyModel { PartName = id + "/" + rev };
+            m.Attributes.Add(new AttributeEntry { Category = "ONE4_MCAD", Title = "DB_PART_NO", Value = id });
+            if (rev != null) m.Attributes.Add(new AttributeEntry { Category = "ONE4_MCADRevision", Title = "DB_PART_REV", Value = rev });
+            return Identity.Resolve(m, new LaserConfig { RevisionFromPartName = false });
+        }
+
+        public static void TestFolderAndCsvNames()
+        {
+            var c = new LaserConfig();
+            PartIdentity asm = Assembly("S180-06068-37003", "1");
+            TestMain.Check(Batch.FolderName(asm, c, null) == "S180-06068-37003-1", Batch.FolderName(asm, c, null));
+            TestMain.Check(Batch.CsvFileName(asm, c, null) == "S180-06068-37003-1.csv", Batch.CsvFileName(asm, c, null));
+            TestMain.Check(Batch.FolderName(Assembly("S180-06068-37003", null), c, null) == "S180-06068-37003", "no revision: no trailing dash");
+            var flat = new LaserConfig { BatchFolderFormat = "" };
+            TestMain.Check(Batch.FolderName(asm, flat, null) == "", "empty format = no sub-folder");
+        }
+
+        public static void TestParseCsv()
+        {
+            var rows = Batch.ParseCsv("\uFEFFa,b,c\r\n\"x, y\",\"say \"\"hi\"\"\",\r\nlast,row,3");
+            TestMain.Check(rows.Count == 3, "3 rows");
+            TestMain.Check(rows[0][0] == "a" && rows[1][0] == "x, y" && rows[1][1] == "say \"hi\"" && rows[1][2] == "" && rows[2][2] == "3", "fields");
+        }
+
+        /// <summary>Re-running the batch for one plate keeps the other plates' rows.</summary>
+        public static void TestMergeKeepsEarlierRows()
+        {
+            var c = new LaserConfig();
+            string first =
+                "ID,Revision,Name,Material,Thickness,DXF path\r\n" +
+                "S180-06068-47002-1,1,RING SUPPORT,,6mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47002-1.dxf\r\n" +
+                "S180-06068-47005-1,1,BASE PLATE,,6mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47005-1.dxf\r\n" +
+                "S180-06068-47003-1,1,\"RING SUPPORT, SMALL\",,3mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47003-1.dxf\r\n";
+            string rerun =
+                "ID,Revision,Name,Material,Thickness,DXF path\r\n" +
+                "S180-06068-47005-1,1,BASE PLATE (EDITED),,6mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47005-1.dxf\r\n" +
+                "S180-06068-47009-1,1,NEW PLATE,,3mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47009-1.dxf\r\n";
+            int kept;
+            string merged = Batch.MergeCsv(first, rerun, c, out kept);
+            string expected =
+                "ID,Revision,Name,Material,Thickness,DXF path\r\n" +
+                "S180-06068-47002-1,1,RING SUPPORT,,6mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47002-1.dxf\r\n" +
+                "S180-06068-47005-1,1,BASE PLATE (EDITED),,6mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47005-1.dxf\r\n" +
+                "S180-06068-47003-1,1,\"RING SUPPORT, SMALL\",,3mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47003-1.dxf\r\n" +
+                "S180-06068-47009-1,1,NEW PLATE,,3mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47009-1.dxf\r\n";
+            TestMain.Check(kept == 2, "2 earlier rows kept, got " + kept);
+            TestMain.Check(merged == expected, "merged, replaced and re-sorted:\n" + merged);
+
+            string otherCols = "Part,File\r\nX,Y\r\n";
+            TestMain.Check(Batch.MergeCsv(otherCols, rerun, c, out kept) == rerun && kept == 0, "different columns: replaced, not merged");
+        }
+    }
+}

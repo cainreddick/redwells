@@ -104,6 +104,9 @@ namespace LaserDxf.Core
         public List<double> AllowedThicknesses = new List<double> { 6, 3 };
         /// <summary>CSV columns: header + {TOKEN} template ({ID} {REV} {REVRAW} {NAME} {MATERIAL} {THICKNESS} {DXF} {DXFNAME}).</summary>
         public List<KeyValuePair<string, string>> CsvColumns = DefaultCsvColumns();
+        /// <summary>Batch sub-folder (inside OutputFolder) and CSV name, from the assembly's {ID}/{REV}. Empty folder = no sub-folder.</summary>
+        public string BatchFolderFormat = "{ID}-{REV}";
+        public string BatchCsvFileFormat = "{ID}-{REV}.csv";
         public double ThicknessTolerance = 0.1;
         public bool WriteCsv = true;
 
@@ -366,6 +369,8 @@ namespace LaserDxf.Core
             pdf.Finish();
 
             Section b = s.Sub("batch");
+            c.BatchFolderFormat = b.Str("folderFormat", c.BatchFolderFormat);
+            c.BatchCsvFileFormat = b.Str("csvFileName", c.BatchCsvFileFormat);
             List<object> thk = b.Arr("allowedThicknesses");
             if (thk != null)
             {
