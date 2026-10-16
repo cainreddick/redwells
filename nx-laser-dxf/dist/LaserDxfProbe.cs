@@ -994,12 +994,14 @@ namespace LaserDxf.Nx
         readonly LayoutEditor ed;
         readonly PreviewCanvas canvas;
         readonly Label status;
-        readonly Button rotateBtn, editBtn, deleteBtn, addBtn;
+        readonly Button rotateBtn, editBtn, deleteBtn;
 
         double scale = 1, offX, offY;
         bool userZoomed;
         PlacedText selected;
-        CutHole selectedHole;
+        string placing;          // label being dropped (after pressing its button), or null
+        Vec2 ghost;
+        bool ghostVisible;
         Point lastMouse;
         bool dragging, panning;
 
@@ -1023,11 +1025,19 @@ namespace LaserDxf.Nx
             status = new Label { Dock = DockStyle.Bottom, Height = 46, Padding = new Padding(8, 4, 8, 4), BackColor = SystemColors.Info };
             var bar = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 42, Padding = new Padding(6, 6, 6, 0), FlowDirection = FlowDirection.LeftToRight };
 
-            addBtn = MakeButton(bar, "Add label... (L)", delegate { AddLabelToSelectedHole(); });
+            foreach (string label in ed.DropLabels())
+            {
+                string l = label;
+                Button b = MakeButton(bar, l, delegate { StartPlacing(l); });
+                b.Font = new Font(Font, FontStyle.Bold);
+                b.ForeColor = OkColour;
+                b.MinimumSize = new Size(56, 28);
+            }
+            bar.Controls.Add(new Label { Width = 12 });
             rotateBtn = MakeButton(bar, "Rotate 90° (R)", delegate { if (selected != null) { ed.Rotate90(selected); Changed(); } });
             editBtn = MakeButton(bar, "Edit text... (F2)", delegate { EditSelected(); });
             deleteBtn = MakeButton(bar, "Delete (Del)", delegate { if (selected != null) { ed.Delete(selected); selected = null; Changed(); } });
-            MakeButton(bar, "Reset all", delegate { ed.Reset(); selected = null; selectedHole = null; Changed(); });
+            MakeButton(bar, "Reset all", delegate { ed.Reset(); selected = null; StopPlacing(); Changed(); });
             MakeButton(bar, "Fit view (Home)", delegate { userZoomed = false; FitAll(); canvas.Invalidate(); });
             bar.Controls.Add(new Label { Width = 60 });
             Button export = MakeButton(bar, "Export DXF", delegate { TryExport(); });
@@ -1045,12 +1055,8 @@ namespace LaserDxf.Nx
             canvas.MouseMove += OnMouseMove;
             canvas.MouseUp += delegate { dragging = false; panning = false; };
             canvas.MouseWheel += OnWheel;
-            canvas.MouseDoubleClick += delegate (object s, MouseEventArgs e)
-            {
-                if (e.Button != MouseButtons.Left) return;
-                if (selected != null) EditSelected();
-                else if (selectedHole != null && ed.LabelOf(selectedHole) == null) AddLabelToSelectedHole();
-            };
+            canvas.MouseDoubleClick += delegate (object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left && placing == null && selected != null) EditSelected(); };
+            canvas.MouseLeave += delegate { if (ghostVisible) { ghostVisible = false; canvas.Invalidate(); } };
             canvas.Resize += delegate { if (!userZoomed) FitAll(); };
             Shown += delegate { FitAll(); Changed(); canvas.Focus(); };
         }
@@ -1087,18 +1093,6 @@ namespace LaserDxf.Nx
             {
                 foreach (DxfEntity ent in ed.Run.Profile.CutEntities) DrawEntity(g, pen, ent);
             }
-            using (var halo = new Pen(CloseColour, 1.5f) { DashStyle = DashStyle.Dash })
-            using (var sel = new Pen(Color.FromArgb(40, 40, 40), 2.5f))
-            {
-                foreach (CutHole h in ed.Holes)
-                {
-                    bool unlabelled = ed.LabelOf(h) == null;
-                    if (!unlabelled && h != selectedHole) continue;
-                    float r = (float)(h.Circle.Radius * scale) + (h == selectedHole ? 5f : 4f);
-                    PointF c = S(h.Circle.Center);
-                    g.DrawEllipse(h == selectedHole ? sel : halo, c.X - r, c.Y - r, 2 * r, 2 * r);
-                }
-            }
             foreach (PlacedText t in ed.Items)
             {
                 if (t.Deleted) continue;
@@ -1122,6 +1116,27 @@ namespace LaserDxf.Nx
                         g.DrawRectangle(pen, a.X - 2, a.Y - 2, b.X - a.X + 4, b.Y - a.Y + 4);
                     }
                 }
+            }
+            DrawGhost(g);
+        }
+
+        /// <summary>The label being dropped, drawn under the cursor.</summary>
+        void DrawGhost(Graphics g)
+        {
+            if (placing == null || !ghostVisible) return;
+            double h = ed.Run.Config.LabelHeight, w = StrokeFont.Measure(placing, h);
+            Vec2 origin = new Vec2(ghost.X - w / 2, ghost.Y - h / 2);
+            using (var pen = new Pen(Color.FromArgb(150, OkColour), 1.2f))
+            {
+                foreach (var stroke in StrokeFont.Render(placing, origin, h, 0))
+                {
+                    var pts = new PointF[stroke.Count];
+                    for (int i = 0; i < stroke.Count; i++) pts[i] = S(stroke[i]);
+                    if (pts.Length >= 2) g.DrawLines(pen, pts);
+                }
+                pen.DashStyle = DashStyle.Dot;
+                PointF a = S(new Vec2(origin.X, origin.Y + h)), b = S(new Vec2(origin.X + w, origin.Y));
+                g.DrawRectangle(pen, a.X - 2, a.Y - 2, b.X - a.X + 4, b.Y - a.Y + 4);
             }
         }
 
@@ -1162,10 +1177,15 @@ namespace LaserDxf.Nx
         {
             canvas.Focus();
             lastMouse = e.Location;
-            if (e.Button == MouseButtons.Left)
+            if (e.Button == MouseButtons.Left && placing != null)
+            {
+                selected = ed.AddLabelAt(placing, M(e.Location));
+                if ((ModifierKeys & Keys.Shift) == 0) StopPlacing(); // Shift-click keeps dropping
+                Changed();
+            }
+            else if (e.Button == MouseButtons.Left)
             {
                 selected = ed.HitTest(M(e.Location), 4 / scale);
-                selectedHole = selected == null ? ed.HitHole(M(e.Location), 4 / scale) : null;
                 dragging = selected != null;
                 Changed();
             }
@@ -1176,6 +1196,12 @@ namespace LaserDxf.Nx
         {
             int dx = e.X - lastMouse.X, dy = e.Y - lastMouse.Y;
             lastMouse = e.Location;
+            if (placing != null)
+            {
+                ghost = M(e.Location);
+                ghostVisible = true;
+                canvas.Invalidate();
+            }
             if (dragging && selected != null)
             {
                 ed.Move(selected, new Vec2(dx / scale, -dy / scale));
@@ -1205,7 +1231,7 @@ namespace LaserDxf.Nx
             Keys key = keyData & Keys.KeyCode;
             bool shift = (keyData & Keys.Shift) != 0;
             if (key == Keys.Home) { userZoomed = false; FitAll(); canvas.Invalidate(); return true; }
-            if (key == Keys.L && selectedHole != null) { AddLabelToSelectedHole(); return true; }
+            if (key == Keys.Escape && placing != null) { StopPlacing(); Changed(); return true; }
             if (selected != null)
             {
                 double step = shift ? 5 : 0.5;
@@ -1224,64 +1250,20 @@ namespace LaserDxf.Nx
 
         // ------------------------------------------------------------ actions
 
-        void AddLabelToSelectedHole()
+        void StartPlacing(string label)
         {
-            if (selectedHole == null) return;
-            if (ed.LabelOf(selectedHole) != null)
-            {
-                selected = ed.LabelOf(selectedHole);
-                selectedHole = null;
-                EditSelected();
-                return;
-            }
-            List<CutHole> same = ed.SameSizeUnlabelled(selectedHole);
-            bool all;
-            string text = LabelPrompt(ed.DescribeHole(selectedHole), same.Count, out all);
-            if (text == null) return;
-            PlacedText placed = ed.AddLabel(selectedHole, text);
-            if (all) foreach (CutHole h in same) ed.AddLabel(h, text);
-            selected = placed;
-            selectedHole = null;
+            placing = label;
+            selected = null;
+            canvas.Cursor = Cursors.Cross;
+            canvas.Focus();
             Changed();
         }
 
-        string LabelPrompt(string holeInfo, int sameCount, out bool applyToSame)
+        void StopPlacing()
         {
-            applyToSame = false;
-            using (var f = new Form())
-            {
-                f.Text = "Add hole label";
-                f.FormBorderStyle = FormBorderStyle.FixedDialog;
-                f.StartPosition = FormStartPosition.CenterParent;
-                f.MinimizeBox = f.MaximizeBox = false;
-                f.ShowInTaskbar = false;
-                f.TopMost = true;
-                f.Font = Font;
-                f.Controls.Add(new Label { Text = holeInfo, Left = 10, Top = 10, Width = 420, Height = 32 });
-                f.Controls.Add(new Label { Text = "Label (pick one or type your own):", Left = 10, Top = 46, Width = 420 });
-                var combo = new ComboBox { Left = 10, Top = 66, Width = 160, DropDownStyle = ComboBoxStyle.DropDown };
-                foreach (string choice in ed.LabelChoices()) combo.Items.Add(choice);
-                if (combo.Items.Count > 0) combo.SelectedIndex = 0;
-                f.Controls.Add(combo);
-                CheckBox same = null;
-                int y = 100;
-                if (sameCount > 0)
-                {
-                    same = new CheckBox { Text = "Also label the " + sameCount + " other unlabelled hole(s) of the same size", Left = 10, Top = y, Width = 420, Checked = true };
-                    f.Controls.Add(same);
-                    y += 28;
-                }
-                var ok = new Button { Text = "Add", Left = 274, Top = y, Width = 75, DialogResult = DialogResult.OK };
-                var cancel = new Button { Text = "Cancel", Left = 355, Top = y, Width = 75, DialogResult = DialogResult.Cancel };
-                f.Controls.Add(ok);
-                f.Controls.Add(cancel);
-                f.AcceptButton = ok;
-                f.CancelButton = cancel;
-                f.ClientSize = new Size(440, y + 36);
-                if (f.ShowDialog(this) != DialogResult.OK || combo.Text.Trim().Length == 0) return null;
-                applyToSame = same != null && same.Checked;
-                return combo.Text.Trim();
-            }
+            placing = null;
+            ghostVisible = false;
+            canvas.Cursor = Cursors.Default;
         }
 
         void EditSelected()
@@ -1338,11 +1320,10 @@ namespace LaserDxf.Nx
         {
             bool has = selected != null;
             rotateBtn.Enabled = editBtn.Enabled = deleteBtn.Enabled = has;
-            addBtn.Enabled = selectedHole != null && ed.LabelOf(selectedHole) == null;
-            if (has) status.Text = ed.Describe(selected) + "\nDrag or use the arrow keys to move (Shift = 5 mm steps), R to rotate, F2 or double-click to edit, Del to delete.";
-            else if (selectedHole != null)
-                status.Text = ed.DescribeHole(selectedHole) +
-                              (ed.LabelOf(selectedHole) == null ? "\nPress L, double-click the hole or use 'Add label...' to label it." : "");
+            if (placing != null)
+                status.Text = "Click on the plate to drop the " + placing + " label (centred on the cursor). Shift-click to drop several; Esc to stop." +
+                              "\nDropped next to a hole, it becomes that hole's label. You can drag it afterwards.";
+            else if (has) status.Text = ed.Describe(selected) + "\nDrag or use the arrow keys to move (Shift = 5 mm steps), R to rotate, F2 or double-click to edit, Del to delete.";
             else
             {
                 int n = 0;
@@ -1350,8 +1331,8 @@ namespace LaserDxf.Nx
                 int p = ed.Problems().Count;
                 int u = ed.Unlabelled().Count;
                 status.Text = n + " text item(s)" + (p > 0 ? ", " + p + " need attention (orange = tight, red = crossing something)" : ", all clear") +
-                              "; " + u + " round hole(s) without a label (dashed orange ring - click one to see why, L to label it)." +
-                              "\nClick text to select it. Mouse wheel zooms, right-drag pans, Home fits the view.";
+                              "; " + u + " round hole(s) without a label." +
+                              "\nTo add a label press its button (e.g. R6) and click on the plate. Click text to select it. Mouse wheel zooms, right-drag pans, Home fits the view.";
             }
             canvas.Invalidate();
         }
@@ -3956,19 +3937,6 @@ namespace LaserDxf.Core
 
         // ------------------------------------------------------------ holes
 
-        /// <summary>The round hole under p (within tol of its edge), or null.</summary>
-        public CutHole HitHole(Vec2 p, double tol)
-        {
-            CutHole best = null;
-            double bestD = double.MaxValue;
-            foreach (var h in Holes)
-            {
-                double d = p.DistanceTo(h.Circle.Center) - h.Circle.Radius;
-                if (d <= tol && d < bestD) { best = h; bestD = d; }
-            }
-            return best;
-        }
-
         public PlacedText LabelOf(CutHole h)
         {
             foreach (var t in Items) if (t.Hole == h && !t.Deleted) return t;
@@ -3982,41 +3950,54 @@ namespace LaserDxf.Core
             return l;
         }
 
-        /// <summary>Other unlabelled holes with the same modelled diameter (within 0.01 mm).</summary>
-        public List<CutHole> SameSizeUnlabelled(CutHole h)
+        /// <summary>Labels offered as "drop" buttons in the preview: the label table, in order.</summary>
+        public List<string> DropLabels()
         {
-            double dia = originalHoles[h].CutDiameter;
-            var l = new List<CutHole>();
-            foreach (var o in Unlabelled())
-                if (o != h && Math.Abs(originalHoles[o].CutDiameter - dia) < 0.01) l.Add(o);
+            var l = new List<string>();
+            foreach (var r in run.Config.LabelTable) if (r.Label.Length > 0 && !l.Contains(r.Label)) l.Add(r.Label);
             return l;
         }
 
-        /// <summary>Labels a hole by hand: places the text like the automatic labels and applies
-        /// the label table's laser cut diameter for that label, if it has one.</summary>
-        public PlacedText AddLabel(CutHole h, string text)
+        /// <summary>How far (mm) from a hole's edge a dropped label can be and still count as that hole's label.</summary>
+        public const double AttachDistance = 6.0;
+
+        /// <summary>Drops a label by hand, centred on the given point. If it lands next to a round
+        /// hole that has no label yet, it becomes that hole's label (counted in the report, and the
+        /// label table's cutDiameter for it applies, as for automatic labels).</summary>
+        public PlacedText AddLabelAt(string text, Vec2 centre)
         {
             text = (text ?? "").Trim();
             if (text.Length == 0) return null;
-            PlacedText existing = LabelOf(h);
-            if (existing != null) { SetText(existing, text); return existing; }
-
-            LaserConfig c = run.Config;
-            foreach (var r in c.LabelTable)
+            double h = run.Config.LabelHeight, w = StrokeFont.Measure(text, h);
+            var t = new PlacedText
             {
-                if (!string.Equals(r.Label, text, StringComparison.OrdinalIgnoreCase) || double.IsNaN(r.CutDiameter)) continue;
-                SetCutDiameter(h, r.CutDiameter);
-                break;
+                Text = text, Height = h, Origin = new Vec2(centre.X - w / 2, centre.Y - h / 2),
+                Position = "placed by hand", Edited = true, Added = true
+            };
+            t.UpdateBox();
+
+            CutHole near = null;
+            double best = AttachDistance;
+            foreach (var hole in Holes)
+            {
+                if (LabelOf(hole) != null) continue;
+                double d = Layout2.PointRect(hole.Circle.Center, t.Box) - hole.Circle.Radius;
+                if (d <= best) { best = d; near = hole; }
             }
-            var boxes = new List<Rect2>();
-            foreach (var t in Items) if (!t.Deleted) boxes.Add(t.Box);
-            PlacedText placed = Annotator.PlaceLabel(h, text, run.Geometry.WithTexts(boxes), c);
-            placed.Edited = true;
-            placed.Added = true;
-            Items.Add(placed);
-            h.Label = text;
-            h.LabelSource = "added by hand in the preview";
-            return placed;
+            if (near != null)
+            {
+                t.Hole = near;
+                near.Label = text;
+                near.LabelSource = "placed by hand in the preview";
+                foreach (var r in run.Config.LabelTable)
+                {
+                    if (!string.Equals(r.Label, text, StringComparison.OrdinalIgnoreCase) || double.IsNaN(r.CutDiameter)) continue;
+                    SetCutDiameter(near, r.CutDiameter);
+                    break;
+                }
+            }
+            Items.Add(t);
+            return t;
         }
 
         void SetCutDiameter(CutHole h, double dia)
@@ -4174,6 +4155,9 @@ namespace LaserDxf.Core
                 if (t == null && h.Label.Length > 0) { h.Label = ""; h.Note = "label deleted in the preview"; }
                 else if (t != null) h.Label = t.Text;
             }
+            foreach (var t in Items)
+                if (t.Added && !t.Deleted && t.Hole == null)
+                    run.Notes.Add("Label \"" + t.Text + "\" placed by hand at (" + Fmt.N(t.Box.Center.X, 1) + ", " + Fmt.N(t.Box.Center.Y, 1) + ") is not next to a hole.");
             var parts = new List<string>();
             if (added > 0) parts.Add(added + " label(s) added");
             if (moved > 0) parts.Add(moved + " item(s) moved/rotated/edited");

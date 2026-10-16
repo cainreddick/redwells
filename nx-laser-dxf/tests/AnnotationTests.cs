@@ -403,45 +403,54 @@ namespace LaserDxf.Tests
 
     public static class AddLabelTests
     {
-        public static void TestAddLabelsByHand()
+        public static void TestDropLabelsByHand()
         {
             var s = new Synth(6);
             s.Rectangle(200, 100);
             s.SimpleHole(30, 50, 5.8);   // R6 by table
-            s.SimpleHole(80, 50, 6.0);   // the field case: real-size holes missing from the table
-            s.SimpleHole(110, 50, 6.0);
+            s.SimpleHole(80, 50, 6.0);   // the field case: holes the table doesn't know
             s.SimpleHole(140, 50, 6.8);
             s.M.Attributes = IdentityTests.Attrs();
             var c = new LaserConfig();
-            c.LabelTable.Add(new LabelRule { Label = "CB", Diameter = 20, CutDiameter = double.NaN });
             c.LabelTable[1].CutDiameter = 6.2; // M8 row: laser cut dia 6.2
             ExportRun r = ExportPipeline.Prepare(s.M, s.TopFace, c, c.ToAnalysisOptions(), "t");
             var ed = new LayoutEditor(r);
-            TestMain.Check(ed.Unlabelled().Count == 3, "3 unlabelled round holes");
+            TestMain.Check(ed.Unlabelled().Count == 2, "2 unlabelled round holes");
+            TestMain.Check(string.Join(",", ed.DropLabels().ToArray()) == "R6,M8", "one drop button per table label: R6, M8");
 
-            CutHole h80 = ed.HitHole(new Vec2(80 + 2.9, 50), 0.5) ?? ed.HitHole(new Vec2(200 - 80 - 2.9, 50), 0.5);
-            TestMain.Check(h80 != null, "hit test finds the hole by clicking its edge");
-            TestMain.Check(ed.DescribeHole(h80).Contains("no label") && ed.DescribeHole(h80).Contains("not in the label table"), ed.DescribeHole(h80));
-            TestMain.Check(ed.SameSizeUnlabelled(h80).Count == 1, "one other dia 6 hole");
-            TestMain.Check(ed.LabelChoices().Contains("R6") && ed.LabelChoices().Contains("M8") && ed.LabelChoices().Contains("CS"), "choices from the table");
+            // Find where the dia 6.0 / 6.8 holes ended up in DXF coordinates.
+            CutHole h60 = null, h68 = null;
+            foreach (var h in ed.Holes)
+            {
+                if (Math.Abs(h.CutDiameter - 6.0) < 1e-9) h60 = h;
+                if (Math.Abs(h.CutDiameter - 6.8) < 1e-9) h68 = h;
+            }
 
-            PlacedText t = ed.AddLabel(h80, "R6");
-            foreach (CutHole o in ed.SameSizeUnlabelled(h80)) ed.AddLabel(o, "R6");
-            TestMain.Check(t != null && t.Clear && t.Position == "right", "added label placed like the automatic ones");
-            TestMain.Check(ed.Unlabelled().Count == 1 && ed.Problems().Count == 0, "only the 6.8 hole left, no clashes");
+            // Drop R6 just right of the dia 6 hole: it becomes that hole's label.
+            Vec2 at = new Vec2(h60.Center.X + 3 + 1.5 + 2.4, h60.Center.Y);
+            PlacedText t = ed.AddLabelAt("R6", at);
+            TestMain.Near(t.Box.Center.X, at.X, 1e-9, "centred where clicked (x)");
+            TestMain.Near(t.Box.Center.Y, at.Y, 1e-9, "centred where clicked (y)");
+            TestMain.Check(t.Hole == h60 && ed.LabelOf(h60) == t, "attached to the nearby hole");
+            TestMain.Check(ed.Status(t) == ItemStatus.Ok, ed.Describe(t));
 
-            CutHole h68 = ed.Unlabelled()[0];
-            ed.AddLabel(h68, "M8");
-            TestMain.Near(h68.Circle.Radius, 3.1, 1e-12, "M8's laser cut diameter applied to the hand-labelled hole");
+            // Drop M8 next to the dia 6.8 hole: M8's laser cut diameter applies.
+            ed.AddLabelAt("M8", new Vec2(h68.Center.X + 8, h68.Center.Y));
+            TestMain.Near(h68.Circle.Radius, 3.1, 1e-12, "M8's cut diameter applied");
+
+            // A label dropped in open plate attaches to nothing but is still written.
+            PlacedText loose = ed.AddLabelAt("R6", new Vec2(100, 85));
+            TestMain.Check(loose.Hole == null, "not next to a hole: free label");
 
             ed.Apply();
             TestMain.Check(r.EditSummary.StartsWith("3 label(s) added"), r.EditSummary);
             string report = string.Join("\n", ExportReport.Summary(r).ToArray());
-            TestMain.Check(report.Contains("Labelled     : 4 of 4") && report.Contains("added by hand"), report);
+            TestMain.Check(report.Contains("Labelled     : 3 of 3") && report.Contains("placed by hand"), report);
+            TestMain.Check(report.Contains("not next to a hole"), "free label noted");
             TestMain.Check(r.DxfText.Contains("\r\n 40\r\n3.1\r\n"), "cut diameter 6.2 written");
 
             ed.Reset();
-            TestMain.Check(ed.Unlabelled().Count == 3 && Math.Abs(h68.Circle.Radius - 3.4) < 1e-12, "reset removes added labels and restores the diameter");
+            TestMain.Check(ed.Unlabelled().Count == 2 && Math.Abs(h68.Circle.Radius - 3.4) < 1e-12, "reset removes dropped labels and restores the diameter");
         }
     }
 }

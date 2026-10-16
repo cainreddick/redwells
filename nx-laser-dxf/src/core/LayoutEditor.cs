@@ -50,19 +50,6 @@ namespace LaserDxf.Core
 
         // ------------------------------------------------------------ holes
 
-        /// <summary>The round hole under p (within tol of its edge), or null.</summary>
-        public CutHole HitHole(Vec2 p, double tol)
-        {
-            CutHole best = null;
-            double bestD = double.MaxValue;
-            foreach (var h in Holes)
-            {
-                double d = p.DistanceTo(h.Circle.Center) - h.Circle.Radius;
-                if (d <= tol && d < bestD) { best = h; bestD = d; }
-            }
-            return best;
-        }
-
         public PlacedText LabelOf(CutHole h)
         {
             foreach (var t in Items) if (t.Hole == h && !t.Deleted) return t;
@@ -76,41 +63,54 @@ namespace LaserDxf.Core
             return l;
         }
 
-        /// <summary>Other unlabelled holes with the same modelled diameter (within 0.01 mm).</summary>
-        public List<CutHole> SameSizeUnlabelled(CutHole h)
+        /// <summary>Labels offered as "drop" buttons in the preview: the label table, in order.</summary>
+        public List<string> DropLabels()
         {
-            double dia = originalHoles[h].CutDiameter;
-            var l = new List<CutHole>();
-            foreach (var o in Unlabelled())
-                if (o != h && Math.Abs(originalHoles[o].CutDiameter - dia) < 0.01) l.Add(o);
+            var l = new List<string>();
+            foreach (var r in run.Config.LabelTable) if (r.Label.Length > 0 && !l.Contains(r.Label)) l.Add(r.Label);
             return l;
         }
 
-        /// <summary>Labels a hole by hand: places the text like the automatic labels and applies
-        /// the label table's laser cut diameter for that label, if it has one.</summary>
-        public PlacedText AddLabel(CutHole h, string text)
+        /// <summary>How far (mm) from a hole's edge a dropped label can be and still count as that hole's label.</summary>
+        public const double AttachDistance = 6.0;
+
+        /// <summary>Drops a label by hand, centred on the given point. If it lands next to a round
+        /// hole that has no label yet, it becomes that hole's label (counted in the report, and the
+        /// label table's cutDiameter for it applies, as for automatic labels).</summary>
+        public PlacedText AddLabelAt(string text, Vec2 centre)
         {
             text = (text ?? "").Trim();
             if (text.Length == 0) return null;
-            PlacedText existing = LabelOf(h);
-            if (existing != null) { SetText(existing, text); return existing; }
-
-            LaserConfig c = run.Config;
-            foreach (var r in c.LabelTable)
+            double h = run.Config.LabelHeight, w = StrokeFont.Measure(text, h);
+            var t = new PlacedText
             {
-                if (!string.Equals(r.Label, text, StringComparison.OrdinalIgnoreCase) || double.IsNaN(r.CutDiameter)) continue;
-                SetCutDiameter(h, r.CutDiameter);
-                break;
+                Text = text, Height = h, Origin = new Vec2(centre.X - w / 2, centre.Y - h / 2),
+                Position = "placed by hand", Edited = true, Added = true
+            };
+            t.UpdateBox();
+
+            CutHole near = null;
+            double best = AttachDistance;
+            foreach (var hole in Holes)
+            {
+                if (LabelOf(hole) != null) continue;
+                double d = Layout2.PointRect(hole.Circle.Center, t.Box) - hole.Circle.Radius;
+                if (d <= best) { best = d; near = hole; }
             }
-            var boxes = new List<Rect2>();
-            foreach (var t in Items) if (!t.Deleted) boxes.Add(t.Box);
-            PlacedText placed = Annotator.PlaceLabel(h, text, run.Geometry.WithTexts(boxes), c);
-            placed.Edited = true;
-            placed.Added = true;
-            Items.Add(placed);
-            h.Label = text;
-            h.LabelSource = "added by hand in the preview";
-            return placed;
+            if (near != null)
+            {
+                t.Hole = near;
+                near.Label = text;
+                near.LabelSource = "placed by hand in the preview";
+                foreach (var r in run.Config.LabelTable)
+                {
+                    if (!string.Equals(r.Label, text, StringComparison.OrdinalIgnoreCase) || double.IsNaN(r.CutDiameter)) continue;
+                    SetCutDiameter(near, r.CutDiameter);
+                    break;
+                }
+            }
+            Items.Add(t);
+            return t;
         }
 
         void SetCutDiameter(CutHole h, double dia)
@@ -268,6 +268,9 @@ namespace LaserDxf.Core
                 if (t == null && h.Label.Length > 0) { h.Label = ""; h.Note = "label deleted in the preview"; }
                 else if (t != null) h.Label = t.Text;
             }
+            foreach (var t in Items)
+                if (t.Added && !t.Deleted && t.Hole == null)
+                    run.Notes.Add("Label \"" + t.Text + "\" placed by hand at (" + Fmt.N(t.Box.Center.X, 1) + ", " + Fmt.N(t.Box.Center.Y, 1) + ") is not next to a hole.");
             var parts = new List<string>();
             if (added > 0) parts.Add(added + " label(s) added");
             if (moved > 0) parts.Add(moved + " item(s) moved/rotated/edited");

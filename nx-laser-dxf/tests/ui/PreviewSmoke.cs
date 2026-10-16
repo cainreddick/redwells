@@ -53,25 +53,23 @@ namespace LaserDxf.Tests
                 Form preview = Top("Laser DXF preview");
                 Type ft = preview.GetType();
                 BindingFlags bf = BindingFlags.NonPublic | BindingFlags.Instance;
-                ft.GetField("selectedHole", bf).SetValue(preview, target);
-                ft.GetMethod("Changed", bf).Invoke(preview, null);
-                Shot("preview_hole_selected.png");
-                After(1200, delegate
-                {
-                    Shot("preview_add_label_prompt.png");
-                    Form prompt = Top("Add hole label");
-                    prompt.DialogResult = DialogResult.OK; // accept the first table label, "same size" ticked
-                });
-                ft.GetMethod("AddLabelToSelectedHole", bf).Invoke(preview, null); // modal prompt
+                // Press the "R6" button, move over the plate, click next to the hole.
+                ft.GetMethod("StartPlacing", bf).Invoke(preview, new object[] { "R6" });
+                var toScreen = ft.GetMethod("S", bf);
+                var p = (System.Drawing.PointF)toScreen.Invoke(preview, new object[] { new Vec2(target.Center.X + 6.5, target.Center.Y) });
+                var at = new MouseEventArgs(MouseButtons.None, 0, (int)p.X, (int)p.Y, 0);
+                ft.GetMethod("OnMouseMove", bf, null, new[] { typeof(object), typeof(MouseEventArgs) }, null).Invoke(preview, new object[] { null, at });
+                Shot("preview_dropping.png");
+                ft.GetMethod("OnMouseDown", bf, null, new[] { typeof(object), typeof(MouseEventArgs) }, null).Invoke(preview, new object[] { null, new MouseEventArgs(MouseButtons.Left, 1, (int)p.X, (int)p.Y, 0) });
                 After(800, delegate
                 {
-                    Shot("preview_after_add.png");
+                    Shot("preview_after_drop.png");
                     preview.DialogResult = DialogResult.OK;
                 });
             });
             bool ok = PreviewWindow.Show(ed, "S180-06068-47009-1  (S180-06068-47009-1.dxf)");
             ed.Apply();
-            Console.WriteLine("preview returned " + ok + "; " + run.EditSummary + "; unlabelled left: " + ed.Unlabelled().Count);
+            Console.WriteLine("preview returned " + ok + "; " + run.EditSummary + "; target labelled: " + (target.Label == "R6"));
 
             After(1000, delegate
             {
@@ -80,7 +78,7 @@ namespace LaserDxf.Tests
             });
             bool ok2 = OptionsDialog.Show(c, "S180-06068-47009/1");
             Console.WriteLine("options returned " + ok2);
-            return ok && ok2 && run.EditSummary.StartsWith("2 label(s) added") ? 0 : 1;
+            return ok && ok2 && run.EditSummary.StartsWith("1 label(s) added") && target.Label == "R6" ? 0 : 1;
         }
     }
 }
