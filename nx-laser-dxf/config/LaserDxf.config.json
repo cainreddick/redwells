@@ -119,8 +119,10 @@
     "sheet": "",                      // sheet to fill; "" = the first sheet
     "firstRow": 4,                    // first empty row under the headers
     "columns": { "A": "ID", "B": "Material", "C": "Thickness", "D": "Qty" },
+    "titleCell": "A2",                // the assembly number goes here (top-left cell if merged); "" = none
+    "title": "{ID}-{REV}",            // e.g. S180-06068-37005-1 (the assembly's tokens, like the folder name)
     "totalCell": "H1",                // "Total Part No.'s" - left alone if it holds a formula
-    "dataSheet": "DXF list"           // extra sheet with the full CSV table; "" = none
+    "dataSheet": ""                   // name for an extra sheet with the full CSV table; "" = none
   },
 
   "debug": {

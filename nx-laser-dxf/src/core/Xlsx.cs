@@ -20,7 +20,11 @@ namespace LaserDxf.Core
         /// <summary>Cell for the number of part numbers (e.g. "H1"); left alone if it holds a formula. "" = none.</summary>
         public string TotalCell = "";
         /// <summary>Name of the extra sheet with the full CSV table ("" = none).</summary>
-        public string DataSheetName = "DXF list";
+        public string DataSheetName = "";
+        /// <summary>Cell for the title (e.g. "A2", the top-left cell if it is merged); "" = none.</summary>
+        public string TitleCell = "";
+        /// <summary>Text for TitleCell, already filled in (e.g. the assembly "S180-06068-37005-1").</summary>
+        public string TitleValue = "";
     }
 
     public static class Xlsx
@@ -333,15 +337,9 @@ namespace LaserDxf.Core
             }
 
             if (spec.TotalCell.Trim().Length > 0)
-            {
-                string tc; int tr;
-                SplitRef(spec.TotalCell, out tc, out tr);
-                Row row = FindRow(sheetRows, tr);
-                if (row == null) { row = new Row { R = tr, Attrs = "" }; sheetRows.Add(row); }
-                Cell existing = row.Get(ColumnIndex(tc));
-                if (existing == null || !existing.HasFormula)
-                    row.Put(new Cell { Col = ColumnIndex(tc), Xml = CellXml(tc + tr, existing != null ? existing.Style : null, rows.Count.ToString(CultureInfo.InvariantCulture)) });
-            }
+                SetSingleCell(sheetRows, spec.TotalCell, rows.Count.ToString(CultureInfo.InvariantCulture), true);
+            if (spec.TitleCell.Trim().Length > 0)
+                SetSingleCell(sheetRows, spec.TitleCell, spec.TitleValue, false);
 
             sheetRows.Sort(delegate (Row a, Row b) { return a.R.CompareTo(b.R); });
             var sb = new StringBuilder();
@@ -355,6 +353,18 @@ namespace LaserDxf.Core
             if (dim.Success && lastRow > int.Parse(dim.Groups[3].Value, CultureInfo.InvariantCulture))
                 sheet = sheet.Substring(0, dim.Index) + "<dimension ref=\"" + dim.Groups[1].Value + ":" + dim.Groups[2].Value + lastRow + "\"" + sheet.Substring(dim.Index + dim.Length);
             return sheet;
+        }
+
+        /// <summary>Writes one cell, keeping its style; keepFormula leaves a formula cell alone.</summary>
+        static void SetSingleCell(List<Row> sheetRows, string cellRef, string value, bool keepFormula)
+        {
+            string col; int r;
+            SplitRef(cellRef, out col, out r);
+            Row row = FindRow(sheetRows, r);
+            if (row == null) { row = new Row { R = r, Attrs = "" }; sheetRows.Add(row); }
+            Cell existing = row.Get(ColumnIndex(col));
+            if (keepFormula && existing != null && existing.HasFormula) return;
+            row.Put(new Cell { Col = ColumnIndex(col), Xml = CellXml(col + r, existing != null ? existing.Style : null, value) });
         }
 
         static string DataSheet(List<string> header, List<List<string>> rows)

@@ -115,10 +115,12 @@ namespace LaserDxf.Core
         public string RequestListTemplate = "Jig Part Request List.xlsx";
         public string RequestListFileFormat = "{ID}-{REV}.xlsx";
         public RequestListSpec RequestList = DefaultRequestList();
+        /// <summary>Text for requestList.titleCell, from the assembly's tokens.</summary>
+        public string RequestListTitleFormat = "{ID}-{REV}";
 
         public static RequestListSpec DefaultRequestList()
         {
-            var r = new RequestListSpec { FirstRow = 4, TotalCell = "H1", DataSheetName = "DXF list" };
+            var r = new RequestListSpec { FirstRow = 4, TotalCell = "H1", TitleCell = "A2", DataSheetName = "" };
             r.Columns.Add(new KeyValuePair<string, string>("A", "ID"));
             r.Columns.Add(new KeyValuePair<string, string>("B", "Material"));
             r.Columns.Add(new KeyValuePair<string, string>("C", "Thickness"));
@@ -442,6 +444,8 @@ namespace LaserDxf.Core
             c.RequestList.FirstRow = (int)rl.Num("firstRow", c.RequestList.FirstRow, 1, 100000);
             c.RequestList.TotalCell = rl.Str("totalCell", c.RequestList.TotalCell);
             c.RequestList.DataSheetName = rl.Str("dataSheet", c.RequestList.DataSheetName);
+            c.RequestList.TitleCell = rl.Str("titleCell", c.RequestList.TitleCell);
+            c.RequestListTitleFormat = rl.Str("title", c.RequestListTitleFormat);
             JObj rlCols = rl.RawObj("columns");
             if (rlCols != null)
             {
@@ -458,6 +462,12 @@ namespace LaserDxf.Core
                 warnings.Add("Config: requestList.totalCell \"" + c.RequestList.TotalCell + "\" is not a cell like H1 - ignored");
                 c.RequestList.TotalCell = "";
             }
+            foreach (string cellKey in new[] { "titleCell" })
+                if (c.RequestList.TitleCell.Trim().Length > 0 && !System.Text.RegularExpressions.Regex.IsMatch(c.RequestList.TitleCell.Trim(), "^[A-Za-z]{1,3}[0-9]+$"))
+                {
+                    warnings.Add("Config: requestList." + cellKey + " \"" + c.RequestList.TitleCell + "\" is not a cell like A2 - ignored");
+                    c.RequestList.TitleCell = "";
+                }
             rl.Finish();
 
             Section dbg = s.Sub("debug");

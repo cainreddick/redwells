@@ -119,12 +119,15 @@ several plates in one go:
    The folder also gets **`S180-06068-37003-1.xlsx`**, your **Jig Part Request List** filled
    in. It is made from your own workbook, so the logos, borders and print setup stay as they
    are:
-   - **Sheet 1 (your template):** rows from row 4 get Part Number (ID with revision),
-     Material, Thickness and Quantity. More rows are added, with the same borders, if there
-     are more parts than the template has rows, and the print area grows to match.
-     "Total Part No.'s" (H1) recalculates if it's a formula, or gets the number of parts if
+   - The **assembly number** (e.g. `S180-06068-37005-1`) goes in row 2 (`A2`, the top-left
+     cell of the merged title row).
+   - Rows from row 4 get Part Number (ID with revision), Material, Thickness and Quantity.
+     More rows are added, with the same borders, if there are more parts than the template
+     has rows, and the print area grows to match.
+   - "Total Part No.'s" (H1) recalculates if it's a formula, or gets the number of parts if
      it isn't.
-   - **Sheet 2 "DXF list":** the full CSV table.
+   - Nothing else is added. Set `requestList.dataSheet` to a sheet name if you want the full
+     CSV table as an extra sheet.
 
    **Setup:** save your request-list workbook as `Jig Part Request List.xlsx` (a real `.xlsx`,
    not `.xls`) in the same folder as the config file. Which columns get which CSV column, the

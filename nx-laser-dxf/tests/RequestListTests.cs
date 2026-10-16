@@ -35,13 +35,16 @@ namespace LaserDxf.Tests
             return rows;
         }
 
-        static byte[] Fill(int n, string outName)
+        static byte[] Fill(int n, string outName, string dataSheet)
         {
             byte[] template = File.ReadAllBytes(Path.Combine("tests", "fixtures", "request_template.xlsx"));
             List<string> header;
             var rows = Table(n, out header);
             var w = new List<string>();
-            byte[] xlsx = Xlsx.FillTemplate(template, LaserConfig.DefaultRequestList(), header, rows, w);
+            RequestListSpec spec = LaserConfig.DefaultRequestList();
+            spec.TitleValue = "S180-06068-37005-1";
+            spec.DataSheetName = dataSheet;
+            byte[] xlsx = Xlsx.FillTemplate(template, spec, header, rows, w);
             TestMain.Check(w.Count == 0, "no warnings: " + string.Join(" | ", w.ToArray()));
             File.WriteAllBytes(Path.Combine(TestMain.OutDir, outName), xlsx);
             return xlsx;
@@ -49,7 +52,7 @@ namespace LaserDxf.Tests
 
         public static void TestFillTemplate()
         {
-            byte[] xlsx = Fill(6, "request_list_6.xlsx");
+            byte[] xlsx = Fill(6, "request_list_6.xlsx", "");
             var names = new List<string>();
             string sheet1 = null, workbook = null;
             foreach (var e in Zip.Read(xlsx))
@@ -59,15 +62,16 @@ namespace LaserDxf.Tests
                 if (e.Name == "xl/workbook.xml") workbook = Encoding.UTF8.GetString(e.Data);
             }
             TestMain.Check(names.Contains("xl/media/image1.png") && names.Contains("xl/drawings/drawing1.xml"), "logo image kept");
-            TestMain.Check(names.Contains("xl/worksheets/sheet2.xml"), "data sheet added");
-            TestMain.Check(workbook.Contains("name=\"DXF list\"") && workbook.Contains("fullCalcOnLoad=\"1\""), "sheet registered, recalc on open");
+            TestMain.Check(!names.Contains("xl/worksheets/sheet2.xml") && !workbook.Contains("DXF list"), "no extra sheet by default");
+            TestMain.Check(workbook.Contains("fullCalcOnLoad=\"1\""), "recalc on open");
+            TestMain.Check(sheet1.Contains("<c r=\"A2\"") && sheet1.Contains(">S180-06068-37005-1</t>"), "assembly number in A2");
             TestMain.Check(sheet1.Contains("<f>COUNTA(A4:A37)</f>"), "total formula untouched");
             TestMain.Check(sheet1.Contains("PLATE 0 &amp; CO &lt;X&gt;") == false && sheet1.Contains("S180-06068-47002-1"), "part number written (name not mapped)");
         }
 
         public static void TestMoreRowsThanTemplate()
         {
-            Fill(40, "request_list_40.xlsx"); // template has rows 4..37 = 34 rows
+            Fill(40, "request_list_40.xlsx", "DXF list"); // template has rows 4..37 = 34 rows; optional data sheet
         }
     }
 }

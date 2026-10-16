@@ -69,6 +69,7 @@ namespace LaserDxf.Nx
                 List<List<string>> table = Batch.ParseCsv(csv);
                 List<string> header = table[0];
                 table.RemoveAt(0);
+                cfg.RequestList.TitleValue = Identity.Format(cfg.RequestListTitleFormat, assembly.Tokens(), warnings);
                 byte[] xlsx = Xlsx.FillTemplate(File.ReadAllBytes(template), cfg.RequestList, header, table, warnings);
                 File.WriteAllBytes(path, xlsx);
                 return path;
@@ -3126,10 +3127,12 @@ namespace LaserDxf.Core
         public string RequestListTemplate = "Jig Part Request List.xlsx";
         public string RequestListFileFormat = "{ID}-{REV}.xlsx";
         public RequestListSpec RequestList = DefaultRequestList();
+        /// <summary>Text for requestList.titleCell, from the assembly's tokens.</summary>
+        public string RequestListTitleFormat = "{ID}-{REV}";
 
         public static RequestListSpec DefaultRequestList()
         {
-            var r = new RequestListSpec { FirstRow = 4, TotalCell = "H1", DataSheetName = "DXF list" };
+            var r = new RequestListSpec { FirstRow = 4, TotalCell = "H1", TitleCell = "A2", DataSheetName = "" };
             r.Columns.Add(new KeyValuePair<string, string>("A", "ID"));
             r.Columns.Add(new KeyValuePair<string, string>("B", "Material"));
             r.Columns.Add(new KeyValuePair<string, string>("C", "Thickness"));
@@ -3453,6 +3456,8 @@ namespace LaserDxf.Core
             c.RequestList.FirstRow = (int)rl.Num("firstRow", c.RequestList.FirstRow, 1, 100000);
             c.RequestList.TotalCell = rl.Str("totalCell", c.RequestList.TotalCell);
             c.RequestList.DataSheetName = rl.Str("dataSheet", c.RequestList.DataSheetName);
+            c.RequestList.TitleCell = rl.Str("titleCell", c.RequestList.TitleCell);
+            c.RequestListTitleFormat = rl.Str("title", c.RequestListTitleFormat);
             JObj rlCols = rl.RawObj("columns");
             if (rlCols != null)
             {
@@ -3469,6 +3474,12 @@ namespace LaserDxf.Core
                 warnings.Add("Config: requestList.totalCell \"" + c.RequestList.TotalCell + "\" is not a cell like H1 - ignored");
                 c.RequestList.TotalCell = "";
             }
+            foreach (string cellKey in new[] { "titleCell" })
+                if (c.RequestList.TitleCell.Trim().Length > 0 && !System.Text.RegularExpressions.Regex.IsMatch(c.RequestList.TitleCell.Trim(), "^[A-Za-z]{1,3}[0-9]+$"))
+                {
+                    warnings.Add("Config: requestList." + cellKey + " \"" + c.RequestList.TitleCell + "\" is not a cell like A2 - ignored");
+                    c.RequestList.TitleCell = "";
+                }
             rl.Finish();
 
             Section dbg = s.Sub("debug");
@@ -7143,7 +7154,11 @@ namespace LaserDxf.Core
         /// <summary>Cell for the number of part numbers (e.g. "H1"); left alone if it holds a formula. "" = none.</summary>
         public string TotalCell = "";
         /// <summary>Name of the extra sheet with the full CSV table ("" = none).</summary>
-        public string DataSheetName = "DXF list";
+        public string DataSheetName = "";
+        /// <summary>Cell for the title (e.g. "A2", the top-left cell if it is merged); "" = none.</summary>
+        public string TitleCell = "";
+        /// <summary>Text for TitleCell, already filled in (e.g. the assembly "S180-06068-37005-1").</summary>
+        public string TitleValue = "";
     }
 
     public static class Xlsx
@@ -7456,15 +7471,9 @@ namespace LaserDxf.Core
             }
 
             if (spec.TotalCell.Trim().Length > 0)
-            {
-                string tc; int tr;
-                SplitRef(spec.TotalCell, out tc, out tr);
-                Row row = FindRow(sheetRows, tr);
-                if (row == null) { row = new Row { R = tr, Attrs = "" }; sheetRows.Add(row); }
-                Cell existing = row.Get(ColumnIndex(tc));
-                if (existing == null || !existing.HasFormula)
-                    row.Put(new Cell { Col = ColumnIndex(tc), Xml = CellXml(tc + tr, existing != null ? existing.Style : null, rows.Count.ToString(CultureInfo.InvariantCulture)) });
-            }
+                SetSingleCell(sheetRows, spec.TotalCell, rows.Count.ToString(CultureInfo.InvariantCulture), true);
+            if (spec.TitleCell.Trim().Length > 0)
+                SetSingleCell(sheetRows, spec.TitleCell, spec.TitleValue, false);
 
             sheetRows.Sort(delegate (Row a, Row b) { return a.R.CompareTo(b.R); });
             var sb = new StringBuilder();
@@ -7478,6 +7487,18 @@ namespace LaserDxf.Core
             if (dim.Success && lastRow > int.Parse(dim.Groups[3].Value, CultureInfo.InvariantCulture))
                 sheet = sheet.Substring(0, dim.Index) + "<dimension ref=\"" + dim.Groups[1].Value + ":" + dim.Groups[2].Value + lastRow + "\"" + sheet.Substring(dim.Index + dim.Length);
             return sheet;
+        }
+
+        /// <summary>Writes one cell, keeping its style; keepFormula leaves a formula cell alone.</summary>
+        static void SetSingleCell(List<Row> sheetRows, string cellRef, string value, bool keepFormula)
+        {
+            string col; int r;
+            SplitRef(cellRef, out col, out r);
+            Row row = FindRow(sheetRows, r);
+            if (row == null) { row = new Row { R = r, Attrs = "" }; sheetRows.Add(row); }
+            Cell existing = row.Get(ColumnIndex(col));
+            if (keepFormula && existing != null && existing.HasFormula) return;
+            row.Put(new Cell { Col = ColumnIndex(col), Xml = CellXml(col + r, existing != null ? existing.Style : null, value) });
         }
 
         static string DataSheet(List<string> header, List<List<string>> rows)

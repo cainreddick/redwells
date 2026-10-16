@@ -32,6 +32,11 @@ ws.merge_cells("B1:D1")
 ws["B1"] = "Jig Part Requst List"
 ws["B1"].font = Font(size=16, underline="single")
 ws["B1"].alignment = Alignment(horizontal="center", vertical="center")
+ws.merge_cells("A2:D2")
+ws["A2"].font = Font(size=14)
+ws["A2"].alignment = Alignment(horizontal="center", vertical="center")
+for col in "ABCD":
+    ws[col + "2"].border = Border(top=thin, bottom=thin, left=thin if col == "A" else None, right=thin if col == "D" else None)
 ws.merge_cells("F1:G1")
 ws["F1"] = "Total Part No.'s ="
 ws["F1"].font = Font(underline="single")

@@ -46,6 +46,7 @@ namespace LaserDxf.Nx
                 List<List<string>> table = Batch.ParseCsv(csv);
                 List<string> header = table[0];
                 table.RemoveAt(0);
+                cfg.RequestList.TitleValue = Identity.Format(cfg.RequestListTitleFormat, assembly.Tokens(), warnings);
                 byte[] xlsx = Xlsx.FillTemplate(File.ReadAllBytes(template), cfg.RequestList, header, table, warnings);
                 File.WriteAllBytes(path, xlsx);
                 return path;
