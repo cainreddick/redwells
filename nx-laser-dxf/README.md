@@ -96,8 +96,14 @@ several plates in one go:
    - **Duplicates:** two plates that would get the same file name are reported; only the
      first is written.
 5. The **preview** opens for each plate in turn ("plate 2 of 5"), with the same editing
-   tools, plus **Export DXF**, **Skip plate** and **Cancel batch**. Each DXF is written as
-   soon as you approve it. Cancel batch keeps the plates already written.
+   tools, plus **Qty per jig**, **Export DXF**, **Skip plate** and **Cancel batch**. Each DXF
+   is written as soon as you approve it. Cancel batch keeps the plates already written.
+   - **Qty per jig** is counted from the assembly structure, the same tree as the Assembly
+     Navigator, including sub-assemblies. You pick each plate once; if it's used 4 times in
+     the jig, the qty is 4. Suppressed components aren't counted, nor are components with
+     `REFERENCE_COMPONENT` or `PLIST_IGNORE_MEMBER` set (`batch.qtyExcludeAttributes`).
+     Change the number in the box for spares or odd cases; the listing shows both the count
+     and your value. A plate that isn't found in the structure gets 0 and a warning.
 6. Everything goes in a **folder named after the assembly** (the displayed part's ID and
    revision), inside the output folder, holding the DXFs and a CSV with the same name:
 
@@ -117,13 +123,13 @@ several plates in one go:
    The listing shows the assembly, the folder, and one line per plate (exported / skipped /
    failed, with reasons and warnings). The CSV:
 
-   | ID | Revision | Name | Material | Thickness | DXF path |
-   |---|---|---|---|---|---|
-   | S180-06068-47002-1 | 1 | RING SUPPORT - JIG VALVE ASSEMBLY | | 6mm | C:\Laser DXF\S180-06068-37003-1\S180-06068-47002-1.dxf |
-   | S180-06068-47003-1 | 1 | RING SUPPORT - JIG VALVE ASSEMBLY | | 3mm | C:\Laser DXF\S180-06068-37003-1\S180-06068-47003-1.dxf |
+   | ID | Revision | Name | Qty | Material | Thickness | DXF path |
+   |---|---|---|---|---|---|---|
+   | S180-06068-47002-1 | 1 | RING SUPPORT - JIG VALVE ASSEMBLY | 4 | | 6mm | C:\Laser DXF\S180-06068-37003-1\S180-06068-47002-1.dxf |
+   | S180-06068-47003-1 | 1 | RING SUPPORT - JIG VALVE ASSEMBLY | 2 | | 3mm | C:\Laser DXF\S180-06068-37003-1\S180-06068-47003-1.dxf |
 
    Rows are grouped by thickness (6 mm first), then sorted by ID. The columns are set in
-   `batch.csvColumns` (header + value with `{ID}`, `{REV}`, `{REVRAW}`, `{NAME}`, `{MATERIAL}`,
+   `batch.csvColumns` (header + value with `{ID}`, `{REV}`, `{REVRAW}`, `{NAME}`, `{QTY}`, `{MATERIAL}`,
    `{THICKNESS}`, `{DXF}`, `{DXFNAME}`), so they can be renamed, reordered or dropped.
    Per-plate details go to the daily log.
 

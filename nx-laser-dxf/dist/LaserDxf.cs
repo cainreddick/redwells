@@ -73,6 +73,9 @@ namespace LaserDxf.Nx
             string sub = Batch.FolderName(assembly, cfg, cfgWarnings);
             string folder = sub.Length == 0 ? root : NxUtil.EnsureFolder(Path.Combine(root, sub), cfgWarnings);
 
+            // Quantity per jig = occurrences in the assembly structure (Assembly Navigator tree).
+            PartCounts counts = NxAssembly.Count(assemblyPart, cfg, log);
+
             // 1. Read and lay out every plate first, so file names (and clashes) are known up front.
             var items = new List<BatchItem>();
             var jobs = new Dictionary<BatchItem, PlateJob>();
@@ -94,6 +97,9 @@ namespace LaserDxf.Nx
                         item.Reason = reason;
                     }
                     item.Thickness = thickness;
+                    item.QtyCounted = item.Qty = counts.IsAssembly ? counts.CountOf(sel.Part) : 1;
+                    if (item.Qty == 0)
+                        job.Run.Warnings.Add("Qty: not found in the assembly structure (suppressed or reference-only?) - set it in the preview.");
                 }
                 catch (Exception ex)
                 {
@@ -155,7 +161,9 @@ namespace LaserDxf.Nx
                 if (cfg.ShowPreview)
                 {
                     var editor = new LayoutEditor(job.Run);
-                    PreviewResult r = PreviewWindow.ShowBatch(editor, job.Run.Identity.Id + "  (" + job.Run.FileName + ")", n, todo);
+                    int qty = it.Qty;
+                    PreviewResult r = PreviewWindow.ShowBatch(editor, job.Run.Identity.Id + "  (" + job.Run.FileName + ")", n, todo, ref qty);
+                    it.Qty = qty;
                     if (r == PreviewResult.Skip)
                     {
                         it.Status = BatchStatus.Skipped;
@@ -301,6 +309,97 @@ namespace LaserDxf.Nx
             string logPath = PlateJobs.AppendLog(job, cfg, folder, lines);
             if (logPath != null) lines.Add("Log          : " + logPath);
             foreach (string l in lines) lw.WriteLine(l);
+        }
+    }
+}
+
+// ----- nx/NxAssembly.cs -----
+// Counts how many times each part occurs in the displayed assembly (the same tree as the
+// Assembly Navigator), for the Qty column of the batch CSV.
+namespace LaserDxf.Nx
+{
+    using System;
+    using System.Collections.Generic;
+    using NXOpen;
+    using NXOpen.Assemblies;
+    using LaserDxf.Core;
+
+    public sealed class PartCounts
+    {
+        readonly Dictionary<Tag, int> byTag = new Dictionary<Tag, int>();
+        readonly Dictionary<string, int> byName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        public int Excluded;
+        public bool IsAssembly;
+
+        public void Add(Tag tag, string name)
+        {
+            int n;
+            if (tag != Tag.Null) { byTag.TryGetValue(tag, out n); byTag[tag] = n + 1; }
+            if (!string.IsNullOrEmpty(name)) { byName.TryGetValue(name, out n); byName[name] = n + 1; }
+        }
+
+        /// <summary>Occurrences of the part (by its tag, else by its name, for unloaded components).</summary>
+        public int CountOf(Part part)
+        {
+            int n;
+            if (byTag.TryGetValue(part.Tag, out n)) return n;
+            if (byName.TryGetValue(NxUtil.PartLabel(part), out n)) return n;
+            return 0;
+        }
+    }
+
+    public static class NxAssembly
+    {
+        /// <summary>Walks the displayed part's component tree. Suppressed components (and everything
+        /// under them) are left out, as are components carrying one of the configured "not in the
+        /// parts list" attributes with a yes-like value (e.g. REFERENCE_COMPONENT, PLIST_IGNORE_MEMBER).</summary>
+        public static PartCounts Count(Part display, LaserConfig cfg, List<string> log)
+        {
+            var counts = new PartCounts();
+            Component root = null;
+            try { root = display.ComponentAssembly.RootComponent; }
+            catch (Exception ex) { log.Add("Could not read the assembly structure: " + ex.Message); }
+            if (root == null) return counts; // a single part, not an assembly
+            counts.IsAssembly = true;
+            Walk(root, cfg, counts, log, 0);
+            return counts;
+        }
+
+        static void Walk(Component parent, LaserConfig cfg, PartCounts counts, List<string> log, int depth)
+        {
+            Component[] children;
+            try { children = parent.GetChildren(); }
+            catch { return; }
+            foreach (Component c in children)
+            {
+                object suppressed = NxReflect.Member(c, "IsSuppressed");
+                if (suppressed is bool && (bool)suppressed) { counts.Excluded++; continue; }
+                string why = ExcludedBy(c, cfg);
+                if (why != null)
+                {
+                    counts.Excluded++;
+                    if (counts.Excluded <= 10) log.Add("Qty: " + c.DisplayName + " not counted (" + why + ").");
+                    continue;
+                }
+                Part proto = c.Prototype as Part;
+                counts.Add(proto != null ? proto.Tag : Tag.Null, proto != null ? NxUtil.PartLabel(proto) : c.DisplayName);
+                if (depth < 50) Walk(c, cfg, counts, log, depth + 1);
+            }
+        }
+
+        static string ExcludedBy(Component c, LaserConfig cfg)
+        {
+            foreach (string title in cfg.QtyExcludeAttributes)
+            {
+                object v = NxReflect.CallByTitle(c, "GetUserAttributeAsString", title);
+                string s = v as string;
+                if (s == null) continue;
+                s = s.Trim();
+                if (s.Length == 0 || s == "0" || s.Equals("N", StringComparison.OrdinalIgnoreCase) || s.Equals("No", StringComparison.OrdinalIgnoreCase) ||
+                    s.Equals("False", StringComparison.OrdinalIgnoreCase) || s.Equals("<No Value>", StringComparison.OrdinalIgnoreCase)) continue;
+                return title + " = " + s;
+            }
+            return null;
         }
     }
 }
@@ -1331,12 +1430,15 @@ namespace LaserDxf.Nx
                 return f.ShowDialog() == DialogResult.OK;
         }
 
-        /// <summary>Batch mode: Export this plate, Skip it, or Cancel the rest of the batch.</summary>
-        public static PreviewResult ShowBatch(LayoutEditor editor, string title, int index, int count)
+        /// <summary>Batch mode: Export this plate, Skip it, or Cancel the rest of the batch.
+        /// qty is the per-jig quantity shown in an editable box (the count from the assembly in, the final value out).</summary>
+        public static PreviewResult ShowBatch(LayoutEditor editor, string title, int index, int count, ref int qty)
         {
             using (var f = new PreviewForm(editor, "plate " + index + " of " + count + " - " + title, true))
             {
+                f.Qty = qty;
                 DialogResult r = f.ShowDialog();
+                qty = f.Qty;
                 return r == DialogResult.OK ? PreviewResult.Export : r == DialogResult.Ignore ? PreviewResult.Skip : PreviewResult.Cancel;
             }
         }
@@ -1360,6 +1462,14 @@ namespace LaserDxf.Nx
         readonly Label status;
         readonly Button rotateBtn, editBtn, deleteBtn;
         readonly bool batch;
+        NumericUpDown qtyBox;
+
+        /// <summary>Batch mode: quantity per jig (editable).</summary>
+        public int Qty
+        {
+            get { return qtyBox == null ? 1 : (int)qtyBox.Value; }
+            set { if (qtyBox != null) qtyBox.Value = Math.Max(qtyBox.Minimum, Math.Min(qtyBox.Maximum, value)); }
+        }
 
         double scale = 1, offX, offY;
         bool userZoomed;
@@ -1409,7 +1519,13 @@ namespace LaserDxf.Nx
             deleteBtn = MakeButton(bar, "Delete (Del)", delegate { DeleteSelection(); });
             MakeButton(bar, "Reset all", delegate { ed.Reset(); selection.Clear(); StopPlacing(); Changed(); });
             MakeButton(bar, "Fit view (Home)", delegate { userZoomed = false; FitAll(); canvas.Invalidate(); });
-            bar.Controls.Add(new Label { Width = 40 });
+            if (batch)
+            {
+                bar.Controls.Add(new Label { Text = "Qty per jig:", AutoSize = true, Margin = new Padding(16, 6, 2, 0) });
+                qtyBox = new NumericUpDown { Width = 56, Minimum = 0, Maximum = 9999, Value = 1, Margin = new Padding(0, 3, 3, 0) };
+                bar.Controls.Add(qtyBox);
+            }
+            bar.Controls.Add(new Label { Width = batch ? 16 : 40 });
             Button export = MakeButton(bar, "Export DXF", delegate { TryExport(); });
             export.Font = new Font(Font, FontStyle.Bold);
             if (batch) MakeButton(bar, "Skip plate", delegate { TrySkip(); });
@@ -2341,6 +2457,10 @@ namespace LaserDxf.Core
         public ExportRun Run;
         public BatchStatus Status = BatchStatus.Exported;
         public string Reason = "";
+        /// <summary>Quantity per jig (occurrences in the assembly, possibly overridden in the preview).</summary>
+        public int Qty = 1;
+        /// <summary>The count from the assembly, before any override.</summary>
+        public int QtyCounted = 1;
         /// <summary>Thickness for the CSV, e.g. "6mm": the attribute if present, otherwise the measured value.</summary>
         public string Thickness = "";
     }
@@ -2428,6 +2548,7 @@ namespace LaserDxf.Core
             {
                 Dictionary<string, string> t = it.Run.Identity.Tokens();
                 t["THICKNESS"] = it.Thickness;
+                t["QTY"] = it.Qty.ToString(CultureInfo.InvariantCulture);
                 t["DXF"] = it.Run.OutputPath;
                 t["DXFNAME"] = it.Run.FileName;
                 var cells = new List<string>();
@@ -2579,7 +2700,7 @@ namespace LaserDxf.Core
                         round++;
                         if (h.Label.Length > 0) labelled++;
                     }
-                    L.Add("  OK       " + id + "   " + Fmt.N(r.Profile.Width, 1) + " x " + Fmt.N(r.Profile.Height, 1) + " mm, " +
+                    L.Add("  OK       " + id + "   qty " + it.Qty + (it.Qty != it.QtyCounted ? " (counted " + it.QtyCounted + ")" : "") + ",  " + Fmt.N(r.Profile.Width, 1) + " x " + Fmt.N(r.Profile.Height, 1) + " mm, " +
                           round + " holes (" + labelled + " labelled)" + (r.EditSummary.Length > 0 ? ", edited" : "") +
                           (r.Warnings.Count > 0 ? ", " + r.Warnings.Count + " warning(s)" : "") + "  ->  " + r.OutputPath);
                     foreach (string w in r.Warnings) L.Add("             - " + w);
@@ -2952,6 +3073,8 @@ namespace LaserDxf.Core
         public List<KeyValuePair<string, string>> CsvColumns = DefaultCsvColumns();
         /// <summary>Batch sub-folder (inside OutputFolder) and CSV name, from the assembly's {ID}/{REV}. Empty folder = no sub-folder.</summary>
         public string BatchFolderFormat = "{ID}-{REV}";
+        /// <summary>Component attributes that mean "not in the parts list": such components aren't counted in Qty.</summary>
+        public List<string> QtyExcludeAttributes = new List<string> { "REFERENCE_COMPONENT", "PLIST_IGNORE_MEMBER" };
         public string BatchCsvFileFormat = "{ID}-{REV}.csv";
         public double ThicknessTolerance = 0.1;
         public bool WriteCsv = true;
@@ -2973,6 +3096,7 @@ namespace LaserDxf.Core
             l.Add(new KeyValuePair<string, string>("ID", "{ID}-{REV}"));
             l.Add(new KeyValuePair<string, string>("Revision", "{REVRAW}"));
             l.Add(new KeyValuePair<string, string>("Name", "{NAME}"));
+            l.Add(new KeyValuePair<string, string>("Qty", "{QTY}"));
             l.Add(new KeyValuePair<string, string>("Material", "{MATERIAL}"));
             l.Add(new KeyValuePair<string, string>("Thickness", "{THICKNESS}"));
             l.Add(new KeyValuePair<string, string>("DXF path", "{DXF}"));
@@ -3217,6 +3341,12 @@ namespace LaserDxf.Core
             Section b = s.Sub("batch");
             c.BatchFolderFormat = b.Str("folderFormat", c.BatchFolderFormat);
             c.BatchCsvFileFormat = b.Str("csvFileName", c.BatchCsvFileFormat);
+            List<object> qx = b.Arr("qtyExcludeAttributes");
+            if (qx != null)
+            {
+                c.QtyExcludeAttributes.Clear();
+                foreach (object o in qx) if (o is string && ((string)o).Trim().Length > 0) c.QtyExcludeAttributes.Add(((string)o).Trim());
+            }
             List<object> thk = b.Arr("allowedThicknesses");
             if (thk != null)
             {

@@ -89,16 +89,20 @@
     // <outputFolder>\S180-06068-37003-1\S180-06068-37003-1.csv. "" = straight into outputFolder.
     "folderFormat": "{ID}-{REV}",
     "csvFileName": "{ID}-{REV}.csv",  // re-running the batch updates the rows of the plates exported again
+    // Qty = occurrences of the plate in the assembly (as in the Assembly Navigator), per jig.
+    // Suppressed components, and components with one of these attributes set, aren't counted.
+    "qtyExcludeAttributes": ["REFERENCE_COMPONENT", "PLIST_IGNORE_MEMBER"],
     "allowedThicknesses": [6, 3],     // mm (Matl_Thk); other plates are skipped. [] = any thickness
     "thicknessTolerance": 0.1,
     "writeCsv": true,
-    // CSV columns: header + value. Placeholders: {ID} {REV} {REVRAW} {NAME} {MATERIAL}
+    // CSV columns: header + value. Placeholders: {ID} {REV} {REVRAW} {NAME} {QTY} {MATERIAL}
     // {THICKNESS} (e.g. 6mm: Matl_Thk, or the measured thickness if it's missing) {DXF} (full path) {DXFNAME}.
     // Rows are grouped by thickness (thickest first), then sorted by part number.
     "csvColumns": [
       { "header": "ID",        "value": "{ID}-{REV}" },
       { "header": "Revision",  "value": "{REVRAW}" },
       { "header": "Name",      "value": "{NAME}" },
+      { "header": "Qty",       "value": "{QTY}" },
       { "header": "Material",  "value": "{MATERIAL}" },
       { "header": "Thickness", "value": "{THICKNESS}" },
       { "header": "DXF path",  "value": "{DXF}" }

@@ -56,6 +56,7 @@ namespace NXOpen
 
     public class Part : BasePart
     {
+        public NXOpen.Assemblies.ComponentAssembly ComponentAssembly { get { return null; } }
         public WCS WCS { get { return null; } }
         public NXOpen.Features.FeatureCollection Features { get { return null; } }
     }
@@ -150,6 +151,20 @@ namespace NXOpen.Features
     public class HolePackage : BodyFeature { }
 
     public class FeatureCollection { }
+}
+
+namespace NXOpen.Assemblies
+{
+    public class Component : NXOpen.DisplayableObject
+    {
+        public Component[] GetChildren() { return null; }
+        public string DisplayName { get { return ""; } }
+    }
+
+    public class ComponentAssembly : NXOpen.NXObject
+    {
+        public Component RootComponent { get { return null; } }
+    }
 }
 
 namespace NXOpen.UF

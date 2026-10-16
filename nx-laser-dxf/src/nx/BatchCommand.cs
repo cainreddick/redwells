@@ -50,6 +50,9 @@ namespace LaserDxf.Nx
             string sub = Batch.FolderName(assembly, cfg, cfgWarnings);
             string folder = sub.Length == 0 ? root : NxUtil.EnsureFolder(Path.Combine(root, sub), cfgWarnings);
 
+            // Quantity per jig = occurrences in the assembly structure (Assembly Navigator tree).
+            PartCounts counts = NxAssembly.Count(assemblyPart, cfg, log);
+
             // 1. Read and lay out every plate first, so file names (and clashes) are known up front.
             var items = new List<BatchItem>();
             var jobs = new Dictionary<BatchItem, PlateJob>();
@@ -71,6 +74,9 @@ namespace LaserDxf.Nx
                         item.Reason = reason;
                     }
                     item.Thickness = thickness;
+                    item.QtyCounted = item.Qty = counts.IsAssembly ? counts.CountOf(sel.Part) : 1;
+                    if (item.Qty == 0)
+                        job.Run.Warnings.Add("Qty: not found in the assembly structure (suppressed or reference-only?) - set it in the preview.");
                 }
                 catch (Exception ex)
                 {
@@ -132,7 +138,9 @@ namespace LaserDxf.Nx
                 if (cfg.ShowPreview)
                 {
                     var editor = new LayoutEditor(job.Run);
-                    PreviewResult r = PreviewWindow.ShowBatch(editor, job.Run.Identity.Id + "  (" + job.Run.FileName + ")", n, todo);
+                    int qty = it.Qty;
+                    PreviewResult r = PreviewWindow.ShowBatch(editor, job.Run.Identity.Id + "  (" + job.Run.FileName + ")", n, todo, ref qty);
+                    it.Qty = qty;
                     if (r == PreviewResult.Skip)
                     {
                         it.Status = BatchStatus.Skipped;

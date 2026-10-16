@@ -106,6 +106,8 @@ namespace LaserDxf.Core
         public List<KeyValuePair<string, string>> CsvColumns = DefaultCsvColumns();
         /// <summary>Batch sub-folder (inside OutputFolder) and CSV name, from the assembly's {ID}/{REV}. Empty folder = no sub-folder.</summary>
         public string BatchFolderFormat = "{ID}-{REV}";
+        /// <summary>Component attributes that mean "not in the parts list": such components aren't counted in Qty.</summary>
+        public List<string> QtyExcludeAttributes = new List<string> { "REFERENCE_COMPONENT", "PLIST_IGNORE_MEMBER" };
         public string BatchCsvFileFormat = "{ID}-{REV}.csv";
         public double ThicknessTolerance = 0.1;
         public bool WriteCsv = true;
@@ -127,6 +129,7 @@ namespace LaserDxf.Core
             l.Add(new KeyValuePair<string, string>("ID", "{ID}-{REV}"));
             l.Add(new KeyValuePair<string, string>("Revision", "{REVRAW}"));
             l.Add(new KeyValuePair<string, string>("Name", "{NAME}"));
+            l.Add(new KeyValuePair<string, string>("Qty", "{QTY}"));
             l.Add(new KeyValuePair<string, string>("Material", "{MATERIAL}"));
             l.Add(new KeyValuePair<string, string>("Thickness", "{THICKNESS}"));
             l.Add(new KeyValuePair<string, string>("DXF path", "{DXF}"));
@@ -371,6 +374,12 @@ namespace LaserDxf.Core
             Section b = s.Sub("batch");
             c.BatchFolderFormat = b.Str("folderFormat", c.BatchFolderFormat);
             c.BatchCsvFileFormat = b.Str("csvFileName", c.BatchCsvFileFormat);
+            List<object> qx = b.Arr("qtyExcludeAttributes");
+            if (qx != null)
+            {
+                c.QtyExcludeAttributes.Clear();
+                foreach (object o in qx) if (o is string && ((string)o).Trim().Length > 0) c.QtyExcludeAttributes.Add(((string)o).Trim());
+            }
             List<object> thk = b.Arr("allowedThicknesses");
             if (thk != null)
             {

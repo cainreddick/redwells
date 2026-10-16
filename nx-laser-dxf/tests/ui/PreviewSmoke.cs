@@ -142,12 +142,16 @@ namespace LaserDxf.Tests
             After(1200, delegate
             {
                 Form bp = Top("Laser DXF preview - plate 2 of 5");
+                var qtyProp = bp.GetType().GetProperty("Qty");
+                Console.WriteLine("qty box shows the counted " + qtyProp.GetValue(bp, null));
                 Shot("preview_batch.png");
+                qtyProp.SetValue(bp, 3, null); // user overrides 4 -> 3
                 bp.GetType().GetMethod("TrySkip", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(bp, null);
             });
-            PreviewResult br = PreviewWindow.ShowBatch(new LayoutEditor(run2), "S180-06068-47009  (S180-06068-47009-1.dxf)", 2, 5);
-            Console.WriteLine("batch preview returned " + br);
-            smokeOk &= br == PreviewResult.Skip;
+            int qty = 4;
+            PreviewResult br = PreviewWindow.ShowBatch(new LayoutEditor(run2), "S180-06068-47009  (S180-06068-47009-1.dxf)", 2, 5, ref qty);
+            Console.WriteLine("batch preview returned " + br + ", qty " + qty);
+            smokeOk &= br == PreviewResult.Skip && qty == 3;
 
             After(1000, delegate
             {

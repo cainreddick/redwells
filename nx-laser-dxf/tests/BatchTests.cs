@@ -78,16 +78,16 @@ namespace LaserDxf.Tests
                 r.OutputPath = @"C:\Laser DXF\" + r.FileName;
                 string reason, thk;
                 TestMain.Check(Batch.CheckThickness(r, c, out reason, out thk), p[0] + " exported");
-                items.Add(new BatchItem { Run = r, Thickness = thk });
+                items.Add(new BatchItem { Run = r, Thickness = thk, Qty = p[0].EndsWith("47002") ? 4 : p[0].EndsWith("47003") ? 2 : 1 });
             }
             string expected =
-                "ID,Revision,Name,Material,Thickness,DXF path\r\n" +
-                "S180-06068-47002-1,1,RING SUPPORT - JIG VALVE ASSEMBLY,,6mm,C:\\Laser DXF\\S180-06068-47002-1.dxf\r\n" +
-                "S180-06068-47005-1,1,BASE PLATE - JIG VALVE ASSEMBLY,,6mm,C:\\Laser DXF\\S180-06068-47005-1.dxf\r\n" +
-                "S180-06068-47012-1,1,VALVE SUPPORT LAMDA - JIG VALVE ASSEMBLY,,6mm,C:\\Laser DXF\\S180-06068-47012-1.dxf\r\n" +
-                "S180-06068-47003-1,1,RING SUPPORT - JIG VALVE ASSEMNLY,,3mm,C:\\Laser DXF\\S180-06068-47003-1.dxf\r\n" +
-                "S180-06068-47004-1,1,VALVE SUPPORT - JIG VALVE ASSEMBLY,,3mm,C:\\Laser DXF\\S180-06068-47004-1.dxf\r\n" +
-                "S180-06068-47008-1,1,VALVE SUPPORT AXIS - JIG VALVE ASSEMBLY,,3mm,C:\\Laser DXF\\S180-06068-47008-1.dxf\r\n";
+                "ID,Revision,Name,Qty,Material,Thickness,DXF path\r\n" +
+                "S180-06068-47002-1,1,RING SUPPORT - JIG VALVE ASSEMBLY,4,,6mm,C:\\Laser DXF\\S180-06068-47002-1.dxf\r\n" +
+                "S180-06068-47005-1,1,BASE PLATE - JIG VALVE ASSEMBLY,1,,6mm,C:\\Laser DXF\\S180-06068-47005-1.dxf\r\n" +
+                "S180-06068-47012-1,1,VALVE SUPPORT LAMDA - JIG VALVE ASSEMBLY,1,,6mm,C:\\Laser DXF\\S180-06068-47012-1.dxf\r\n" +
+                "S180-06068-47003-1,1,RING SUPPORT - JIG VALVE ASSEMNLY,2,,3mm,C:\\Laser DXF\\S180-06068-47003-1.dxf\r\n" +
+                "S180-06068-47004-1,1,VALVE SUPPORT - JIG VALVE ASSEMBLY,1,,3mm,C:\\Laser DXF\\S180-06068-47004-1.dxf\r\n" +
+                "S180-06068-47008-1,1,VALVE SUPPORT AXIS - JIG VALVE ASSEMBLY,1,,3mm,C:\\Laser DXF\\S180-06068-47008-1.dxf\r\n";
             string csv = Batch.CsvSummary(items, c);
             TestMain.Check(csv == expected, "CSV matches the example sheet:\n" + csv);
         }
@@ -105,8 +105,8 @@ namespace LaserDxf.Tests
             string csv = Batch.CsvSummary(items, new LaserConfig());
             string[] rows = csv.Split(new[] { "\r\n" }, StringSplitOptions.RemoveEmptyEntries);
             TestMain.Check(rows.Length == 2, "header + 1 exported plate, got " + rows.Length);
-            TestMain.Check(rows[0] == "ID,Revision,Name,Material,Thickness,DXF path", rows[0]);
-            TestMain.Check(rows[1] == "S180-06068-47005-1,1,\"BASE PLATE, LH \"\"MAIN\"\"\",MILD STEEL,6mm,C:\\Laser DXF\\S180-06068-47005-1.dxf", rows[1]);
+            TestMain.Check(rows[0] == "ID,Revision,Name,Qty,Material,Thickness,DXF path", rows[0]);
+            TestMain.Check(rows[1] == "S180-06068-47005-1,1,\"BASE PLATE, LH \"\"MAIN\"\"\",1,MILD STEEL,6mm,C:\\Laser DXF\\S180-06068-47005-1.dxf", rows[1]);
 
             // Custom columns from the config, and a missing revision drops the "-".
             var custom = LaserConfig.Parse("{ \"batch\": { \"csvColumns\": [ { \"header\": \"Part\", \"value\": \"{ID}-{REV}\" }, { \"header\": \"File\", \"value\": \"{DXFNAME}\" } ] } }", "t", new List<string>());
@@ -160,22 +160,22 @@ namespace LaserDxf.Tests
         {
             var c = new LaserConfig();
             string first =
-                "ID,Revision,Name,Material,Thickness,DXF path\r\n" +
-                "S180-06068-47002-1,1,RING SUPPORT,,6mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47002-1.dxf\r\n" +
-                "S180-06068-47005-1,1,BASE PLATE,,6mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47005-1.dxf\r\n" +
-                "S180-06068-47003-1,1,\"RING SUPPORT, SMALL\",,3mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47003-1.dxf\r\n";
+                "ID,Revision,Name,Qty,Material,Thickness,DXF path\r\n" +
+                "S180-06068-47002-1,1,RING SUPPORT,2,,6mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47002-1.dxf\r\n" +
+                "S180-06068-47005-1,1,BASE PLATE,2,,6mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47005-1.dxf\r\n" +
+                "S180-06068-47003-1,1,\"RING SUPPORT, SMALL\",2,,3mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47003-1.dxf\r\n";
             string rerun =
-                "ID,Revision,Name,Material,Thickness,DXF path\r\n" +
-                "S180-06068-47005-1,1,BASE PLATE (EDITED),,6mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47005-1.dxf\r\n" +
-                "S180-06068-47009-1,1,NEW PLATE,,3mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47009-1.dxf\r\n";
+                "ID,Revision,Name,Qty,Material,Thickness,DXF path\r\n" +
+                "S180-06068-47005-1,1,BASE PLATE (EDITED),2,,6mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47005-1.dxf\r\n" +
+                "S180-06068-47009-1,1,NEW PLATE,2,,3mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47009-1.dxf\r\n";
             int kept;
             string merged = Batch.MergeCsv(first, rerun, c, out kept);
             string expected =
-                "ID,Revision,Name,Material,Thickness,DXF path\r\n" +
-                "S180-06068-47002-1,1,RING SUPPORT,,6mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47002-1.dxf\r\n" +
-                "S180-06068-47005-1,1,BASE PLATE (EDITED),,6mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47005-1.dxf\r\n" +
-                "S180-06068-47003-1,1,\"RING SUPPORT, SMALL\",,3mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47003-1.dxf\r\n" +
-                "S180-06068-47009-1,1,NEW PLATE,,3mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47009-1.dxf\r\n";
+                "ID,Revision,Name,Qty,Material,Thickness,DXF path\r\n" +
+                "S180-06068-47002-1,1,RING SUPPORT,2,,6mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47002-1.dxf\r\n" +
+                "S180-06068-47005-1,1,BASE PLATE (EDITED),2,,6mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47005-1.dxf\r\n" +
+                "S180-06068-47003-1,1,\"RING SUPPORT, SMALL\",2,,3mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47003-1.dxf\r\n" +
+                "S180-06068-47009-1,1,NEW PLATE,2,,3mm,C:\\Laser DXF\\S180-06068-37003-1\\S180-06068-47009-1.dxf\r\n";
             TestMain.Check(kept == 2, "2 earlier rows kept, got " + kept);
             TestMain.Check(merged == expected, "merged, replaced and re-sorted:\n" + merged);
 

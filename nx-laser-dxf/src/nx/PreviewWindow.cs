@@ -23,12 +23,15 @@ namespace LaserDxf.Nx
                 return f.ShowDialog() == DialogResult.OK;
         }
 
-        /// <summary>Batch mode: Export this plate, Skip it, or Cancel the rest of the batch.</summary>
-        public static PreviewResult ShowBatch(LayoutEditor editor, string title, int index, int count)
+        /// <summary>Batch mode: Export this plate, Skip it, or Cancel the rest of the batch.
+        /// qty is the per-jig quantity shown in an editable box (the count from the assembly in, the final value out).</summary>
+        public static PreviewResult ShowBatch(LayoutEditor editor, string title, int index, int count, ref int qty)
         {
             using (var f = new PreviewForm(editor, "plate " + index + " of " + count + " - " + title, true))
             {
+                f.Qty = qty;
                 DialogResult r = f.ShowDialog();
+                qty = f.Qty;
                 return r == DialogResult.OK ? PreviewResult.Export : r == DialogResult.Ignore ? PreviewResult.Skip : PreviewResult.Cancel;
             }
         }
@@ -52,6 +55,14 @@ namespace LaserDxf.Nx
         readonly Label status;
         readonly Button rotateBtn, editBtn, deleteBtn;
         readonly bool batch;
+        NumericUpDown qtyBox;
+
+        /// <summary>Batch mode: quantity per jig (editable).</summary>
+        public int Qty
+        {
+            get { return qtyBox == null ? 1 : (int)qtyBox.Value; }
+            set { if (qtyBox != null) qtyBox.Value = Math.Max(qtyBox.Minimum, Math.Min(qtyBox.Maximum, value)); }
+        }
 
         double scale = 1, offX, offY;
         bool userZoomed;
@@ -101,7 +112,13 @@ namespace LaserDxf.Nx
             deleteBtn = MakeButton(bar, "Delete (Del)", delegate { DeleteSelection(); });
             MakeButton(bar, "Reset all", delegate { ed.Reset(); selection.Clear(); StopPlacing(); Changed(); });
             MakeButton(bar, "Fit view (Home)", delegate { userZoomed = false; FitAll(); canvas.Invalidate(); });
-            bar.Controls.Add(new Label { Width = 40 });
+            if (batch)
+            {
+                bar.Controls.Add(new Label { Text = "Qty per jig:", AutoSize = true, Margin = new Padding(16, 6, 2, 0) });
+                qtyBox = new NumericUpDown { Width = 56, Minimum = 0, Maximum = 9999, Value = 1, Margin = new Padding(0, 3, 3, 0) };
+                bar.Controls.Add(qtyBox);
+            }
+            bar.Controls.Add(new Label { Width = batch ? 16 : 40 });
             Button export = MakeButton(bar, "Export DXF", delegate { TryExport(); });
             export.Font = new Font(Font, FontStyle.Bold);
             if (batch) MakeButton(bar, "Skip plate", delegate { TrySkip(); });

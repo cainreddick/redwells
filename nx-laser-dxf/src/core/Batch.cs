@@ -15,6 +15,10 @@ namespace LaserDxf.Core
         public ExportRun Run;
         public BatchStatus Status = BatchStatus.Exported;
         public string Reason = "";
+        /// <summary>Quantity per jig (occurrences in the assembly, possibly overridden in the preview).</summary>
+        public int Qty = 1;
+        /// <summary>The count from the assembly, before any override.</summary>
+        public int QtyCounted = 1;
         /// <summary>Thickness for the CSV, e.g. "6mm": the attribute if present, otherwise the measured value.</summary>
         public string Thickness = "";
     }
@@ -102,6 +106,7 @@ namespace LaserDxf.Core
             {
                 Dictionary<string, string> t = it.Run.Identity.Tokens();
                 t["THICKNESS"] = it.Thickness;
+                t["QTY"] = it.Qty.ToString(CultureInfo.InvariantCulture);
                 t["DXF"] = it.Run.OutputPath;
                 t["DXFNAME"] = it.Run.FileName;
                 var cells = new List<string>();
@@ -253,7 +258,7 @@ namespace LaserDxf.Core
                         round++;
                         if (h.Label.Length > 0) labelled++;
                     }
-                    L.Add("  OK       " + id + "   " + Fmt.N(r.Profile.Width, 1) + " x " + Fmt.N(r.Profile.Height, 1) + " mm, " +
+                    L.Add("  OK       " + id + "   qty " + it.Qty + (it.Qty != it.QtyCounted ? " (counted " + it.QtyCounted + ")" : "") + ",  " + Fmt.N(r.Profile.Width, 1) + " x " + Fmt.N(r.Profile.Height, 1) + " mm, " +
                           round + " holes (" + labelled + " labelled)" + (r.EditSummary.Length > 0 ? ", edited" : "") +
                           (r.Warnings.Count > 0 ? ", " + r.Warnings.Count + " warning(s)" : "") + "  ->  " + r.OutputPath);
                     foreach (string w in r.Warnings) L.Add("             - " + w);
