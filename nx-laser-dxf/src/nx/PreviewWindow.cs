@@ -1,7 +1,8 @@
 // Preview & adjust window (Windows Forms): shows the finished layout and lets the
-// user drag, rotate, edit or delete the hole labels and the part number before the
-// DXF is written. All editing logic lives in LaserDxf.Core.LayoutEditor; this file
-// only draws and handles the mouse/keyboard. It deliberately doesn't import NXOpen.
+// user drag, rotate, edit, resize or delete the hole labels and the part number -
+// one at a time or several at once - and drop extra labels, before the DXF is
+// written. All editing logic lives in LaserDxf.Core.LayoutEditor; this file only
+// draws and handles the mouse/keyboard. It deliberately doesn't import NXOpen.
 namespace LaserDxf.Nx
 {
     using System;
@@ -41,17 +42,21 @@ namespace LaserDxf.Nx
 
         double scale = 1, offX, offY;
         bool userZoomed;
-        PlacedText selected;
-        string placing;          // label being dropped (after pressing its button), or null
-        Vec2 ghost;
-        bool ghostVisible;
+        readonly List<PlacedText> selection = new List<PlacedText>();
         Point lastMouse;
         bool dragging, panning;
+        bool boxSelecting, boxAdditive;   // drag-box selection on empty plate
+        Point boxStart, boxEnd;
+        string placing;                   // label being dropped (after pressing its button), or null
+        Vec2 ghost;
+        bool ghostVisible;
+        bool discardConfirmed;            // Cancel already asked "discard changes?"
 
         static readonly Color CutColour = Color.Black;
         static readonly Color OkColour = Color.FromArgb(0, 70, 230);
         static readonly Color CloseColour = Color.FromArgb(230, 120, 0);
         static readonly Color OverlapColour = Color.FromArgb(220, 0, 0);
+        static readonly Color SelectColour = Color.FromArgb(40, 40, 40);
 
         public PreviewForm(LayoutEditor editor, string title)
         {
@@ -59,7 +64,7 @@ namespace LaserDxf.Nx
             Text = "Laser DXF preview - " + title;
             StartPosition = FormStartPosition.CenterScreen;
             Size = new Size(1200, 850);
-            MinimumSize = new Size(700, 480);
+            MinimumSize = new Size(760, 480);
             TopMost = true;
             KeyPreview = true;
             Font = new Font("Segoe UI", 9f);
@@ -77,16 +82,15 @@ namespace LaserDxf.Nx
                 b.MinimumSize = new Size(56, 28);
             }
             bar.Controls.Add(new Label { Width = 12 });
-            rotateBtn = MakeButton(bar, "Rotate 90° (R)", delegate { if (selected != null) { ed.Rotate90(selected); Changed(); } });
-            editBtn = MakeButton(bar, "Edit text... (F2)", delegate { EditSelected(); });
-            deleteBtn = MakeButton(bar, "Delete (Del)", delegate { if (selected != null) { ed.Delete(selected); selected = null; Changed(); } });
-            MakeButton(bar, "Reset all", delegate { ed.Reset(); selected = null; StopPlacing(); Changed(); });
+            editBtn = MakeButton(bar, "Edit text / size... (F2)", delegate { EditSelection(); });
+            rotateBtn = MakeButton(bar, "Rotate 90° (R)", delegate { RotateSelection(); });
+            deleteBtn = MakeButton(bar, "Delete (Del)", delegate { DeleteSelection(); });
+            MakeButton(bar, "Reset all", delegate { ed.Reset(); selection.Clear(); StopPlacing(); Changed(); });
             MakeButton(bar, "Fit view (Home)", delegate { userZoomed = false; FitAll(); canvas.Invalidate(); });
-            bar.Controls.Add(new Label { Width = 60 });
+            bar.Controls.Add(new Label { Width = 40 });
             Button export = MakeButton(bar, "Export DXF", delegate { TryExport(); });
             export.Font = new Font(Font, FontStyle.Bold);
-            Button cancel = MakeButton(bar, "Cancel", delegate { DialogResult = DialogResult.Cancel; });
-            CancelButton = cancel;
+            MakeButton(bar, "Cancel", delegate { TryCancel(); });
 
             // Fill control first, bottom bars after: WinForms docks the last-added control first.
             Controls.Add(canvas);
@@ -96,11 +100,19 @@ namespace LaserDxf.Nx
             canvas.Paint += OnPaint;
             canvas.MouseDown += OnMouseDown;
             canvas.MouseMove += OnMouseMove;
-            canvas.MouseUp += delegate { dragging = false; panning = false; };
+            canvas.MouseUp += OnMouseUp;
             canvas.MouseWheel += OnWheel;
-            canvas.MouseDoubleClick += delegate (object s, MouseEventArgs e) { if (e.Button == MouseButtons.Left && placing == null && selected != null) EditSelected(); };
+            canvas.MouseDoubleClick += delegate (object s, MouseEventArgs e)
+            {
+                if (e.Button == MouseButtons.Left && placing == null && selection.Count > 0) EditSelection();
+            };
             canvas.MouseLeave += delegate { if (ghostVisible) { ghostVisible = false; canvas.Invalidate(); } };
             canvas.Resize += delegate { if (!userZoomed) FitAll(); };
+            FormClosing += delegate (object s, FormClosingEventArgs e)
+            {
+                // Closing with the window's X counts as Cancel: confirm if there are edits to lose.
+                if (DialogResult != DialogResult.OK && !discardConfirmed && HasEdits() && !ConfirmDiscard()) e.Cancel = true;
+            };
             Shown += delegate { FitAll(); Changed(); canvas.Focus(); };
         }
 
@@ -141,26 +153,42 @@ namespace LaserDxf.Nx
                 if (t.Deleted) continue;
                 ItemStatus st = ed.Status(t);
                 Color c = st == ItemStatus.Ok ? OkColour : st == ItemStatus.Close ? CloseColour : OverlapColour;
-                using (var pen = new Pen(c, 1.2f))
+                DrawText(g, c, t.Text, t.Origin, t.Height, t.RotationDeg);
+                bool sel = selection.Contains(t);
+                if (sel || st != ItemStatus.Ok)
                 {
-                    foreach (var stroke in StrokeFont.Render(t.Text, t.Origin, t.Height, t.RotationDeg))
+                    using (var pen = new Pen(sel ? SelectColour : c, sel ? 1.5f : 1f))
                     {
-                        var pts = new PointF[stroke.Count];
-                        for (int i = 0; i < stroke.Count; i++) pts[i] = S(stroke[i]);
-                        if (pts.Length >= 2) g.DrawLines(pen, pts);
-                    }
-                }
-                if (t == selected || st != ItemStatus.Ok)
-                {
-                    using (var pen = new Pen(t == selected ? Color.FromArgb(40, 40, 40) : c, 1f))
-                    {
-                        if (t == selected) pen.DashStyle = DashStyle.Dash;
+                        if (sel) pen.DashStyle = DashStyle.Dash;
                         PointF a = S(new Vec2(t.Box.MinX, t.Box.MaxY)), b = S(new Vec2(t.Box.MaxX, t.Box.MinY));
                         g.DrawRectangle(pen, a.X - 2, a.Y - 2, b.X - a.X + 4, b.Y - a.Y + 4);
                     }
                 }
             }
+            if (boxSelecting)
+            {
+                using (var pen = new Pen(SelectColour, 1f) { DashStyle = DashStyle.Dot })
+                using (var fill = new SolidBrush(Color.FromArgb(30, OkColour)))
+                {
+                    Rectangle r = ScreenRect(boxStart, boxEnd);
+                    g.FillRectangle(fill, r);
+                    g.DrawRectangle(pen, r);
+                }
+            }
             DrawGhost(g);
+        }
+
+        void DrawText(Graphics g, Color c, string text, Vec2 origin, double height, double rotation)
+        {
+            using (var pen = new Pen(c, 1.2f))
+            {
+                foreach (var stroke in StrokeFont.Render(text, origin, height, rotation))
+                {
+                    var pts = new PointF[stroke.Count];
+                    for (int i = 0; i < stroke.Count; i++) pts[i] = S(stroke[i]);
+                    if (pts.Length >= 2) g.DrawLines(pen, pts);
+                }
+            }
         }
 
         /// <summary>The label being dropped, drawn under the cursor.</summary>
@@ -169,15 +197,9 @@ namespace LaserDxf.Nx
             if (placing == null || !ghostVisible) return;
             double h = ed.Run.Config.LabelHeight, w = StrokeFont.Measure(placing, h);
             Vec2 origin = new Vec2(ghost.X - w / 2, ghost.Y - h / 2);
-            using (var pen = new Pen(Color.FromArgb(150, OkColour), 1.2f))
+            DrawText(g, Color.FromArgb(150, OkColour), placing, origin, h, 0);
+            using (var pen = new Pen(Color.FromArgb(150, OkColour), 1f) { DashStyle = DashStyle.Dot })
             {
-                foreach (var stroke in StrokeFont.Render(placing, origin, h, 0))
-                {
-                    var pts = new PointF[stroke.Count];
-                    for (int i = 0; i < stroke.Count; i++) pts[i] = S(stroke[i]);
-                    if (pts.Length >= 2) g.DrawLines(pen, pts);
-                }
-                pen.DashStyle = DashStyle.Dot;
                 PointF a = S(new Vec2(origin.X, origin.Y + h)), b = S(new Vec2(origin.X + w, origin.Y));
                 g.DrawRectangle(pen, a.X - 2, a.Y - 2, b.X - a.X + 4, b.Y - a.Y + 4);
             }
@@ -214,22 +236,48 @@ namespace LaserDxf.Nx
             }
         }
 
-        // ------------------------------------------------------------ mouse & keys
+        static Rectangle ScreenRect(Point a, Point b)
+        {
+            return new Rectangle(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Abs(a.X - b.X), Math.Abs(a.Y - b.Y));
+        }
+
+        // ------------------------------------------------------------ mouse
 
         void OnMouseDown(object sender, MouseEventArgs e)
         {
             canvas.Focus();
             lastMouse = e.Location;
+            bool ctrl = (ModifierKeys & Keys.Control) != 0;
             if (e.Button == MouseButtons.Left && placing != null)
             {
-                selected = ed.AddLabelAt(placing, M(e.Location));
+                PlacedText dropped = ed.AddLabelAt(placing, M(e.Location));
+                selection.Clear();
+                if (dropped != null) selection.Add(dropped);
                 if ((ModifierKeys & Keys.Shift) == 0) StopPlacing(); // Shift-click keeps dropping
                 Changed();
             }
             else if (e.Button == MouseButtons.Left)
             {
-                selected = ed.HitTest(M(e.Location), 4 / scale);
-                dragging = selected != null;
+                PlacedText hit = ed.HitTest(M(e.Location), 4 / scale);
+                if (hit != null && ctrl)
+                {
+                    // Ctrl+click adds to / removes from the selection.
+                    if (selection.Contains(hit)) selection.Remove(hit); else selection.Add(hit);
+                }
+                else if (hit != null)
+                {
+                    // Clicking an item that's already selected keeps the group, so it can be dragged together.
+                    if (!selection.Contains(hit)) { selection.Clear(); selection.Add(hit); }
+                    dragging = true;
+                }
+                else
+                {
+                    // Empty plate: start a selection box (Ctrl keeps what's already selected).
+                    if (!ctrl) selection.Clear();
+                    boxSelecting = true;
+                    boxAdditive = ctrl;
+                    boxStart = boxEnd = e.Location;
+                }
                 Changed();
             }
             else if (e.Button == MouseButtons.Right || e.Button == MouseButtons.Middle) panning = true;
@@ -245,10 +293,16 @@ namespace LaserDxf.Nx
                 ghostVisible = true;
                 canvas.Invalidate();
             }
-            if (dragging && selected != null)
+            if (dragging && selection.Count > 0)
             {
-                ed.Move(selected, new Vec2(dx / scale, -dy / scale));
+                Vec2 d = new Vec2(dx / scale, -dy / scale);
+                foreach (var t in selection) ed.Move(t, d);
                 Changed();
+            }
+            else if (boxSelecting)
+            {
+                boxEnd = e.Location;
+                canvas.Invalidate();
             }
             else if (panning)
             {
@@ -257,6 +311,25 @@ namespace LaserDxf.Nx
                 userZoomed = true;
                 canvas.Invalidate();
             }
+        }
+
+        void OnMouseUp(object sender, MouseEventArgs e)
+        {
+            if (boxSelecting)
+            {
+                boxSelecting = false;
+                Rectangle r = ScreenRect(boxStart, e.Location);
+                if (r.Width > 3 || r.Height > 3)
+                {
+                    Vec2 a = M(new Point(r.Left, r.Bottom)), b = M(new Point(r.Right, r.Top));
+                    if (!boxAdditive) selection.Clear();
+                    foreach (var t in ed.ItemsIn(new Rect2(a.X, a.Y, b.X, b.Y)))
+                        if (!selection.Contains(t)) selection.Add(t);
+                }
+                Changed();
+            }
+            dragging = false;
+            panning = false;
         }
 
         void OnWheel(object sender, MouseEventArgs e)
@@ -269,13 +342,30 @@ namespace LaserDxf.Nx
             canvas.Invalidate();
         }
 
+        // ------------------------------------------------------------ keys
+
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
             Keys key = keyData & Keys.KeyCode;
             bool shift = (keyData & Keys.Shift) != 0;
+            bool ctrl = (keyData & Keys.Control) != 0;
             if (key == Keys.Home) { userZoomed = false; FitAll(); canvas.Invalidate(); return true; }
-            if (key == Keys.Escape && placing != null) { StopPlacing(); Changed(); return true; }
-            if (selected != null)
+            if (key == Keys.Escape)
+            {
+                if (placing != null) StopPlacing();
+                else if (selection.Count > 0) selection.Clear();
+                else TryCancel();
+                Changed();
+                return true;
+            }
+            if (ctrl && key == Keys.A)
+            {
+                selection.Clear();
+                foreach (var t in ed.Items) if (!t.Deleted && !t.IsEtch) selection.Add(t); // all hole labels
+                Changed();
+                return true;
+            }
+            if (selection.Count > 0)
             {
                 double step = shift ? 5 : 0.5;
                 Vec2 d = new Vec2(0, 0);
@@ -283,10 +373,15 @@ namespace LaserDxf.Nx
                 else if (key == Keys.Right) d = new Vec2(step, 0);
                 else if (key == Keys.Up) d = new Vec2(0, step);
                 else if (key == Keys.Down) d = new Vec2(0, -step);
-                if (d.X != 0 || d.Y != 0) { ed.Move(selected, d); Changed(); return true; }
-                if (key == Keys.R) { ed.Rotate90(selected); Changed(); return true; }
-                if (key == Keys.Delete) { ed.Delete(selected); selected = null; Changed(); return true; }
-                if (key == Keys.F2) { EditSelected(); return true; }
+                if (d.X != 0 || d.Y != 0)
+                {
+                    foreach (var t in selection) ed.Move(t, d);
+                    Changed();
+                    return true;
+                }
+                if (key == Keys.R) { RotateSelection(); return true; }
+                if (key == Keys.Delete) { DeleteSelection(); return true; }
+                if (key == Keys.F2) { EditSelection(); return true; }
             }
             return base.ProcessCmdKey(ref msg, keyData);
         }
@@ -296,7 +391,7 @@ namespace LaserDxf.Nx
         void StartPlacing(string label)
         {
             placing = label;
-            selected = null;
+            selection.Clear();
             canvas.Cursor = Cursors.Cross;
             canvas.Focus();
             Changed();
@@ -309,39 +404,91 @@ namespace LaserDxf.Nx
             canvas.Cursor = Cursors.Default;
         }
 
-        void EditSelected()
+        void RotateSelection()
         {
-            if (selected == null) return;
-            string text = Prompt("Edit text", selected.IsEtch ? "Part number:" : "Hole label:", selected.Text);
-            if (text == null) return;
-            ed.SetText(selected, text);
-            if (selected.Deleted) selected = null;
+            foreach (var t in selection) ed.Rotate90(t);
             Changed();
         }
 
-        string Prompt(string title, string label, string value)
+        void DeleteSelection()
         {
+            foreach (var t in selection) ed.Delete(t);
+            selection.Clear();
+            Changed();
+        }
+
+        /// <summary>Text and size for one item; size only (applied to all) for several.</summary>
+        void EditSelection()
+        {
+            if (selection.Count == 0) return;
+            PlacedText first = selection[0];
+            bool single = selection.Count == 1;
+            string what = single ? (first.IsEtch ? "Part number" : "Hole label") : selection.Count + " selected items";
+
             using (var f = new Form())
             {
-                f.Text = title;
+                f.Text = "Edit text / size";
                 f.FormBorderStyle = FormBorderStyle.FixedDialog;
                 f.StartPosition = FormStartPosition.CenterParent;
                 f.MinimizeBox = f.MaximizeBox = false;
                 f.ShowInTaskbar = false;
                 f.TopMost = true;
                 f.Font = Font;
-                f.ClientSize = new Size(380, 100);
-                f.Controls.Add(new Label { Text = label, Left = 10, Top = 12, Width = 360 });
-                var box = new TextBox { Text = value, Left = 10, Top = 32, Width = 360 };
-                var ok = new Button { Text = "OK", Left = 214, Top = 64, Width = 75, DialogResult = DialogResult.OK };
-                var cancel = new Button { Text = "Cancel", Left = 295, Top = 64, Width = 75, DialogResult = DialogResult.Cancel };
+                f.ClientSize = new Size(380, 150);
+                f.Controls.Add(new Label { Text = what + ":", Left = 10, Top = 12, Width = 360 });
+                var box = new TextBox { Left = 10, Top = 32, Width = 360, Text = single ? first.Text : "" };
+                if (!single) { box.Enabled = false; box.Text = "(text unchanged - several items selected)"; }
                 f.Controls.Add(box);
+                f.Controls.Add(new Label { Text = "Text height (mm):", Left = 10, Top = 70, Width = 120 });
+                var size = new NumericUpDown
+                {
+                    Left = 134, Top = 67, Width = 80, DecimalPlaces = 1, Increment = 0.5M,
+                    Minimum = (decimal)LayoutEditor.MinHeight, Maximum = (decimal)LayoutEditor.MaxHeight,
+                    Value = (decimal)Math.Max(LayoutEditor.MinHeight, Math.Min(LayoutEditor.MaxHeight, Math.Round(first.Height, 1)))
+                };
+                f.Controls.Add(size);
+                if (!single)
+                {
+                    bool mixed = false;
+                    foreach (var t in selection) if (Math.Abs(t.Height - first.Height) > 1e-9) mixed = true;
+                    if (mixed) f.Controls.Add(new Label { Text = "(sizes differ - all will get this size)", Left = 220, Top = 70, Width = 160 });
+                }
+                var ok = new Button { Text = "OK", Left = 214, Top = 110, Width = 75, DialogResult = DialogResult.OK };
+                var cancel = new Button { Text = "Cancel", Left = 295, Top = 110, Width = 75, DialogResult = DialogResult.Cancel };
                 f.Controls.Add(ok);
                 f.Controls.Add(cancel);
                 f.AcceptButton = ok;
                 f.CancelButton = cancel;
-                return f.ShowDialog(this) == DialogResult.OK ? box.Text : null;
+                if (f.ShowDialog(this) != DialogResult.OK) return;
+
+                double h = (double)size.Value;
+                foreach (var t in selection)
+                {
+                    if (single) ed.SetText(t, box.Text);
+                    if (!t.Deleted) ed.SetHeight(t, h);
+                }
+                selection.RemoveAll(delegate (PlacedText t) { return t.Deleted; }); // emptied text deletes
             }
+            Changed();
+        }
+
+        bool HasEdits()
+        {
+            foreach (var t in ed.Items) if (t.Edited) return true;
+            return false;
+        }
+
+        bool ConfirmDiscard()
+        {
+            return MessageBox.Show(this, "Discard your changes and close without writing the DXF?", "Laser DXF",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+        }
+
+        void TryCancel()
+        {
+            if (HasEdits() && !ConfirmDiscard()) return;
+            discardConfirmed = true;
+            DialogResult = DialogResult.Cancel;
         }
 
         void TryExport()
@@ -361,12 +508,21 @@ namespace LaserDxf.Nx
 
         void Changed()
         {
-            bool has = selected != null;
+            bool has = selection.Count > 0;
             rotateBtn.Enabled = editBtn.Enabled = deleteBtn.Enabled = has;
             if (placing != null)
                 status.Text = "Click on the plate to drop the " + placing + " label (centred on the cursor). Shift-click to drop several; Esc to stop." +
                               "\nDropped next to a hole, it becomes that hole's label. You can drag it afterwards.";
-            else if (has) status.Text = ed.Describe(selected) + "\nDrag or use the arrow keys to move (Shift = 5 mm steps), R to rotate, F2 or double-click to edit, Del to delete.";
+            else if (selection.Count == 1)
+                status.Text = ed.Describe(selection[0]) + "  [" + Fmt.N(selection[0].Height, 1) + " mm high]" +
+                              "\nDrag or arrow keys to move (Shift = 5 mm), R rotate, F2 edit text/size, Del delete. Ctrl+click to select more.";
+            else if (has)
+            {
+                int bad = 0;
+                foreach (var t in selection) if (ed.Status(t) != ItemStatus.Ok) bad++;
+                status.Text = selection.Count + " items selected" + (bad > 0 ? ", " + bad + " still need attention" : ", all clear") + "." +
+                              "\nDrag one of them or use the arrow keys to move them together (Shift = 5 mm). R rotates each, F2 sets their text size, Del deletes, Esc deselects.";
+            }
             else
             {
                 int n = 0;
@@ -375,7 +531,7 @@ namespace LaserDxf.Nx
                 int u = ed.Unlabelled().Count;
                 status.Text = n + " text item(s)" + (p > 0 ? ", " + p + " need attention (orange = tight, red = crossing something)" : ", all clear") +
                               "; " + u + " round hole(s) without a label." +
-                              "\nTo add a label press its button (e.g. R6) and click on the plate. Click text to select it. Mouse wheel zooms, right-drag pans, Home fits the view.";
+                              "\nClick text to select it; Ctrl+click or drag a box to select several (Ctrl+A = all hole labels). Press R6/M8 and click to add a label. Wheel zooms, right-drag pans.";
             }
             canvas.Invalidate();
         }

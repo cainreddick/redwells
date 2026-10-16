@@ -31,9 +31,14 @@ The design is described in [ARCHITECTURE.md](ARCHITECTURE.md).
    DXF version and output folder. Your choices apply to this run only. Set
    `"showOptionsDialog": false` to skip the dialog.
 5. The **preview window** shows the finished plate (unless switched off). Click a label or
-   the part number to select it, then:
-   - drag it, or nudge it with the arrow keys (0.5 mm, or 5 mm with Shift)
-   - `R` turns it 90°, `F2` or a double-click edits the text, `Del` deletes it
+   the part number to select it. To select several, **Ctrl+click** them or **drag a box**
+   around them on empty plate (`Ctrl+A` selects every hole label, `Esc` deselects). Then:
+   - drag any selected item, or use the arrow keys (0.5 mm, or 5 mm with Shift); all
+     selected items move together
+   - `R` turns each 90°, `Del` deletes them
+   - **Edit text / size...** (`F2` or double-click) changes the text and its height in mm.
+     With several items selected it sets the same height on all of them, e.g. smaller text
+     for a small part
    - **R6** / **M8** buttons (one per row of your label table) drop a label by hand: press
      one and click on the plate. The label is centred where you click; Shift-click drops
      several, and Esc stops. A label dropped next to a hole becomes that hole's label: it is
@@ -43,7 +48,8 @@ The design is described in [ARCHITECTURE.md](ARCHITECTURE.md).
 
    Text that crosses the cut line, a hole or other text is boxed in **red**; text that is too
    close is boxed in **orange**. *Export DXF* warns if anything is still flagged. Nothing is
-   written until you click it, and *Cancel* writes nothing.
+   written until you click it, and *Cancel* writes nothing (it asks first if you've made
+   changes).
 6. The DXF is written to `<outputFolder>\{ID}-{REV}.dxf`. If the file already exists, you're
    asked before it's overwritten.
    - **CUT** layer (colour 7): the profile and the through holes, as true lines, arcs and

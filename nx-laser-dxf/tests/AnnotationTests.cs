@@ -454,3 +454,80 @@ namespace LaserDxf.Tests
         }
     }
 }
+
+namespace LaserDxf.Tests
+{
+    using System;
+    using System.Collections.Generic;
+    using LaserDxf.Core;
+
+    public static class MultiEditTests
+    {
+        static ExportRun Plate()
+        {
+            var s = new Synth(6);
+            s.Rectangle(200, 100);
+            s.SimpleHole(30, 50, 5.8);
+            s.SimpleHole(60, 50, 5.5);
+            s.SimpleHole(90, 50, 5.8);
+            s.M.Attributes = IdentityTests.Attrs();
+            var c = new LaserConfig();
+            return ExportPipeline.Prepare(s.M, s.TopFace, c, c.ToAnalysisOptions(), "t");
+        }
+
+        public static void TestTextHeight()
+        {
+            ExportRun r = Plate();
+            var ed = new LayoutEditor(r);
+            PlacedText etch = r.Etch;
+            Vec2 c = etch.Box.Center;
+            double w5 = etch.Box.Width;
+            ed.SetHeight(etch, 2.5);
+            TestMain.Near(etch.Height, 2.5, 0, "height changed");
+            TestMain.Near(etch.Box.Width, w5 / 2, 1e-9, "width scales with height");
+            TestMain.Near(etch.Box.Center.X, c.X, 1e-9, "stays centred (x)");
+            TestMain.Near(etch.Box.Center.Y, c.Y, 1e-9, "stays centred (y)");
+            ed.SetHeight(etch, 0.01);
+            TestMain.Near(etch.Height, LayoutEditor.MinHeight, 0, "clamped to the minimum");
+
+            ed.SetHeight(etch, 3.5);
+            ed.Apply();
+            double maxY = double.MinValue, minY = double.MaxValue;
+            foreach (var e in r.Profile.Doc.Entities)
+            {
+                var pl = e as DxfPolyline;
+                if (pl == null || Layout2.RectRect(Rect2.FromCenter(c, 0.1, 0.1), etch.Box) > 0) continue;
+                foreach (var p in pl.Points)
+                    if (Layout2.PointRect(p, etch.Box) < 1e-6) { maxY = Math.Max(maxY, p.Y); minY = Math.Min(minY, p.Y); }
+            }
+            TestMain.Near(maxY - minY, 3.5, 1e-6, "part number written 3.5 mm high");
+
+            ed.Reset();
+            TestMain.Near(etch.Height, 5, 0, "reset restores the size");
+        }
+
+        public static void TestBoxSelectAndMoveTogether()
+        {
+            ExportRun r = Plate();
+            var ed = new LayoutEditor(r);
+            // A box over the three holes' labels (y = 50 band) but not the part number.
+            var sel = ed.ItemsIn(new Rect2(0, 45, 120, 55));
+            int labels = 0;
+            foreach (var t in sel) if (!t.IsEtch) labels++;
+            TestMain.Check(labels == 3 && labels == sel.Count, "box selects the 3 labels only, got " + sel.Count);
+
+            var before = new List<Vec2>();
+            foreach (var t in sel) before.Add(t.Box.Center);
+            foreach (var t in sel) ed.Move(t, new Vec2(-1, 4));
+            for (int i = 0; i < sel.Count; i++)
+            {
+                TestMain.Near(sel[i].Box.Center.X - before[i].X, -1, 1e-9, "moved together (x)");
+                TestMain.Near(sel[i].Box.Center.Y - before[i].Y, 4, 1e-9, "moved together (y)");
+            }
+            foreach (var t in sel) ed.SetHeight(t, 2);
+            foreach (var t in sel) TestMain.Near(t.Height, 2, 0, "size set on all selected");
+            ed.Apply();
+            TestMain.Check(r.EditSummary.Contains("3 item(s) moved"), r.EditSummary);
+        }
+    }
+}

@@ -15,6 +15,7 @@ namespace LaserDxf.Core
             public Vec2 Origin;
             public double Rotation;
             public string Text;
+            public double Height;
             public Rect2 Box;
         }
 
@@ -38,7 +39,7 @@ namespace LaserDxf.Core
             Items.AddRange(run.Labels);
             if (run.Etch != null) Items.Add(run.Etch);
             foreach (var t in Items)
-                original[t] = new Snapshot { Origin = t.Origin, Rotation = t.RotationDeg, Text = t.Text, Box = t.Box };
+                original[t] = new Snapshot { Origin = t.Origin, Rotation = t.RotationDeg, Text = t.Text, Height = t.Height, Box = t.Box };
             originalCount = Items.Count;
             foreach (var h in run.Profile.Holes)
             {
@@ -182,6 +183,29 @@ namespace LaserDxf.Core
             t.Edited = true;
         }
 
+        public const double MinHeight = 0.5, MaxHeight = 100;
+
+        /// <summary>Changes the text height (mm), keeping the text centred where it was.</summary>
+        public void SetHeight(PlacedText t, double height)
+        {
+            height = Math.Max(MinHeight, Math.Min(MaxHeight, height));
+            if (Math.Abs(height - t.Height) < 1e-9) return;
+            Vec2 c = t.Box.Center;
+            t.Height = height;
+            Rect2 atZero = PlacedText.BoxAt(new Vec2(0, 0), StrokeFont.Measure(t.Text, t.Height), t.Height, t.RotationDeg);
+            t.Origin = c - atZero.Center;
+            t.UpdateBox();
+            t.Edited = true;
+        }
+
+        /// <summary>Non-deleted items whose box touches the rectangle (for drag-box selection).</summary>
+        public List<PlacedText> ItemsIn(Rect2 r)
+        {
+            var l = new List<PlacedText>();
+            foreach (var t in Items) if (!t.Deleted && Layout2.RectRect(t.Box, r) == 0) l.Add(t);
+            return l;
+        }
+
         public void Delete(PlacedText t)
         {
             t.Deleted = true;
@@ -203,6 +227,7 @@ namespace LaserDxf.Core
                 t.Origin = s.Origin;
                 t.RotationDeg = s.Rotation;
                 t.Text = s.Text;
+                t.Height = s.Height;
                 t.Box = s.Box;
                 t.Deleted = false;
                 t.Edited = false;
