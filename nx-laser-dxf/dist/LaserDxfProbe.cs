@@ -20,6 +20,121 @@ public class LaserDxfProbeJournal
     }
 }
 
+// ----- nx/ExportCommand.cs -----
+// Main journal: select the plate, write the DXF, report.
+namespace LaserDxf.Nx
+{
+    using System;
+    using System.Collections.Generic;
+    using System.IO;
+    using System.Text;
+    using NXOpen;
+    using NXOpen.UF;
+    using LaserDxf.Core;
+
+    public static class ExportCommand
+    {
+        public const string Version = "0.2 (step 2: profile)";
+
+        public static void Run()
+        {
+            NxPlate.Run(RunInner);
+        }
+
+        static void RunInner(Session s, ListingWindow lw, List<string> log)
+        {
+            var cfgWarnings = new List<string>();
+            LaserConfig cfg = NxPlate.LoadConfig(s, cfgWarnings);
+
+            PlateSelection sel = NxPlate.Select(s, log);
+            if (sel == null) return;
+
+            AnalysisOptions opt = cfg.ToAnalysisOptions();
+            if (cfg.XAlign == XAlignMode.Hint)
+            {
+                Vec3 x;
+                if (NxPlate.TryWcsX(s, sel.Part, out x)) opt.XHint = x;
+                else cfgWarnings.Add("WCS alignment only works when the plate part is the displayed part - used the part's own X axis.");
+            }
+
+            var ex = new NxBodyExtractor(UFSession.GetUFSession(), log) { ChordTol = cfg.ChordTolerance };
+            BodyModel m = ex.Extract(sel.Body, sel.Part);
+            string note;
+            int faceId = NxPlate.PlateFaceId(sel, ex, m, opt, log, out note);
+
+            ExportRun run = ExportPipeline.Prepare(m, faceId, cfg, opt, note);
+            run.Version = Version;
+            run.Warnings.InsertRange(0, cfgWarnings);
+            run.Notes.AddRange(log);
+
+            // ---------- write the DXF ----------
+            string folder = NxUtil.EnsureFolder(cfg.OutputFolder, run.Warnings);
+            string path = Path.Combine(folder, run.FileName);
+            run.OutputPath = path;
+            bool write = true;
+            if (File.Exists(path) && cfg.AskBeforeOverwrite)
+            {
+                int answer = UI.GetUI().NXMessageBox.Show(NxPlate.Title, NXMessageBox.DialogType.Question,
+                    run.FileName + " already exists in\n" + folder + "\n\nOverwrite it?");
+                write = answer == 1; // NXMessageBox: 1 = Yes, 2 = No
+                run.Notes.Add("Overwrite prompt answer code: " + answer);
+            }
+            if (write)
+            {
+                try
+                {
+                    File.WriteAllText(path, run.DxfText, Encoding.GetEncoding(1252));
+                    run.Outcome = "written";
+                }
+                catch (Exception wex)
+                {
+                    throw new PlateException("Could not write " + path + "\n" + wex.Message + "\n\nIs the file open in another program?");
+                }
+            }
+            else run.Outcome = "NOT written - overwrite declined";
+
+            // ---------- debug output ----------
+            string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            if (cfg.SaveBodyJson)
+            {
+                try
+                {
+                    string dbg = NxUtil.EnsureFolder(Path.Combine(folder, "_debug"), run.Notes);
+                    JObj json = m.ToJson();
+                    json.Add("selectedFaceId", (double)faceId);
+                    string jp = Path.Combine(dbg, Path.GetFileNameWithoutExtension(run.FileName) + "_" + stamp + "_body.json");
+                    NxUtil.WriteText(jp, Json.Write(json));
+                    run.Notes.Add("Body model saved: " + jp);
+                }
+                catch (Exception jex) { run.Notes.Add("Could not save the body model: " + jex.Message); }
+            }
+
+            List<string> lines = ExportReport.Summary(run);
+            if (cfg.WriteLog)
+            {
+                try
+                {
+                    string logDir = NxUtil.EnsureFolder(Path.Combine(folder, "_logs"), run.Notes);
+                    string logPath = Path.Combine(logDir, "LaserDxf_" + DateTime.Now.ToString("yyyyMMdd") + ".log");
+                    var detail = new List<string>(lines);
+                    detail.Add("");
+                    detail.AddRange(ProbeReport.Summary(m, run.Analysis, note));
+                    detail.Add("");
+                    detail.AddRange(ProbeReport.FaceEdges(m, run.Analysis));
+                    detail.Add("");
+                    detail.Add(new string('-', 100));
+                    detail.Add("");
+                    File.AppendAllText(logPath, ProbeReport.Join(detail), new UTF8Encoding(false));
+                    lines.Add("Log          : " + logPath);
+                }
+                catch (Exception lex) { lines.Add("Could not write the log file: " + lex.Message); }
+            }
+
+            foreach (string l in lines) lw.WriteLine(l);
+        }
+    }
+}
+
 // ----- nx/NxBodyExtractor.cs -----
 // NX layer: reads a solid body's faces, edges, features and the part's attributes
 // into the neutral BodyModel. This is the only place that touches NX geometry.
@@ -176,8 +291,19 @@ namespace LaserDxf.Nx
                 Vec3 a = new Vec3(v1.X, v1.Y, v1.Z);
                 Vec3 b = new Vec3(v2.X, v2.Y, v2.Z);
                 const double tol = 1e-3;
-                bool startOk = te.Start.DistanceTo(a) < tol || te.Start.DistanceTo(b) < tol;
-                bool endOk = te.End.DistanceTo(a) < tol || te.End.DistanceTo(b) < tol;
+                bool startOk, endOk;
+                if (a.DistanceTo(b) < tol && te.HasCircle)
+                {
+                    // Full circle: NX's vertex can sit anywhere on it (the parameter start is
+                    // usually elsewhere), so check closure and that the vertex is on the circle.
+                    startOk = te.IsClosed(tol);
+                    endOk = Math.Abs(a.DistanceTo(te.Center) - te.Radius) < tol;
+                }
+                else
+                {
+                    startOk = te.Start.DistanceTo(a) < tol || te.Start.DistanceTo(b) < tol;
+                    endOk = te.End.DistanceTo(a) < tol || te.End.DistanceTo(b) < tol;
+                }
                 if (!startOk || !endOk)
                 {
                     vertexMismatches++;
@@ -227,6 +353,156 @@ namespace LaserDxf.Nx
 
                 m.Features.Add(fi);
             }
+        }
+    }
+}
+
+// ----- nx/NxPlate.cs -----
+// Shared NX plumbing for the journals: selecting the plate, error handling,
+// locating the config file, the WCS.
+namespace LaserDxf.Nx
+{
+    using System;
+    using System.Collections.Generic;
+    using System.IO;
+    using NXOpen;
+    using NXOpen.UF;
+    using LaserDxf.Core;
+
+    public sealed class PlateSelection
+    {
+        public Body Body;
+        /// <summary>The face the user picked, or null if they picked the body.</summary>
+        public Face Face;
+        public Part Part;
+    }
+
+    public static class NxPlate
+    {
+        public const string Title = "Laser DXF";
+
+        public delegate void Command(Session s, ListingWindow lw, List<string> log);
+
+        /// <summary>Runs a command with consistent error reporting (message box + listing window).</summary>
+        public static void Run(Command command)
+        {
+            Session s = Session.GetSession();
+            ListingWindow lw = s.ListingWindow;
+            lw.Open();
+            var log = new List<string>();
+            try
+            {
+                command(s, lw, log);
+            }
+            catch (PlateException ex)
+            {
+                lw.WriteLine("ABORTED: " + ex.Message);
+                foreach (string l in log) lw.WriteLine("  " + l);
+                NxUtil.Message(Title, NXMessageBox.DialogType.Error, ex.Message);
+            }
+            catch (Exception ex)
+            {
+                lw.WriteLine("ERROR: " + ex.GetType().Name + ": " + ex.Message);
+                lw.WriteLine(ex.StackTrace ?? "");
+                foreach (string l in log) lw.WriteLine("  log: " + l);
+                NxUtil.Message(Title, NXMessageBox.DialogType.Error, "Unexpected error:\n" + ex.Message + "\n\nDetails are in the listing window.");
+            }
+        }
+
+        /// <summary>Asks for a planar face (or a body). Returns null if the user cancels.</summary>
+        public static PlateSelection Select(Session s, List<string> log)
+        {
+            if (s.Parts.Work == null) throw new PlateException("Open the plate part first.");
+
+            Selection.MaskTriple[] mask =
+            {
+                new Selection.MaskTriple(UFConstants.UF_solid_type, 0, UFConstants.UF_UI_SEL_FEATURE_ANY_FACE),
+                new Selection.MaskTriple(UFConstants.UF_solid_type, 0, UFConstants.UF_UI_SEL_FEATURE_BODY)
+            };
+            TaggedObject picked;
+            Point3d cursor;
+            Selection.Response resp = UI.GetUI().SelectionManager.SelectTaggedObject(
+                "Select the plate face to view from (or the plate body)", "Laser DXF - select plate",
+                Selection.SelectionScope.AnyInAssembly, Selection.SelectionAction.ClearAndEnableSpecific,
+                false, false, mask, out picked, out cursor);
+            if (resp != Selection.Response.ObjectSelected && resp != Selection.Response.ObjectSelectedByName) return null;
+
+            var sel = new PlateSelection { Face = picked as Face, Body = picked as Body };
+
+            // Work on the part itself, not an assembly occurrence: coordinates are then the part's own.
+            if (sel.Face != null && sel.Face.IsOccurrence)
+            {
+                sel.Face = (Face)sel.Face.Prototype;
+                log.Add("Selection was an assembly occurrence; using the component part's face.");
+            }
+            if (sel.Body != null && sel.Body.IsOccurrence)
+            {
+                sel.Body = (Body)sel.Body.Prototype;
+                log.Add("Selection was an assembly occurrence; using the component part's body.");
+            }
+            if (sel.Face != null)
+            {
+                if (sel.Face.SolidFaceType != Face.FaceType.Planar)
+                    throw new PlateException("The selected face is not planar (it is " + sel.Face.SolidFaceType + "). Select the flat top or bottom face of the plate.");
+                sel.Body = sel.Face.GetBody();
+            }
+            if (sel.Body == null) throw new PlateException("Nothing usable was selected.");
+            if (!sel.Body.IsSolidBody) throw new PlateException("The selected body is not a solid body.");
+
+            sel.Part = sel.Body.OwningPart as Part;
+            if (sel.Part == null) throw new PlateException("Could not find the part that owns the selected body.");
+            return sel;
+        }
+
+        /// <summary>Picks the face to export: the selected one, or the plate face of the selected body.</summary>
+        public static int PlateFaceId(PlateSelection sel, NxBodyExtractor ex, BodyModel m, AnalysisOptions opt, List<string> log, out string note)
+        {
+            if (sel.Face != null)
+            {
+                note = "selected directly";
+                return ex.FaceIdByTag[sel.Face.Tag];
+            }
+            note = "picked automatically from the body";
+            return PlateAnalyzer.PickPlateFace(m, opt, Vec3.UnitZ, log);
+        }
+
+        /// <summary>WCS X axis, if the plate part is the displayed part (otherwise the WCS is in
+        /// assembly space and doesn't apply to the component's own coordinates).</summary>
+        public static bool TryWcsX(Session s, Part part, out Vec3 x)
+        {
+            x = Vec3.UnitX;
+            if (s.Parts.Display == null || s.Parts.Display.Tag != part.Tag) return false;
+            Matrix3x3 mx = part.WCS.CoordinateSystem.Orientation.Element;
+            x = new Vec3(mx.Xx, mx.Xy, mx.Xz);
+            return true;
+        }
+
+        // ------------------------------------------------------------ config
+
+        public const string ConfigFileName = "LaserDxf.config.json";
+        public const string ConfigEnvVar = "LASER_DXF_CONFIG";
+
+        /// <summary>Loads the config: %LASER_DXF_CONFIG%, else LaserDxf.config.json next to the
+        /// journal, else built-in defaults (with a warning).</summary>
+        public static LaserConfig LoadConfig(Session s, List<string> warnings)
+        {
+            var tried = new List<string>();
+            string env = Environment.GetEnvironmentVariable(ConfigEnvVar);
+            if (!string.IsNullOrEmpty(env)) tried.Add(env);
+            string journal = NxReflect.ExecutingJournal(s);
+            if (!string.IsNullOrEmpty(journal))
+            {
+                string dir = Path.GetDirectoryName(journal);
+                if (!string.IsNullOrEmpty(dir)) tried.Add(Path.Combine(dir, ConfigFileName));
+            }
+            foreach (string path in tried)
+            {
+                if (!File.Exists(path)) continue;
+                return LaserConfig.Parse(File.ReadAllText(path), path, warnings);
+            }
+            warnings.Add("No " + ConfigFileName + " found (looked in: " + (tried.Count == 0 ? "nowhere - journal path unknown" : string.Join("; ", tried.ToArray())) +
+                         ") - using built-in defaults. Put the config file next to the journal.");
+            return new LaserConfig();
         }
     }
 }
@@ -450,7 +726,7 @@ namespace LaserDxf.Nx
 }
 
 // ----- nx/ProbeCommand.cs -----
-// Step 1: select a plate face (or body) and dump what the journal sees.
+// Diagnostic journal: select a plate face (or body) and dump what the journal sees.
 // Writes a summary to the listing window, plus a full text dump and a JSON
 // model of the body to the debug folder.
 namespace LaserDxf.Nx
@@ -464,102 +740,33 @@ namespace LaserDxf.Nx
 
     public static class ProbeCommand
     {
-        public const string Version = "probe 1.0 (step 1)";
-        const string Title = "Laser DXF";
-        const string DebugFolder = @"C:\Laser DXF\_debug";
+        public const string Version = "probe 1.1";
 
         public static void Run()
         {
-            Session s = Session.GetSession();
-            ListingWindow lw = s.ListingWindow;
-            lw.Open();
-            var log = new List<string>();
-            try
-            {
-                RunInner(s, lw, log);
-            }
-            catch (PlateException ex)
-            {
-                lw.WriteLine("ABORTED: " + ex.Message);
-                NxUtil.Message(Title, NXMessageBox.DialogType.Error, ex.Message);
-            }
-            catch (Exception ex)
-            {
-                lw.WriteLine("ERROR: " + ex.GetType().Name + ": " + ex.Message);
-                lw.WriteLine(ex.StackTrace ?? "");
-                foreach (string l in log) lw.WriteLine("  log: " + l);
-                NxUtil.Message(Title, NXMessageBox.DialogType.Error, "Unexpected error:\n" + ex.Message + "\n\nDetails are in the listing window.");
-            }
+            NxPlate.Run(RunInner);
         }
 
         static void RunInner(Session s, ListingWindow lw, List<string> log)
         {
-            UFSession uf = UFSession.GetUFSession();
-            UI ui = UI.GetUI();
+            var cfgWarnings = new List<string>();
+            LaserConfig cfg = NxPlate.LoadConfig(s, cfgWarnings);
+            log.AddRange(cfgWarnings);
 
-            if (s.Parts.Work == null) throw new PlateException("Open the plate part first.");
+            PlateSelection sel = NxPlate.Select(s, log);
+            if (sel == null) return;
+            Part part = sel.Part;
 
-            Selection.MaskTriple[] mask =
-            {
-                new Selection.MaskTriple(UFConstants.UF_solid_type, 0, UFConstants.UF_UI_SEL_FEATURE_ANY_FACE),
-                new Selection.MaskTriple(UFConstants.UF_solid_type, 0, UFConstants.UF_UI_SEL_FEATURE_BODY)
-            };
-            TaggedObject picked;
-            Point3d cursor;
-            Selection.Response resp = ui.SelectionManager.SelectTaggedObject(
-                "Select the plate face to view from (or the plate body)", "Laser DXF - select plate",
-                Selection.SelectionScope.AnyInAssembly, Selection.SelectionAction.ClearAndEnableSpecific,
-                false, false, mask, out picked, out cursor);
-            if (resp != Selection.Response.ObjectSelected && resp != Selection.Response.ObjectSelectedByName) return;
-
-            Face face = picked as Face;
-            Body body = picked as Body;
+            AnalysisOptions opt = cfg.ToAnalysisOptions();
+            var ex = new NxBodyExtractor(UFSession.GetUFSession(), log) { ChordTol = cfg.ChordTolerance };
+            BodyModel m = ex.Extract(sel.Body, part);
             string note;
-
-            // Work on the part itself, not an assembly occurrence: coordinates are then the part's own.
-            if (face != null && face.IsOccurrence)
-            {
-                face = (Face)face.Prototype;
-                log.Add("Selection was an assembly occurrence; using the component part's face.");
-            }
-            if (body != null && body.IsOccurrence)
-            {
-                body = (Body)body.Prototype;
-                log.Add("Selection was an assembly occurrence; using the component part's body.");
-            }
-            if (face != null)
-            {
-                if (face.SolidFaceType != Face.FaceType.Planar)
-                    throw new PlateException("The selected face is not planar (it is " + face.SolidFaceType + "). Select the flat top or bottom face of the plate.");
-                body = face.GetBody();
-            }
-            if (body == null) throw new PlateException("Nothing usable was selected.");
-            if (!body.IsSolidBody) throw new PlateException("The selected body is not a solid body.");
-
-            Part part = body.OwningPart as Part;
-            if (part == null) throw new PlateException("Could not find the part that owns the selected body.");
-
-            var opt = new AnalysisOptions();
-            var ex = new NxBodyExtractor(uf, log);
-            BodyModel m = ex.Extract(body, part);
-
-            int faceId;
-            if (face != null)
-            {
-                faceId = ex.FaceIdByTag[face.Tag];
-                note = "selected directly";
-            }
-            else
-            {
-                faceId = PlateAnalyzer.PickPlateFace(m, opt, Vec3.UnitZ, log);
-                note = "picked automatically from the body";
-            }
-
+            int faceId = NxPlate.PlateFaceId(sel, ex, m, opt, log, out note);
             FaceAnalysis a = PlateAnalyzer.Analyze(m, faceId, opt);
 
             // ---------- output ----------
             string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-            string folder = NxUtil.EnsureFolder(DebugFolder, log);
+            string folder = NxUtil.EnsureFolder(Path.Combine(cfg.OutputFolder, "_debug"), log);
             string baseName = NxUtil.SafeFileName(m.PartName) + "_" + stamp;
             string dumpPath = Path.Combine(folder, baseName + "_probe.txt");
             string jsonPath = Path.Combine(folder, baseName + "_body.json");
@@ -569,6 +776,7 @@ namespace LaserDxf.Nx
             head.Add("NX part      : Leaf=\"" + SafeGet(delegate { return part.Leaf; }) + "\"  Name=\"" + SafeGet(delegate { return part.Name; }) +
                      "\"  FullPath=\"" + SafeGet(delegate { return part.FullPath; }) + "\"");
             head.Add("Journal path : " + (NxReflect.ExecutingJournal(s) ?? "(Session.ExecutingJournal not available)"));
+            head.Add("Config       : " + cfg.SourcePath);
             head.Add("Body         : " + m.Faces.Count + " faces, " + m.Edges.Count + " edges, " + m.Features.Count + " features, " + m.Attributes.Count + " attributes");
 
             List<string> summary = ProbeReport.Summary(m, a, note);
@@ -866,6 +1074,894 @@ namespace LaserDxf.Core
                 }
             }
             return m;
+        }
+    }
+}
+
+// ----- core/Config.cs -----
+// Settings from LaserDxf.config.json. Every value has a default, so a missing or
+// partial file still works; unknown keys are reported (they are usually typos).
+namespace LaserDxf.Core
+{
+    using System;
+    using System.Collections.Generic;
+
+    public enum TextMode { Stroke, Text }
+
+    public sealed class AttrRef
+    {
+        public string Title = "";
+        public string Category = "";
+        public List<string> IgnoreValues = new List<string>();
+
+        public AttrRef() { }
+        public AttrRef(string title, string category) { Title = title; Category = category; }
+
+        public override string ToString() { return "\"" + Title + "\" (category \"" + Category + "\")"; }
+    }
+
+    public sealed class LabelRule
+    {
+        public string Label = "";
+        public double Diameter;
+        public double Tolerance = 0.05;
+        /// <summary>Optional laser cut diameter replacing the modelled one (NaN = keep).</summary>
+        public double CutDiameter = double.NaN;
+    }
+
+    public sealed class LaserConfig
+    {
+        public string SourcePath = "(built-in defaults)";
+
+        public string OutputFolder = @"C:\Laser DXF";
+        public string FileNameFormat = "{ID}-{REV}.dxf";
+        public bool AskBeforeOverwrite = true;
+        public bool ShowOptionsDialog = true;
+
+        // geometry
+        public double Tolerance = 0.01;
+        public double ChordTolerance = 0.02;
+        public XAlignMode XAlign = XAlignMode.LongestEdge;
+
+        // dxf
+        public DxfVersion DxfVersion = DxfVersion.R2000;
+        public TextMode TextMode = TextMode.Stroke;
+        public DxfLayer CutLayer = new DxfLayer("CUT", 7);
+        public DxfLayer EtchLayer = new DxfLayer("ETCH", 5);
+        public bool EntityColors = true;
+
+        // labels
+        public double LabelHeight = 3;
+        public double LabelGap = 1.5;
+        public double HoleClearance = 1.0;
+        public double EdgeClearance = 2.0;
+        public bool UseHoleFeatures = true;
+        public string ThreadLabelFormat = "{THREAD}";
+        public string CountersinkLabel = "CS";
+        public List<LabelRule> LabelTable = new List<LabelRule>();
+
+        // etch
+        public string EtchFormat = "{ID}-{REV}";
+        public bool RevisionAsLetter = true;
+        public double EtchHeight = 5;
+        public double EtchMinHeight = 3;
+        public double EtchClearance = 3;
+        public string EtchPlacement = "Auto";
+        public bool EtchAllowRotate90 = true;
+
+        // attributes
+        public AttrRef IdAttr = new AttrRef("ID", "MCAD");
+        public AttrRef RevisionAttr = new AttrRef("Revision", "MCAD Revision");
+        public AttrRef FallbackIdAttr = new AttrRef("Part_Number", "Lentus Attributes");
+        public AttrRef NameAttr = new AttrRef("DB_PART_NAME", "MCAD");
+        public AttrRef MaterialAttr = new AttrRef("Polar_Material", "MCAD Revision");
+        public AttrRef ThicknessAttr = new AttrRef("Matl_Thk", "Materials");
+
+        // batch (phase 2)
+        public double RequiredThickness = 6;
+        public double ThicknessTolerance = 0.1;
+        public bool WriteCsv = true;
+
+        // debug
+        public bool SaveBodyJson = true;
+        public bool WriteLog = true;
+
+        public LaserConfig()
+        {
+            FallbackIdAttr.IgnoreValues.Add("model-plain-1");
+            LabelTable.Add(new LabelRule { Label = "R6", Diameter = 5.8 });
+            LabelTable.Add(new LabelRule { Label = "M8", Diameter = 5.5 });
+        }
+
+        public AnalysisOptions ToAnalysisOptions()
+        {
+            return new AnalysisOptions { Tol = Tolerance, XAlign = XAlign };
+        }
+
+        // ------------------------------------------------------------ loading
+
+        /// <summary>Wraps a JSON object, tracking which keys were read so leftovers can be reported.</summary>
+        sealed class Section
+        {
+            readonly JObj obj;
+            readonly string path;
+            readonly List<string> warnings;
+            readonly List<string> used = new List<string>();
+
+            public Section(JObj obj, string path, List<string> warnings)
+            {
+                this.obj = obj ?? new JObj();
+                this.path = path;
+                this.warnings = warnings;
+            }
+
+            object Take(string key)
+            {
+                used.Add(key);
+                return obj.Get(key);
+            }
+
+            string Where(string key) { return path.Length == 0 ? key : path + "." + key; }
+
+            public double Num(string key, double def, double min, double max)
+            {
+                object v = Take(key);
+                if (v == null) return def;
+                if (!(v is double)) { warnings.Add("Config: " + Where(key) + " should be a number - using " + (double.IsNaN(def) ? "none" : Fmt.N(def))); return def; }
+                double d = (double)v;
+                if (d < min || d > max) { warnings.Add("Config: " + Where(key) + " = " + Fmt.N(d) + " is out of range (" + Fmt.N(min) + " to " + Fmt.N(max) + ") - using " + Fmt.N(def)); return def; }
+                return d;
+            }
+
+            /// <summary>Optional number: absent or null gives NaN.</summary>
+            public double OptNum(string key, double min, double max)
+            {
+                return Num(key, double.NaN, min, max);
+            }
+
+            public string Str(string key, string def)
+            {
+                object v = Take(key);
+                if (v == null) return def;
+                if (!(v is string)) { warnings.Add("Config: " + Where(key) + " should be text in quotes - using \"" + def + "\""); return def; }
+                return (string)v;
+            }
+
+            public bool Bool(string key, bool def)
+            {
+                object v = Take(key);
+                if (v == null) return def;
+                if (!(v is bool)) { warnings.Add("Config: " + Where(key) + " should be true or false - using " + (def ? "true" : "false")); return def; }
+                return (bool)v;
+            }
+
+            public T Choice<T>(string key, T def)
+            {
+                string s = Str(key, def.ToString());
+                foreach (T value in Enum.GetValues(typeof(T)))
+                    if (string.Equals(value.ToString(), s, StringComparison.OrdinalIgnoreCase)) return value;
+                warnings.Add("Config: " + Where(key) + " = \"" + s + "\" is not one of " + string.Join(", ", Enum.GetNames(typeof(T))) + " - using " + def);
+                return def;
+            }
+
+            public Section Sub(string key)
+            {
+                object v = Take(key);
+                if (v != null && !(v is JObj)) warnings.Add("Config: " + Where(key) + " should be an object { ... }");
+                return new Section(v as JObj, Where(key), warnings);
+            }
+
+            public List<object> Arr(string key)
+            {
+                object v = Take(key);
+                if (v != null && !(v is List<object>)) warnings.Add("Config: " + Where(key) + " should be a list [ ... ]");
+                return v as List<object>;
+            }
+
+            public void Finish()
+            {
+                foreach (var kv in obj.Items)
+                    if (!used.Contains(kv.Key) && !kv.Key.StartsWith("_"))
+                        warnings.Add("Config: unknown setting \"" + Where(kv.Key) + "\" ignored (typo?)");
+            }
+
+            public DxfLayer Layer(string key, DxfLayer def)
+            {
+                Section s = Sub(key);
+                var l = new DxfLayer(s.Str("name", def.Name), (int)s.Num("color", def.Color, 1, 255));
+                if (l.Name.Trim().Length == 0) l.Name = def.Name;
+                s.Finish();
+                return l;
+            }
+
+            public AttrRef Attr(string key, AttrRef def)
+            {
+                Section s = Sub(key);
+                var a = new AttrRef(s.Str("title", def.Title), s.Str("category", def.Category));
+                List<object> ign = s.Arr("ignoreValues");
+                if (ign == null) a.IgnoreValues.AddRange(def.IgnoreValues);
+                else foreach (object o in ign) if (o is string) a.IgnoreValues.Add((string)o);
+                s.Finish();
+                return a;
+            }
+        }
+
+        public static LaserConfig Parse(string json, string sourcePath, List<string> warnings)
+        {
+            var c = new LaserConfig();
+            c.SourcePath = sourcePath;
+            object root;
+            try { root = Json.Parse(json); }
+            catch (FormatException ex)
+            {
+                throw new PlateException("The config file " + sourcePath + " is not valid JSON.\n" + ex.Message);
+            }
+            if (!(root is JObj)) throw new PlateException("The config file " + sourcePath + " must contain a { ... } object.");
+            var s = new Section((JObj)root, "", warnings);
+
+            c.OutputFolder = s.Str("outputFolder", c.OutputFolder).Replace('/', '\\');
+            c.FileNameFormat = s.Str("fileNameFormat", c.FileNameFormat);
+            c.AskBeforeOverwrite = s.Bool("askBeforeOverwrite", c.AskBeforeOverwrite);
+            c.ShowOptionsDialog = s.Bool("showOptionsDialog", c.ShowOptionsDialog);
+
+            Section g = s.Sub("geometry");
+            c.Tolerance = g.Num("tolerance", c.Tolerance, 1e-5, 1);
+            c.ChordTolerance = g.Num("chordTolerance", c.ChordTolerance, 1e-4, 2);
+            string xa = g.Str("xAlign", "LongestEdge");
+            if (string.Equals(xa, "WCS", StringComparison.OrdinalIgnoreCase)) c.XAlign = XAlignMode.Hint;
+            else if (string.Equals(xa, "LongestEdge", StringComparison.OrdinalIgnoreCase)) c.XAlign = XAlignMode.LongestEdge;
+            else warnings.Add("Config: geometry.xAlign = \"" + xa + "\" should be LongestEdge or WCS - using LongestEdge");
+            g.Finish();
+
+            Section d = s.Sub("dxf");
+            c.DxfVersion = d.Choice("version", c.DxfVersion);
+            c.TextMode = d.Choice("textMode", c.TextMode);
+            c.CutLayer = d.Layer("cutLayer", c.CutLayer);
+            c.EtchLayer = d.Layer("etchLayer", c.EtchLayer);
+            c.EntityColors = d.Bool("entityColors", c.EntityColors);
+            d.Finish();
+
+            Section l = s.Sub("labels");
+            c.LabelHeight = l.Num("textHeight", c.LabelHeight, 0.5, 50);
+            c.LabelGap = l.Num("gap", c.LabelGap, 0, 50);
+            c.HoleClearance = l.Num("holeClearance", c.HoleClearance, 0, 50);
+            c.EdgeClearance = l.Num("edgeClearance", c.EdgeClearance, 0, 50);
+            c.UseHoleFeatures = l.Bool("useHoleFeatures", c.UseHoleFeatures);
+            c.ThreadLabelFormat = l.Str("threadLabelFormat", c.ThreadLabelFormat);
+            c.CountersinkLabel = l.Str("countersinkLabel", c.CountersinkLabel);
+            List<object> table = l.Arr("table");
+            if (table != null)
+            {
+                c.LabelTable.Clear();
+                int i = 0;
+                foreach (object o in table)
+                {
+                    var rs = new Section(o as JObj, "labels.table[" + i++ + "]", warnings);
+                    var r = new LabelRule
+                    {
+                        Label = rs.Str("label", ""),
+                        Diameter = rs.Num("diameter", 0, 0, 10000),
+                        Tolerance = rs.Num("tolerance", 0.05, 0, 10),
+                        CutDiameter = rs.OptNum("cutDiameter", 0.01, 10000)
+                    };
+                    rs.Finish();
+                    if (r.Label.Length == 0 || r.Diameter <= 0)
+                        warnings.Add("Config: labels.table entry " + (i - 1) + " needs a label and a diameter - skipped");
+                    else c.LabelTable.Add(r);
+                }
+            }
+            l.Finish();
+
+            Section e = s.Sub("etch");
+            c.EtchFormat = e.Str("format", c.EtchFormat);
+            c.RevisionAsLetter = e.Bool("revisionAsLetter", c.RevisionAsLetter);
+            c.EtchHeight = e.Num("textHeight", c.EtchHeight, 0.5, 100);
+            c.EtchMinHeight = e.Num("minTextHeight", c.EtchMinHeight, 0.5, 100);
+            c.EtchClearance = e.Num("clearance", c.EtchClearance, 0, 100);
+            c.EtchPlacement = e.Str("placement", c.EtchPlacement);
+            c.EtchAllowRotate90 = e.Bool("allowRotate90", c.EtchAllowRotate90);
+            e.Finish();
+
+            Section a = s.Sub("attributes");
+            c.IdAttr = a.Attr("id", c.IdAttr);
+            c.RevisionAttr = a.Attr("revision", c.RevisionAttr);
+            c.FallbackIdAttr = a.Attr("fallbackId", c.FallbackIdAttr);
+            c.NameAttr = a.Attr("name", c.NameAttr);
+            c.MaterialAttr = a.Attr("material", c.MaterialAttr);
+            c.ThicknessAttr = a.Attr("thickness", c.ThicknessAttr);
+            a.Finish();
+
+            Section b = s.Sub("batch");
+            c.RequiredThickness = b.Num("requiredThickness", c.RequiredThickness, 0, 1000);
+            c.ThicknessTolerance = b.Num("thicknessTolerance", c.ThicknessTolerance, 0, 100);
+            c.WriteCsv = b.Bool("writeCsv", c.WriteCsv);
+            b.Finish();
+
+            Section dbg = s.Sub("debug");
+            c.SaveBodyJson = dbg.Bool("saveBodyJson", c.SaveBodyJson);
+            c.WriteLog = dbg.Bool("writeLog", c.WriteLog);
+            dbg.Finish();
+
+            s.Finish();
+            return c;
+        }
+    }
+}
+
+// ----- core/Dxf.cs -----
+// Minimal DXF document model and ASCII writer (R12 / R2000).
+namespace LaserDxf.Core
+{
+    using System;
+    using System.Collections.Generic;
+    using System.Text;
+
+    public enum DxfVersion { R12, R2000 }
+
+    public sealed class DxfLayer
+    {
+        public string Name;
+        public int Color;
+
+        public DxfLayer(string name, int color) { Name = name; Color = color; }
+    }
+
+    public abstract class DxfEntity
+    {
+        public string Layer = "0";
+        /// <summary>ACI colour; 256 = BYLAYER.</summary>
+        public int Color = 256;
+
+        public abstract void AddBounds(ref Bounds2 b);
+    }
+
+    public sealed class DxfLine : DxfEntity
+    {
+        public Vec2 A, B;
+
+        public override void AddBounds(ref Bounds2 b) { b.Add(A); b.Add(B); }
+    }
+
+    public sealed class DxfCircle : DxfEntity
+    {
+        public Vec2 Center;
+        public double Radius;
+
+        public override void AddBounds(ref Bounds2 b)
+        {
+            b.Add(new Vec2(Center.X - Radius, Center.Y - Radius));
+            b.Add(new Vec2(Center.X + Radius, Center.Y + Radius));
+        }
+    }
+
+    /// <summary>Arc, counter-clockwise from StartDeg to EndDeg.</summary>
+    public sealed class DxfArc : DxfEntity
+    {
+        public Vec2 Center;
+        public double Radius, StartDeg, EndDeg;
+
+        public Vec2 PointAt(double deg)
+        {
+            double r = deg * Math.PI / 180;
+            return new Vec2(Center.X + Radius * Math.Cos(r), Center.Y + Radius * Math.Sin(r));
+        }
+
+        public override void AddBounds(ref Bounds2 b)
+        {
+            b.Add(PointAt(StartDeg));
+            b.Add(PointAt(EndDeg));
+            for (int k = 0; k < 4; k++)
+                if (EdgeGeom2.AngleInCcwRange(k * 90.0, StartDeg, EndDeg)) b.Add(PointAt(k * 90.0));
+        }
+    }
+
+    public sealed class DxfPolyline : DxfEntity
+    {
+        public List<Vec2> Points = new List<Vec2>();
+        public bool Closed;
+
+        public override void AddBounds(ref Bounds2 b) { foreach (var p in Points) b.Add(p); }
+    }
+
+    /// <summary>Single-line text; Position is the left end of the baseline.</summary>
+    public sealed class DxfText : DxfEntity
+    {
+        public Vec2 Position;
+        public double Height, RotationDeg;
+        public string Value = "";
+        /// <summary>Approximate width used only for extents.</summary>
+        public double Width;
+
+        public override void AddBounds(ref Bounds2 b)
+        {
+            double r = RotationDeg * Math.PI / 180;
+            Vec2 u = new Vec2(Math.Cos(r), Math.Sin(r)), v = new Vec2(-Math.Sin(r), Math.Cos(r));
+            b.Add(Position);
+            b.Add(Position + u * Width);
+            b.Add(Position + v * Height);
+            b.Add(Position + u * Width + v * Height);
+        }
+    }
+
+    public sealed class DxfDocument
+    {
+        public readonly List<DxfLayer> Layers = new List<DxfLayer>();
+        public readonly List<DxfEntity> Entities = new List<DxfEntity>();
+
+        public Bounds2 Extents()
+        {
+            Bounds2 b = Bounds2.Empty;
+            foreach (var e in Entities) e.AddBounds(ref b);
+            if (b.IsEmpty)
+            {
+                b.MinX = b.MinY = 0;
+                b.MaxX = b.MaxY = 1;
+            }
+            return b;
+        }
+    }
+
+    public static class DxfWriter
+    {
+        sealed class W
+        {
+            public readonly StringBuilder Sb = new StringBuilder();
+            int handle = 0x30;
+
+            public string NewHandle() { return (handle++).ToString("X"); }
+            public string Seed { get { return handle.ToString("X"); } }
+
+            public void G(int code, string value)
+            {
+                Sb.Append(code.ToString(Fmt.Inv).PadLeft(3)).Append("\r\n").Append(value).Append("\r\n");
+            }
+
+            public void G(int code, int value) { G(code, value.ToString(Fmt.Inv)); }
+
+            public void G(int code, double value)
+            {
+                double r = Math.Round(value, 6);
+                if (r == 0) r = 0;
+                G(code, r.ToString("0.0#####", Fmt.Inv));
+            }
+
+            public void Pt(int code, Vec2 p)
+            {
+                G(code, p.X);
+                G(code + 10, p.Y);
+                G(code + 20, 0.0);
+            }
+        }
+
+        public static string Write(DxfDocument doc, DxfVersion version)
+        {
+            return version == DxfVersion.R12 ? WriteR12(doc) : WriteR2000(doc);
+        }
+
+        static string Clean(string s)
+        {
+            // DXF group values are single lines; keep the code page simple.
+            var sb = new StringBuilder();
+            foreach (char c in s ?? "") sb.Append(c < 32 ? ' ' : c);
+            return sb.ToString();
+        }
+
+        // ------------------------------------------------------------------ R12
+
+        static string WriteR12(DxfDocument doc)
+        {
+            var w = new W();
+            Bounds2 ext = doc.Extents();
+
+            w.G(0, "SECTION"); w.G(2, "HEADER");
+            w.G(9, "$ACADVER"); w.G(1, "AC1009");
+            w.G(9, "$INSBASE"); w.Pt(10, new Vec2(0, 0));
+            w.G(9, "$EXTMIN"); w.Pt(10, new Vec2(ext.MinX, ext.MinY));
+            w.G(9, "$EXTMAX"); w.Pt(10, new Vec2(ext.MaxX, ext.MaxY));
+            w.G(9, "$LIMMIN"); w.G(10, 0.0); w.G(20, 0.0);
+            w.G(9, "$LIMMAX"); w.G(10, ext.MaxX); w.G(20, ext.MaxY);
+            w.G(0, "ENDSEC");
+
+            w.G(0, "SECTION"); w.G(2, "TABLES");
+            w.G(0, "TABLE"); w.G(2, "LTYPE"); w.G(70, 1);
+            w.G(0, "LTYPE"); w.G(2, "CONTINUOUS"); w.G(70, 0); w.G(3, "Solid line"); w.G(72, 65); w.G(73, 0); w.G(40, 0.0);
+            w.G(0, "ENDTAB");
+            w.G(0, "TABLE"); w.G(2, "LAYER"); w.G(70, doc.Layers.Count + 1);
+            WriteLayerR12(w, "0", 7);
+            foreach (var l in doc.Layers) WriteLayerR12(w, l.Name, l.Color);
+            w.G(0, "ENDTAB");
+            w.G(0, "TABLE"); w.G(2, "STYLE"); w.G(70, 1);
+            w.G(0, "STYLE"); w.G(2, "STANDARD"); w.G(70, 0); w.G(40, 0.0); w.G(41, 1.0); w.G(50, 0.0); w.G(71, 0); w.G(42, 2.5); w.G(3, "txt"); w.G(4, "");
+            w.G(0, "ENDTAB");
+            w.G(0, "ENDSEC");
+
+            w.G(0, "SECTION"); w.G(2, "BLOCKS"); w.G(0, "ENDSEC");
+
+            w.G(0, "SECTION"); w.G(2, "ENTITIES");
+            foreach (var e in doc.Entities)
+            {
+                var line = e as DxfLine;
+                var circle = e as DxfCircle;
+                var arc = e as DxfArc;
+                var poly = e as DxfPolyline;
+                var text = e as DxfText;
+                if (line != null)
+                {
+                    Common12(w, "LINE", e);
+                    w.Pt(10, line.A);
+                    w.Pt(11, line.B);
+                }
+                else if (circle != null)
+                {
+                    Common12(w, "CIRCLE", e);
+                    w.Pt(10, circle.Center);
+                    w.G(40, circle.Radius);
+                }
+                else if (arc != null)
+                {
+                    Common12(w, "ARC", e);
+                    w.Pt(10, arc.Center);
+                    w.G(40, arc.Radius);
+                    w.G(50, arc.StartDeg);
+                    w.G(51, arc.EndDeg);
+                }
+                else if (poly != null)
+                {
+                    Common12(w, "POLYLINE", e);
+                    w.G(66, 1);
+                    w.Pt(10, new Vec2(0, 0));
+                    w.G(70, poly.Closed ? 1 : 0);
+                    foreach (var p in poly.Points)
+                    {
+                        Common12(w, "VERTEX", e);
+                        w.Pt(10, p);
+                    }
+                    w.G(0, "SEQEND");
+                    w.G(8, e.Layer);
+                }
+                else if (text != null)
+                {
+                    Common12(w, "TEXT", e);
+                    w.Pt(10, text.Position);
+                    w.G(40, text.Height);
+                    w.G(1, Clean(text.Value));
+                    if (text.RotationDeg != 0) w.G(50, text.RotationDeg);
+                    w.G(7, "STANDARD");
+                }
+            }
+            w.G(0, "ENDSEC");
+            w.G(0, "EOF");
+            return w.Sb.ToString();
+        }
+
+        static void WriteLayerR12(W w, string name, int color)
+        {
+            w.G(0, "LAYER"); w.G(2, name); w.G(70, 0); w.G(62, color); w.G(6, "CONTINUOUS");
+        }
+
+        static void Common12(W w, string type, DxfEntity e)
+        {
+            w.G(0, type);
+            w.G(8, e.Layer);
+            if (e.Color != 256) w.G(62, e.Color);
+        }
+
+        // ---------------------------------------------------------------- R2000
+
+        static string WriteR2000(DxfDocument doc)
+        {
+            var body = new W();          // everything after the header
+            Bounds2 ext = doc.Extents();
+
+            // Fixed object handles.
+            const string rootDict = "C", groupDict = "D";
+            string hVport = body.NewHandle(), hVportRec = body.NewHandle();
+            string hLtype = body.NewHandle(), hLtByBlock = body.NewHandle(), hLtByLayer = body.NewHandle(), hLtCont = body.NewHandle();
+            string hLayer = body.NewHandle();
+            string hStyle = body.NewHandle(), hStyleStd = body.NewHandle();
+            string hView = body.NewHandle(), hUcs = body.NewHandle();
+            string hAppid = body.NewHandle(), hAppAcad = body.NewHandle();
+            string hDimstyle = body.NewHandle(), hDimStd = body.NewHandle();
+            string hBlkRec = body.NewHandle(), hMs = body.NewHandle(), hPs = body.NewHandle();
+
+            body.G(0, "SECTION"); body.G(2, "CLASSES"); body.G(0, "ENDSEC");
+            body.G(0, "SECTION"); body.G(2, "TABLES");
+
+            Table(body, "VPORT", hVport, 1);
+            Record(body, "VPORT", hVportRec, hVport, "AcDbViewportTableRecord");
+            body.G(2, "*ACTIVE"); body.G(70, 0);
+            body.G(10, 0.0); body.G(20, 0.0); body.G(11, 1.0); body.G(21, 1.0);
+            body.G(12, (ext.MinX + ext.MaxX) / 2); body.G(22, (ext.MinY + ext.MaxY) / 2);
+            body.G(13, 0.0); body.G(23, 0.0); body.G(14, 10.0); body.G(24, 10.0); body.G(15, 10.0); body.G(25, 10.0);
+            body.G(16, 0.0); body.G(26, 0.0); body.G(36, 1.0); body.G(17, 0.0); body.G(27, 0.0); body.G(37, 0.0);
+            body.G(40, Math.Max(ext.Height, ext.Width) * 1.1); body.G(41, 1.5); body.G(42, 50.0); body.G(43, 0.0); body.G(44, 0.0);
+            body.G(50, 0.0); body.G(51, 0.0); body.G(71, 0); body.G(72, 100); body.G(73, 1); body.G(74, 3);
+            body.G(75, 0); body.G(76, 0); body.G(77, 0); body.G(78, 0);
+            body.G(0, "ENDTAB");
+
+            Table(body, "LTYPE", hLtype, 3);
+            foreach (var lt in new[] { new[] { hLtByBlock, "ByBlock", "" }, new[] { hLtByLayer, "ByLayer", "" }, new[] { hLtCont, "Continuous", "Solid line" } })
+            {
+                Record(body, "LTYPE", lt[0], hLtype, "AcDbLinetypeTableRecord");
+                body.G(2, lt[1]); body.G(70, 0); body.G(3, lt[2]); body.G(72, 65); body.G(73, 0); body.G(40, 0.0);
+            }
+            body.G(0, "ENDTAB");
+
+            Table(body, "LAYER", hLayer, doc.Layers.Count + 1);
+            var layers = new List<DxfLayer> { new DxfLayer("0", 7) };
+            layers.AddRange(doc.Layers);
+            foreach (var l in layers)
+            {
+                Record(body, "LAYER", body.NewHandle(), hLayer, "AcDbLayerTableRecord");
+                body.G(2, l.Name); body.G(70, 0); body.G(62, l.Color); body.G(6, "Continuous");
+            }
+            body.G(0, "ENDTAB");
+
+            Table(body, "STYLE", hStyle, 1);
+            Record(body, "STYLE", hStyleStd, hStyle, "AcDbTextStyleTableRecord");
+            body.G(2, "Standard"); body.G(70, 0); body.G(40, 0.0); body.G(41, 1.0); body.G(50, 0.0); body.G(71, 0); body.G(42, 2.5);
+            body.G(3, "txt"); body.G(4, "");
+            body.G(0, "ENDTAB");
+
+            Table(body, "VIEW", hView, 0); body.G(0, "ENDTAB");
+            Table(body, "UCS", hUcs, 0); body.G(0, "ENDTAB");
+
+            Table(body, "APPID", hAppid, 1);
+            Record(body, "APPID", hAppAcad, hAppid, "AcDbRegAppTableRecord");
+            body.G(2, "ACAD"); body.G(70, 0);
+            body.G(0, "ENDTAB");
+
+            Table(body, "DIMSTYLE", hDimstyle, 1);
+            body.G(100, "AcDbDimStyleTable"); body.G(71, 0);
+            body.G(0, "DIMSTYLE"); body.G(105, hDimStd); body.G(330, hDimstyle);
+            body.G(100, "AcDbSymbolTableRecord"); body.G(100, "AcDbDimStyleTableRecord");
+            body.G(2, "Standard"); body.G(70, 0);
+            body.G(0, "ENDTAB");
+
+            Table(body, "BLOCK_RECORD", hBlkRec, 2);
+            Record(body, "BLOCK_RECORD", hMs, hBlkRec, "AcDbBlockTableRecord"); body.G(2, "*Model_Space");
+            Record(body, "BLOCK_RECORD", hPs, hBlkRec, "AcDbBlockTableRecord"); body.G(2, "*Paper_Space");
+            body.G(0, "ENDTAB");
+            body.G(0, "ENDSEC");
+
+            body.G(0, "SECTION"); body.G(2, "BLOCKS");
+            foreach (var blk in new[] { new[] { hMs, "*Model_Space", "0" }, new[] { hPs, "*Paper_Space", "1" } })
+            {
+                body.G(0, "BLOCK"); body.G(5, body.NewHandle()); body.G(330, blk[0]); body.G(100, "AcDbEntity");
+                if (blk[2] == "1") body.G(67, 1);
+                body.G(8, "0"); body.G(100, "AcDbBlockBegin"); body.G(2, blk[1]); body.G(70, 0);
+                body.Pt(10, new Vec2(0, 0)); body.G(3, blk[1]); body.G(1, "");
+                body.G(0, "ENDBLK"); body.G(5, body.NewHandle()); body.G(330, blk[0]); body.G(100, "AcDbEntity");
+                if (blk[2] == "1") body.G(67, 1);
+                body.G(8, "0"); body.G(100, "AcDbBlockEnd");
+            }
+            body.G(0, "ENDSEC");
+
+            body.G(0, "SECTION"); body.G(2, "ENTITIES");
+            foreach (var e in doc.Entities) Entity2000(body, e, hMs);
+            body.G(0, "ENDSEC");
+
+            body.G(0, "SECTION"); body.G(2, "OBJECTS");
+            body.G(0, "DICTIONARY"); body.G(5, rootDict); body.G(330, "0"); body.G(100, "AcDbDictionary"); body.G(281, 1);
+            body.G(3, "ACAD_GROUP"); body.G(350, groupDict);
+            body.G(0, "DICTIONARY"); body.G(5, groupDict); body.G(330, rootDict); body.G(100, "AcDbDictionary"); body.G(281, 1);
+            body.G(0, "ENDSEC");
+            body.G(0, "EOF");
+
+            var head = new W();
+            head.G(0, "SECTION"); head.G(2, "HEADER");
+            head.G(9, "$ACADVER"); head.G(1, "AC1015");
+            head.G(9, "$DWGCODEPAGE"); head.G(3, "ANSI_1252");
+            head.G(9, "$INSBASE"); head.Pt(10, new Vec2(0, 0));
+            head.G(9, "$EXTMIN"); head.Pt(10, new Vec2(ext.MinX, ext.MinY));
+            head.G(9, "$EXTMAX"); head.Pt(10, new Vec2(ext.MaxX, ext.MaxY));
+            head.G(9, "$LIMMIN"); head.G(10, 0.0); head.G(20, 0.0);
+            head.G(9, "$LIMMAX"); head.G(10, ext.MaxX); head.G(20, ext.MaxY);
+            head.G(9, "$LUNITS"); head.G(70, 2);
+            head.G(9, "$INSUNITS"); head.G(70, 4);     // millimetres
+            head.G(9, "$MEASUREMENT"); head.G(70, 1);  // metric
+            head.G(9, "$HANDSEED"); head.G(5, body.Seed);
+            head.G(0, "ENDSEC");
+            return head.Sb.ToString() + body.Sb.ToString();
+        }
+
+        static void Table(W w, string name, string handle, int count)
+        {
+            w.G(0, "TABLE"); w.G(2, name); w.G(5, handle); w.G(330, "0");
+            w.G(100, "AcDbSymbolTable"); w.G(70, count);
+        }
+
+        static void Record(W w, string type, string handle, string owner, string subclass)
+        {
+            w.G(0, type); w.G(5, handle); w.G(330, owner);
+            w.G(100, "AcDbSymbolTableRecord"); w.G(100, subclass);
+        }
+
+        static void Entity2000(W w, DxfEntity e, string owner)
+        {
+            var line = e as DxfLine;
+            var circle = e as DxfCircle;
+            var arc = e as DxfArc;
+            var poly = e as DxfPolyline;
+            var text = e as DxfText;
+            string type = line != null ? "LINE" : circle != null ? "CIRCLE" : arc != null ? "ARC" : poly != null ? "LWPOLYLINE" : "TEXT";
+            w.G(0, type); w.G(5, w.NewHandle()); w.G(330, owner);
+            w.G(100, "AcDbEntity"); w.G(8, e.Layer);
+            if (e.Color != 256) w.G(62, e.Color);
+            if (line != null)
+            {
+                w.G(100, "AcDbLine");
+                w.Pt(10, line.A);
+                w.Pt(11, line.B);
+            }
+            else if (circle != null)
+            {
+                w.G(100, "AcDbCircle");
+                w.Pt(10, circle.Center);
+                w.G(40, circle.Radius);
+            }
+            else if (arc != null)
+            {
+                w.G(100, "AcDbCircle");
+                w.Pt(10, arc.Center);
+                w.G(40, arc.Radius);
+                w.G(100, "AcDbArc");
+                w.G(50, arc.StartDeg);
+                w.G(51, arc.EndDeg);
+            }
+            else if (poly != null)
+            {
+                w.G(100, "AcDbPolyline");
+                w.G(90, poly.Points.Count);
+                w.G(70, poly.Closed ? 1 : 0);
+                w.G(43, 0.0);
+                foreach (var p in poly.Points)
+                {
+                    w.G(10, p.X);
+                    w.G(20, p.Y);
+                }
+            }
+            else
+            {
+                w.G(100, "AcDbText");
+                w.Pt(10, text.Position);
+                w.G(40, text.Height);
+                w.G(1, Clean(text.Value));
+                if (text.RotationDeg != 0) w.G(50, text.RotationDeg);
+                w.G(7, "Standard");
+                w.G(100, "AcDbText");
+            }
+        }
+    }
+}
+
+// ----- core/ExportPipeline.cs -----
+// The whole export, minus NX: body model + chosen face + config -> DXF text and file name.
+namespace LaserDxf.Core
+{
+    using System;
+    using System.Collections.Generic;
+
+    public static class ExportPipeline
+    {
+        public static ExportRun Prepare(BodyModel m, int faceId, LaserConfig c, AnalysisOptions opt, string selectionNote)
+        {
+            var run = new ExportRun { Config = c, ConfigPath = c.SourcePath, PartName = m.PartName, SelectionNote = selectionNote };
+
+            run.Analysis = PlateAnalyzer.Analyze(m, faceId, opt);
+            run.Warnings.AddRange(run.Analysis.Warnings);
+
+            run.Identity = Identity.Resolve(m, c);
+            run.Warnings.AddRange(run.Identity.Warnings);
+
+            run.Profile = ProfileBuilder.Build(m, run.Analysis, c);
+            run.Warnings.AddRange(run.Profile.Warnings);
+
+            run.FileName = FileNameFor(run.Identity, c, run.Warnings);
+            run.DxfText = DxfWriter.Write(run.Profile.Doc, c.DxfVersion);
+            return run;
+        }
+
+        public static string FileNameFor(PartIdentity id, LaserConfig c, List<string> warnings)
+        {
+            string name = Identity.SafeFileName(Identity.Format(c.FileNameFormat, id.Tokens(), warnings));
+            if (name.Length == 0 || name.Equals(".dxf", StringComparison.OrdinalIgnoreCase)) name = "plate";
+            if (!name.EndsWith(".dxf", StringComparison.OrdinalIgnoreCase)) name += ".dxf";
+            return name;
+        }
+    }
+}
+
+// ----- core/ExportReport.cs -----
+// Text summary of an export run, for the listing window and the log file.
+namespace LaserDxf.Core
+{
+    using System;
+    using System.Collections.Generic;
+
+    public sealed class ExportRun
+    {
+        public string Version = "";
+        public string ConfigPath = "";
+        public string PartName = "";
+        public string SelectionNote = "";
+        public PartIdentity Identity;
+        public FaceAnalysis Analysis;
+        public ProfileResult Profile;
+        public LaserConfig Config;
+        public string FileName = "";
+        public string DxfText = "";
+        public string OutputPath = "";
+        public string Outcome = "";
+        public List<string> Warnings = new List<string>();
+        public List<string> Notes = new List<string>();
+    }
+
+    public static class ExportReport
+    {
+        public static List<string> Summary(ExportRun r)
+        {
+            var L = new List<string>();
+            L.Add("=== Laser DXF " + r.Version + " ===   " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+            L.Add("Config       : " + r.ConfigPath);
+            L.Add("Part         : " + r.PartName);
+            if (r.Identity != null)
+            {
+                string rev = r.Identity.RevisionRaw.Length == 0 ? "none"
+                    : r.Identity.Revision == r.Identity.RevisionRaw ? "\"" + r.Identity.Revision + "\""
+                    : "\"" + r.Identity.RevisionRaw + "\" -> " + r.Identity.Revision;
+                L.Add("Part number  : " + r.Identity.Id + "   (from " + r.Identity.IdSource + "; revision " + rev + ")");
+                if (r.Identity.Name.Length > 0) L.Add("Name         : " + r.Identity.Name);
+            }
+            if (r.Analysis != null && r.Profile != null)
+            {
+                FaceAnalysis a = r.Analysis;
+                L.Add("Plate        : " + Fmt.N(r.Profile.Width, 2) + " x " + Fmt.N(r.Profile.Height, 2) + " mm, " +
+                      Fmt.N(a.Thickness * r.Profile.UnitScale, 2) + " mm thick   (face #" + a.FaceId + ", " + r.SelectionNote + ")");
+                L.Add("Orientation  : " + (a.LongestEdgeId >= 0 ? "X along the longest straight edge" : "X along the WCS / fallback direction") +
+                      ", viewed from the selected face");
+
+                int circles = 0, cutouts = 0;
+                var groups = new SortedDictionary<double, int>();
+                foreach (var h in r.Profile.Holes)
+                {
+                    if (double.IsNaN(h.CutDiameter)) { cutouts++; continue; }
+                    circles++;
+                    double key = Math.Round(h.CutDiameter, 3);
+                    int c;
+                    groups.TryGetValue(key, out c);
+                    groups[key] = c + 1;
+                }
+                L.Add("Holes found  : " + circles + " round holes, " + cutouts + " other cut-outs" +
+                      (r.Profile.SkippedLoops > 0 ? ", " + r.Profile.SkippedLoops + " not cut (do not go through)" : ""));
+                if (groups.Count > 0)
+                {
+                    var parts = new List<string>();
+                    foreach (var kv in groups) parts.Add("dia " + Fmt.N(kv.Key, 3) + " x" + kv.Value);
+                    L.Add("Diameters    : " + string.Join(";  ", parts.ToArray()));
+                }
+                int labelled = 0;
+                foreach (var h in r.Profile.Holes) if (h.Label.Length > 0) labelled++;
+                L.Add("Labelled     : " + labelled);
+                L.Add("Entities     : " + r.Profile.Doc.Entities.Count + " (" + r.Profile.OuterEntityCount + " in the outer profile)");
+            }
+            if (r.Config != null)
+                L.Add("DXF format   : " + r.Config.DxfVersion + ", mm, layers " + r.Config.CutLayer.Name + " (colour " + r.Config.CutLayer.Color + ") / " +
+                      r.Config.EtchLayer.Name + " (colour " + r.Config.EtchLayer.Color + ")");
+            L.Add("Output       : " + (r.OutputPath.Length > 0 ? r.OutputPath : "-") + (r.Outcome.Length > 0 ? "   [" + r.Outcome + "]" : ""));
+            if (r.Warnings.Count > 0)
+            {
+                L.Add("");
+                L.Add("Warnings (" + r.Warnings.Count + "):");
+                foreach (string w in r.Warnings) L.Add("  - " + w);
+            }
+            if (r.Notes.Count > 0)
+            {
+                L.Add("");
+                L.Add("Notes:");
+                foreach (string n in r.Notes) L.Add("  " + n);
+            }
+            return L;
         }
     }
 }
@@ -1417,6 +2513,176 @@ namespace LaserDxf.Core
             if (pos == start || !double.TryParse(t.Substring(start, pos - start), NumberStyles.Float, CultureInfo.InvariantCulture, out d))
                 throw Error(t, start, "Invalid value");
             return d;
+        }
+    }
+}
+
+// ----- core/PartIdentity.cs -----
+// Part number / revision from Teamcenter attributes, and {TOKEN} templates
+// for the etch text and the DXF file name.
+namespace LaserDxf.Core
+{
+    using System;
+    using System.Collections.Generic;
+    using System.Globalization;
+    using System.Text;
+
+    public sealed class PartIdentity
+    {
+        public string Id = "";
+        public string IdSource = "";
+        public string RevisionRaw = "";
+        public string Revision = "";
+        public string Name = "";
+        public string Material = "";
+        public string Thickness = "";
+        public List<string> Warnings = new List<string>();
+
+        public Dictionary<string, string> Tokens()
+        {
+            var t = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            t["ID"] = Id;
+            t["REV"] = Revision;
+            t["REVRAW"] = RevisionRaw;
+            t["NAME"] = Name;
+            t["MATERIAL"] = Material;
+            t["THK"] = Thickness;
+            return t;
+        }
+    }
+
+    public static class Identity
+    {
+        /// <summary>Finds an attribute by category plus title-or-alias (case-insensitive).
+        /// An empty category in the config matches any category. Returns null if unset/empty/ignored.</summary>
+        public static string Find(List<AttributeEntry> attrs, AttrRef r)
+        {
+            if (r == null || r.Title.Trim().Length == 0) return null;
+            foreach (var a in attrs)
+            {
+                if (r.Category.Trim().Length > 0 && !Same(a.Category, r.Category)) continue;
+                if (!Same(a.Title, r.Title) && !Same(a.Alias, r.Title)) continue;
+                if (!a.IsSet) continue;
+                string v = (a.Value ?? "").Trim();
+                if (v.Length == 0) continue;
+                bool ignored = false;
+                foreach (string ig in r.IgnoreValues) if (Same(v, ig)) ignored = true;
+                if (ignored) continue;
+                return v;
+            }
+            return null;
+        }
+
+        static bool Same(string a, string b)
+        {
+            return string.Equals((a ?? "").Trim(), (b ?? "").Trim(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>1 -> A, 26 -> Z, 27 -> AA. Non-numeric revisions are returned unchanged.</summary>
+        public static string RevisionLetters(string rev)
+        {
+            int n;
+            if (!int.TryParse(rev.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out n) || n <= 0) return rev;
+            var sb = new StringBuilder();
+            while (n > 0)
+            {
+                n--;
+                sb.Insert(0, (char)('A' + n % 26));
+                n /= 26;
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>Part name without the Teamcenter "/revision" suffix, e.g. "S180-06068-47020/1" -> "S180-06068-47020".</summary>
+        public static string StripRevision(string partName)
+        {
+            string s = (partName ?? "").Trim();
+            int slash = s.IndexOf('/');
+            return slash > 0 ? s.Substring(0, slash) : s;
+        }
+
+        public static PartIdentity Resolve(BodyModel m, LaserConfig c)
+        {
+            var p = new PartIdentity();
+            string id = Find(m.Attributes, c.IdAttr);
+            if (id != null) p.IdSource = "attribute " + c.IdAttr;
+            else
+            {
+                id = Find(m.Attributes, c.FallbackIdAttr);
+                if (id != null)
+                {
+                    p.IdSource = "fallback attribute " + c.FallbackIdAttr;
+                    p.Warnings.Add("Attribute " + c.IdAttr + " not found - used " + c.FallbackIdAttr + ".");
+                }
+                else
+                {
+                    id = StripRevision(m.PartName);
+                    p.IdSource = "part name";
+                    p.Warnings.Add("Neither " + c.IdAttr + " nor " + c.FallbackIdAttr + " found - used the part name \"" + id + "\".");
+                }
+            }
+            p.Id = id;
+
+            string rev = Find(m.Attributes, c.RevisionAttr);
+            if (rev == null) p.Warnings.Add("Attribute " + c.RevisionAttr + " not found - revision left out.");
+            p.RevisionRaw = rev ?? "";
+            p.Revision = rev == null ? "" : (c.RevisionAsLetter ? RevisionLetters(rev) : rev);
+
+            p.Name = Find(m.Attributes, c.NameAttr) ?? "";
+            p.Material = Find(m.Attributes, c.MaterialAttr) ?? "";
+            p.Thickness = Find(m.Attributes, c.ThicknessAttr) ?? "";
+            return p;
+        }
+
+        const string Separators = "-_. ";
+
+        /// <summary>Replaces {TOKEN}s. An empty token also drops the separator before it
+        /// (or after it, at the start), so "{ID}-{REV}" with no revision gives "ID", not "ID-".</summary>
+        public static string Format(string template, Dictionary<string, string> tokens, List<string> warnings)
+        {
+            var sb = new StringBuilder();
+            int i = 0;
+            bool dropNextSeparator = false;
+            while (i < template.Length)
+            {
+                char ch = template[i];
+                int close = ch == '{' ? template.IndexOf('}', i + 1) : -1;
+                if (close < 0)
+                {
+                    if (dropNextSeparator && Separators.IndexOf(ch) >= 0) { dropNextSeparator = false; i++; continue; }
+                    dropNextSeparator = false;
+                    sb.Append(ch);
+                    i++;
+                    continue;
+                }
+                string key = template.Substring(i + 1, close - i - 1);
+                string value;
+                if (!tokens.TryGetValue(key, out value))
+                {
+                    if (warnings != null) warnings.Add("Unknown placeholder {" + key + "} in \"" + template + "\" - left as is.");
+                    value = "{" + key + "}";
+                }
+                if (value.Length == 0)
+                {
+                    if (sb.Length > 0 && Separators.IndexOf(sb[sb.Length - 1]) >= 0) sb.Length--;
+                    else if (sb.Length == 0) dropNextSeparator = true;
+                }
+                else
+                {
+                    sb.Append(value);
+                    dropNextSeparator = false;
+                }
+                i = close + 1;
+            }
+            return sb.ToString();
+        }
+
+        public static string SafeFileName(string s)
+        {
+            const string bad = "<>:\"/\\|?*";
+            var sb = new StringBuilder();
+            foreach (char c in s) sb.Append(c < 32 || bad.IndexOf(c) >= 0 ? '_' : c);
+            return sb.ToString().Trim().TrimEnd('.');
         }
     }
 }
@@ -2106,6 +3372,158 @@ namespace LaserDxf.Core
             var sb = new StringBuilder();
             foreach (var l in lines) sb.Append(l).Append("\r\n");
             return sb.ToString();
+        }
+    }
+}
+
+// ----- core/ProfileBuilder.cs -----
+// Converts a FaceAnalysis into CUT-layer DXF entities.
+namespace LaserDxf.Core
+{
+    using System;
+    using System.Collections.Generic;
+
+    public sealed class CutHole
+    {
+        public HoleInfo Hole;
+        /// <summary>Diameter written to the DXF (mm). NaN for non-circular cut-outs.</summary>
+        public double CutDiameter = double.NaN;
+        public Vec2 Center;
+        public string Label = "";
+        public string LabelSource = "";
+        public DxfCircle Circle;
+    }
+
+    public sealed class ProfileResult
+    {
+        public DxfDocument Doc = new DxfDocument();
+        public List<CutHole> Holes = new List<CutHole>();
+        public int OuterEntityCount;
+        public int SkippedLoops;
+        public double Width, Height;
+        public double UnitScale = 1;
+        public List<string> Warnings = new List<string>();
+    }
+
+    public static class ProfileBuilder
+    {
+        public static double UnitScaleFor(string units)
+        {
+            return string.Equals(units, "Inches", StringComparison.OrdinalIgnoreCase) ? 25.4 : 1.0;
+        }
+
+        public static ProfileResult Build(BodyModel m, FaceAnalysis a, LaserConfig c)
+        {
+            var r = new ProfileResult();
+            r.UnitScale = UnitScaleFor(m.Units);
+            if (r.UnitScale != 1) r.Warnings.Add("Part units are " + m.Units + " - converted to mm.");
+            double k = r.UnitScale;
+
+            r.Doc.Layers.Add(c.CutLayer);
+            r.Doc.Layers.Add(c.EtchLayer);
+
+            // Outer profile.
+            int before = r.Doc.Entities.Count;
+            AddLoop(m, a, a.Outer, c, k, r);
+            r.OuterEntityCount = r.Doc.Entities.Count - before;
+            if (!a.Outer.Closed) r.Warnings.Add("The outer profile is not closed - check the DXF before cutting.");
+            CheckOuterWalls(m, a, c.Tolerance, r);
+
+            foreach (HoleInfo h in a.Holes)
+            {
+                string where = "at (" + Fmt.N(h.Center2.X * k, 2) + ", " + Fmt.N(h.Center2.Y * k, 2) + ")";
+                if (!h.Through)
+                {
+                    r.SkippedLoops++;
+                    r.Warnings.Add("Inner loop #" + h.Index + " " + where + " does not go through the plate (blind hole or pocket) - not cut.");
+                    continue;
+                }
+                var ch = new CutHole { Hole = h, Center = h.Center2 * k };
+                if (h.IsCircle)
+                {
+                    double dia = double.IsNaN(h.MinDiameter) ? h.TopDiameter : h.MinDiameter;
+                    ch.CutDiameter = dia * k;
+                    ch.Circle = new DxfCircle { Center = ch.Center, Radius = ch.CutDiameter / 2 };
+                    Style(ch.Circle, c.CutLayer, c);
+                    r.Doc.Entities.Add(ch.Circle);
+                    if (h.TopDiameter - dia > c.Tolerance)
+                        r.Warnings.Add("Hole #" + h.Index + " " + where + ": cut at the bore dia " + Fmt.N(dia * k, 3) + " (dia " +
+                                       Fmt.N(h.TopDiameter * k, 3) + " at the face - " + (h.HasCone ? "countersink" : "counterbore") + ").");
+                }
+                else
+                {
+                    AddLoop(m, a, h.Loop, c, k, r);
+                    if (h.HasStep)
+                        r.Warnings.Add("Cut-out #" + h.Index + " " + where + " has a step part-way through - cut to its outline on the selected face.");
+                    if (!h.Loop.Closed)
+                        r.Warnings.Add("Cut-out #" + h.Index + " " + where + " is not closed - check the DXF.");
+                }
+                r.Holes.Add(ch);
+            }
+
+            r.Width = a.Bounds.Width * k;
+            r.Height = a.Bounds.Height * k;
+            return r;
+        }
+
+        static void Style(DxfEntity e, DxfLayer layer, LaserConfig c)
+        {
+            e.Layer = layer.Name;
+            e.Color = c.EntityColors ? layer.Color : 256;
+        }
+
+        static void AddLoop(BodyModel m, FaceAnalysis a, FaceLoop loop, LaserConfig c, double k, ProfileResult r)
+        {
+            foreach (var oe in loop.Edges)
+            {
+                TopoEdge e = m.Edge(oe.EdgeId);
+                DxfEntity ent;
+                Arc2 arc;
+                if (e.Kind == EdgeKind.Line)
+                {
+                    ent = new DxfLine { A = a.Frame.ToLocal(e.Start) * k, B = a.Frame.ToLocal(e.End) * k };
+                }
+                else if (EdgeGeom2.TryArc(e, a.Frame, c.Tolerance, out arc))
+                {
+                    if (arc.Full) ent = new DxfCircle { Center = arc.Center * k, Radius = arc.Radius * k };
+                    else ent = new DxfArc { Center = arc.Center * k, Radius = arc.Radius * k, StartDeg = arc.StartDeg, EndDeg = arc.EndDeg };
+                }
+                else
+                {
+                    var pl = new DxfPolyline();
+                    List<Vec3> pts = e.Points;
+                    for (int i = 0; i < pts.Count; i++)
+                        pl.Points.Add(a.Frame.ToLocal(pts[oe.Reversed ? pts.Count - 1 - i : i]) * k);
+                    pl.Closed = e.IsClosed(c.Tolerance);
+                    if (pl.Closed) pl.Points.RemoveAt(pl.Points.Count - 1);
+                    ent = pl;
+                }
+                Style(ent, c.CutLayer, c);
+                r.Doc.Entities.Add(ent);
+            }
+        }
+
+        /// <summary>Warns when the outer side walls don't run the full plate thickness
+        /// (a chamfer or edge break on the selected side makes the face outline smaller than the cut).</summary>
+        static void CheckOuterWalls(BodyModel m, FaceAnalysis a, double tol, ProfileResult r)
+        {
+            double depthTol = Math.Max(tol * 5, 0.02);
+            foreach (var oe in a.Outer.Edges)
+            {
+                foreach (int fid in m.Edge(oe.EdgeId).FaceIds)
+                {
+                    if (fid == a.FaceId) continue;
+                    double dmax = 0;
+                    foreach (int eid in m.Face(fid).EdgeIds)
+                        foreach (var p in m.Edge(eid).Points)
+                            dmax = Math.Max(dmax, -a.Frame.Height(p));
+                    if (dmax < a.Thickness - depthTol)
+                    {
+                        r.Warnings.Add("The outer profile has a chamfer or edge break - the DXF follows the outline of the selected face.");
+                        return;
+                    }
+                }
+            }
         }
     }
 }

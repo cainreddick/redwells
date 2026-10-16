@@ -27,7 +27,8 @@ NX plays one `.cs` file. The sources are split for testing and merged by
 src/core/   pure logic: geometry, loops, hole analysis, labels, DXF, stroke font, config
 src/nx/     everything that calls NX Open: selection, B-rep extraction, attributes, UI
 src/entry/  the journal's Main() (global namespace, fully-qualified names)
-dist/       generated journals: these are what you play in NX
+config/     LaserDxf.config.json (copied to dist/)
+dist/       generated journals + config: these are what you copy to the NX PC
 stubs/      compile-only NXOpen stand-ins, so the merged journal can be type-checked here
 tests/      unit tests (C#, Mono) + DXF validation (Python, ezdxf)
 ```
@@ -95,15 +96,16 @@ replay your real parts through the whole pipeline in tests without NX.
 | Edge type / length | `Edge.SolidEdgeType`, `Edge.GetLength` | |
 | Features | `Body.GetFeatures`, `BodyFeature.GetFaces`, `Feature.FeatureType/GetFeatureName` | Maps each hole's wall faces to the feature that made them |
 | Hole feature data | `FeatureCollection.CreateHolePackageBuilder(hole)`, read the properties, `Destroy()` (never committed) | Called by reflection until step 1 confirms the property names (hole type, form, thread size) |
-| Attributes | `Part.GetUserAttributes()` → `NXObject.AttributeInformation` (`Title`, `Category`, `Type`, `StringValue`, …) | Alias/unset members read by reflection; step 1 logs which members exist |
-| Config location | `Session.ExecutingJournal` (via reflection), fallback env var `LASER_DXF_CONFIG` | Finds the JSON next to the journal |
+| Attributes | `Part.GetUserAttributes()` → `NXObject.AttributeInformation` (`Title`, `TitleAlias`, `Category`, `Type`, `StringValue`, `Unset`, …) | Member names confirmed in step 1 (NX 2412) |
+| Config location | env var `LASER_DXF_CONFIG`, else `Session.ExecutingJournal` (via reflection) folder | Confirmed working in step 1 |
 | WCS option | `Part.WCS.CoordinateSystem.Orientation` | X axis hint |
 | Pick-a-point option | `UI.SelectionManager.SelectScreenPosition` / point dialog | Etch position |
 | Output | `Session.ListingWindow`, `NXMessageBox`, `System.IO` | Overwrite prompt through `NXMessageBox` (Question) |
 | Options dialog | `System.Windows.Forms` (pre-filled from the config) | Can be switched off in the config |
 
-All of these work from an unsigned journal. Two things need checking on your seat, and step 1
-does so: the UF calls (`AskCurveProps`), and reading the Hole builder.
+All of these work from an unsigned journal. Step 1 confirmed the UF call (`AskCurveProps`, with a
+normalised parameter) on NX 2412. Reading the Hole builder is still unconfirmed, because the
+first test part had extruded holes only.
 
 ## Core algorithms
 
@@ -221,8 +223,8 @@ parts.
 
 ## Build steps
 
-1. **Probe**: select a face, dump edges, loops, holes, features and attributes. *(this delivery)*
-2. Plain profile DXF (CUT layer) + config file.
+1. **Probe**: select a face, dump edges, loops, holes, features and attributes. *(done, tested in NX 2412)*
+2. Plain profile DXF (CUT layer) + config file + part number/file name from attributes. *(current)*
 3. Hole classification (feature data → table, cut diameter override).
 4. Hole labels with collision-avoiding placement.
 5. Part-number etch (attributes, auto placement / pick point), options dialog, report + log.

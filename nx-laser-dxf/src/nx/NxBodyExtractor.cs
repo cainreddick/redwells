@@ -153,8 +153,19 @@ namespace LaserDxf.Nx
                 Vec3 a = new Vec3(v1.X, v1.Y, v1.Z);
                 Vec3 b = new Vec3(v2.X, v2.Y, v2.Z);
                 const double tol = 1e-3;
-                bool startOk = te.Start.DistanceTo(a) < tol || te.Start.DistanceTo(b) < tol;
-                bool endOk = te.End.DistanceTo(a) < tol || te.End.DistanceTo(b) < tol;
+                bool startOk, endOk;
+                if (a.DistanceTo(b) < tol && te.HasCircle)
+                {
+                    // Full circle: NX's vertex can sit anywhere on it (the parameter start is
+                    // usually elsewhere), so check closure and that the vertex is on the circle.
+                    startOk = te.IsClosed(tol);
+                    endOk = Math.Abs(a.DistanceTo(te.Center) - te.Radius) < tol;
+                }
+                else
+                {
+                    startOk = te.Start.DistanceTo(a) < tol || te.Start.DistanceTo(b) < tol;
+                    endOk = te.End.DistanceTo(a) < tol || te.End.DistanceTo(b) < tol;
+                }
                 if (!startOk || !endOk)
                 {
                     vertexMismatches++;

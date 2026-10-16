@@ -1,4 +1,4 @@
-// Step 1: select a plate face (or body) and dump what the journal sees.
+// Diagnostic journal: select a plate face (or body) and dump what the journal sees.
 // Writes a summary to the listing window, plus a full text dump and a JSON
 // model of the body to the debug folder.
 namespace LaserDxf.Nx
@@ -12,102 +12,33 @@ namespace LaserDxf.Nx
 
     public static class ProbeCommand
     {
-        public const string Version = "probe 1.0 (step 1)";
-        const string Title = "Laser DXF";
-        const string DebugFolder = @"C:\Laser DXF\_debug";
+        public const string Version = "probe 1.1";
 
         public static void Run()
         {
-            Session s = Session.GetSession();
-            ListingWindow lw = s.ListingWindow;
-            lw.Open();
-            var log = new List<string>();
-            try
-            {
-                RunInner(s, lw, log);
-            }
-            catch (PlateException ex)
-            {
-                lw.WriteLine("ABORTED: " + ex.Message);
-                NxUtil.Message(Title, NXMessageBox.DialogType.Error, ex.Message);
-            }
-            catch (Exception ex)
-            {
-                lw.WriteLine("ERROR: " + ex.GetType().Name + ": " + ex.Message);
-                lw.WriteLine(ex.StackTrace ?? "");
-                foreach (string l in log) lw.WriteLine("  log: " + l);
-                NxUtil.Message(Title, NXMessageBox.DialogType.Error, "Unexpected error:\n" + ex.Message + "\n\nDetails are in the listing window.");
-            }
+            NxPlate.Run(RunInner);
         }
 
         static void RunInner(Session s, ListingWindow lw, List<string> log)
         {
-            UFSession uf = UFSession.GetUFSession();
-            UI ui = UI.GetUI();
+            var cfgWarnings = new List<string>();
+            LaserConfig cfg = NxPlate.LoadConfig(s, cfgWarnings);
+            log.AddRange(cfgWarnings);
 
-            if (s.Parts.Work == null) throw new PlateException("Open the plate part first.");
+            PlateSelection sel = NxPlate.Select(s, log);
+            if (sel == null) return;
+            Part part = sel.Part;
 
-            Selection.MaskTriple[] mask =
-            {
-                new Selection.MaskTriple(UFConstants.UF_solid_type, 0, UFConstants.UF_UI_SEL_FEATURE_ANY_FACE),
-                new Selection.MaskTriple(UFConstants.UF_solid_type, 0, UFConstants.UF_UI_SEL_FEATURE_BODY)
-            };
-            TaggedObject picked;
-            Point3d cursor;
-            Selection.Response resp = ui.SelectionManager.SelectTaggedObject(
-                "Select the plate face to view from (or the plate body)", "Laser DXF - select plate",
-                Selection.SelectionScope.AnyInAssembly, Selection.SelectionAction.ClearAndEnableSpecific,
-                false, false, mask, out picked, out cursor);
-            if (resp != Selection.Response.ObjectSelected && resp != Selection.Response.ObjectSelectedByName) return;
-
-            Face face = picked as Face;
-            Body body = picked as Body;
+            AnalysisOptions opt = cfg.ToAnalysisOptions();
+            var ex = new NxBodyExtractor(UFSession.GetUFSession(), log) { ChordTol = cfg.ChordTolerance };
+            BodyModel m = ex.Extract(sel.Body, part);
             string note;
-
-            // Work on the part itself, not an assembly occurrence: coordinates are then the part's own.
-            if (face != null && face.IsOccurrence)
-            {
-                face = (Face)face.Prototype;
-                log.Add("Selection was an assembly occurrence; using the component part's face.");
-            }
-            if (body != null && body.IsOccurrence)
-            {
-                body = (Body)body.Prototype;
-                log.Add("Selection was an assembly occurrence; using the component part's body.");
-            }
-            if (face != null)
-            {
-                if (face.SolidFaceType != Face.FaceType.Planar)
-                    throw new PlateException("The selected face is not planar (it is " + face.SolidFaceType + "). Select the flat top or bottom face of the plate.");
-                body = face.GetBody();
-            }
-            if (body == null) throw new PlateException("Nothing usable was selected.");
-            if (!body.IsSolidBody) throw new PlateException("The selected body is not a solid body.");
-
-            Part part = body.OwningPart as Part;
-            if (part == null) throw new PlateException("Could not find the part that owns the selected body.");
-
-            var opt = new AnalysisOptions();
-            var ex = new NxBodyExtractor(uf, log);
-            BodyModel m = ex.Extract(body, part);
-
-            int faceId;
-            if (face != null)
-            {
-                faceId = ex.FaceIdByTag[face.Tag];
-                note = "selected directly";
-            }
-            else
-            {
-                faceId = PlateAnalyzer.PickPlateFace(m, opt, Vec3.UnitZ, log);
-                note = "picked automatically from the body";
-            }
-
+            int faceId = NxPlate.PlateFaceId(sel, ex, m, opt, log, out note);
             FaceAnalysis a = PlateAnalyzer.Analyze(m, faceId, opt);
 
             // ---------- output ----------
             string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-            string folder = NxUtil.EnsureFolder(DebugFolder, log);
+            string folder = NxUtil.EnsureFolder(Path.Combine(cfg.OutputFolder, "_debug"), log);
             string baseName = NxUtil.SafeFileName(m.PartName) + "_" + stamp;
             string dumpPath = Path.Combine(folder, baseName + "_probe.txt");
             string jsonPath = Path.Combine(folder, baseName + "_body.json");
@@ -117,6 +48,7 @@ namespace LaserDxf.Nx
             head.Add("NX part      : Leaf=\"" + SafeGet(delegate { return part.Leaf; }) + "\"  Name=\"" + SafeGet(delegate { return part.Name; }) +
                      "\"  FullPath=\"" + SafeGet(delegate { return part.FullPath; }) + "\"");
             head.Add("Journal path : " + (NxReflect.ExecutingJournal(s) ?? "(Session.ExecutingJournal not available)"));
+            head.Add("Config       : " + cfg.SourcePath);
             head.Add("Body         : " + m.Faces.Count + " faces, " + m.Edges.Count + " edges, " + m.Features.Count + " features, " + m.Attributes.Count + " attributes");
 
             List<string> summary = ProbeReport.Summary(m, a, note);

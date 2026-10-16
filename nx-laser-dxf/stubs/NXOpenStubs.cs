@@ -45,8 +45,18 @@ namespace NXOpen
         public string FullPath { get { return ""; } }
     }
 
+    public struct Matrix3x3
+    {
+        public double Xx, Xy, Xz, Yx, Yy, Yz, Zx, Zy, Zz;
+    }
+
+    public class NXMatrix : NXObject { public Matrix3x3 Element { get { return new Matrix3x3(); } } }
+    public class CartesianCoordinateSystem : NXObject { public NXMatrix Orientation { get { return null; } } }
+    public class WCS : NXObject { public CartesianCoordinateSystem CoordinateSystem { get { return null; } } }
+
     public class Part : BasePart
     {
+        public WCS WCS { get { return null; } }
         public NXOpen.Features.FeatureCollection Features { get { return null; } }
     }
 

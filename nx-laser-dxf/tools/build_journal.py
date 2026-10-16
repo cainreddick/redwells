@@ -16,8 +16,10 @@ DIST = ROOT / "dist"
 
 # journal file name -> entry file
 JOURNALS = {
+    "LaserDxf.cs": "entry/LaserDxf.cs",
     "LaserDxfProbe.cs": "entry/LaserDxfProbe.cs",
 }
+CONFIG = ROOT / "config" / "LaserDxf.config.json"
 
 
 def build(name, entry):
@@ -45,3 +47,6 @@ def build(name, entry):
 if __name__ == "__main__":
     for n, e in JOURNALS.items():
         build(n, e)
+    DIST.mkdir(exist_ok=True)
+    (DIST / CONFIG.name).write_bytes(CONFIG.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\n", "\r\n").encode("utf-8"))
+    print(f"copied dist/{CONFIG.name}")

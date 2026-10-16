@@ -1,0 +1,71 @@
+// Laser DXF settings. Keep this file next to LaserDxf.cs (same folder).
+// Lines starting with // are comments. Paths: use / or \\ (a single \ before a
+// letter also works, but never end a path with a single \).
+{
+  "outputFolder": "C:/Laser DXF",
+  // Placeholders: {ID} {REV} {REVRAW} {NAME} {MATERIAL} {THK}. An empty placeholder
+  // also drops the separator before it, so "{ID}-{REV}" without a revision gives "{ID}".
+  "fileNameFormat": "{ID}-{REV}.dxf",
+  "askBeforeOverwrite": true,
+  "showOptionsDialog": true,          // step 5
+
+  "geometry": {
+    "tolerance": 0.01,                // mm, matching/flatness tolerance
+    "chordTolerance": 0.02,           // mm, max deviation when splines are written as polylines
+    "xAlign": "LongestEdge"           // "LongestEdge" or "WCS"
+  },
+
+  "dxf": {
+    "version": "R2000",               // "R2000" (recommended) or "R12" (oldest CAM software)
+    "textMode": "Stroke",             // step 4/5: "Stroke" = single-line vectors, "Text" = DXF TEXT
+    "cutLayer":  { "name": "CUT",  "color": 7 },
+    "etchLayer": { "name": "ETCH", "color": 5 },
+    "entityColors": true              // also colour each entity (not just ByLayer)
+  },
+
+  "labels": {                         // steps 3-4
+    "textHeight": 3,
+    "gap": 1.5,                       // label distance from the hole edge, mm
+    "holeClearance": 1.0,
+    "edgeClearance": 2.0,
+    "useHoleFeatures": true,          // read thread size / countersink from NX Hole features first
+    "threadLabelFormat": "{THREAD}",  // "M8 x 1.25" -> {THREAD} = "M8"
+    "countersinkLabel": "CS",
+    "table": [
+      // label, modelled diameter (mm), +/- tolerance, optional laser cut diameter (null = as modelled)
+      { "label": "R6", "diameter": 5.8, "tolerance": 0.05, "cutDiameter": null },
+      { "label": "M8", "diameter": 5.5, "tolerance": 0.05, "cutDiameter": null }
+    ]
+  },
+
+  "etch": {                           // step 5
+    "format": "{ID}-{REV}",
+    "revisionAsLetter": true,         // 1 -> A, 2 -> B ... 27 -> AA
+    "textHeight": 5,
+    "minTextHeight": 3,
+    "clearance": 3,
+    "placement": "Auto",              // "Auto" or "Pick"
+    "allowRotate90": true
+  },
+
+  // Teamcenter attributes: title (or alias) + category, as shown in File > Properties > Attributes.
+  "attributes": {
+    "id":         { "title": "ID",             "category": "MCAD" },
+    "revision":   { "title": "Revision",       "category": "MCAD Revision" },
+    "fallbackId": { "title": "Part_Number",    "category": "Lentus Attributes", "ignoreValues": ["model-plain-1"] },
+    "name":       { "title": "DB_PART_NAME",   "category": "MCAD" },
+    "material":   { "title": "Polar_Material", "category": "MCAD Revision" },
+    "thickness":  { "title": "Matl_Thk",       "category": "Materials" }
+  },
+
+  "batch": {                          // phase 2
+    "requiredThickness": 6,
+    "thicknessTolerance": 0.1,
+    "writeCsv": true
+  },
+
+  "debug": {
+    "saveBodyJson": true,             // copy of the plate geometry in <outputFolder>\_debug
+    "writeLog": true                  // <outputFolder>\_logs\LaserDxf_<date>.log
+  }
+}

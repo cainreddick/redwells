@@ -22,3 +22,10 @@ done
 $MCS -target:exe -r:System.dll -r:build/LaserDxf.Core.dll -out:build/tests.exe tests/*.cs
 cp build/LaserDxf.Core.dll build/ 2>/dev/null || true
 mono build/tests.exe build/test-output
+
+# 4) Validate the sample DXFs with ezdxf.
+python3 tests/validate_dxf.py build/test-output
+
+# 5) Keep the sample DXFs in the repo so they can be tried in the laser CAM software.
+mkdir -p samples
+cp build/test-output/testplate_R2000.dxf build/test-output/irregular_R2000.dxf build/test-output/irregular_R12.dxf samples/
