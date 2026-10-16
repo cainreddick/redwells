@@ -34,8 +34,19 @@ namespace LaserDxf.Nx
             }
             if (!File.Exists(template))
             {
-                warnings.Add("Request list not written: template \"" + template + "\" not found. Put your Jig Part Request List .xlsx there (or set requestList.template).");
-                return null;
+                string dir = Path.GetDirectoryName(template);
+                var files = new List<string>();
+                try { foreach (string f in Directory.GetFiles(dir)) files.Add(Path.GetFileName(f)); }
+                catch (Exception ex) { warnings.Add("Request list not written: cannot read the folder " + dir + " (" + ex.Message + ")."); return null; }
+                string message;
+                string found = Batch.FindTemplate(template, files, out message);
+                if (found == null)
+                {
+                    warnings.Add(message + " Looked in " + dir + ".");
+                    return null;
+                }
+                warnings.Add(message);
+                template = Path.Combine(dir, found);
             }
             string name = Identity.SafeFileName(Identity.Format(cfg.RequestListFileFormat, assembly.Tokens(), warnings));
             if (name.Length == 0 || name.Equals(".xlsx", StringComparison.OrdinalIgnoreCase)) name = "Jig Part Request List";

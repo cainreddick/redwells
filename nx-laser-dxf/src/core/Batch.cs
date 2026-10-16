@@ -43,6 +43,13 @@ namespace LaserDxf.Core
             return string.Join(" or ", parts.ToArray());
         }
 
+        /// <summary>The allowed (sheet) thickness within tolerance of t, or t itself: 5.9 -> 6.</summary>
+        public static double Nominal(double t, LaserConfig c)
+        {
+            foreach (double a in c.AllowedThicknesses) if (Math.Abs(t - a) <= c.ThicknessTolerance + 1e-9) return a;
+            return t;
+        }
+
         static bool Allowed(double t, LaserConfig c)
         {
             foreach (double a in c.AllowedThicknesses) if (Math.Abs(t - a) <= c.ThicknessTolerance) return true;
@@ -58,7 +65,8 @@ namespace LaserDxf.Core
             double measured = run.Analysis.Thickness * run.Profile.UnitScale;
             string attr = run.Identity.Thickness;
             double value = ParseThickness(attr);
-            csvThickness = Fmt.N(double.IsNaN(value) ? measured : value, 2) + "mm"; // e.g. "6mm"
+            // The sheet thickness, e.g. "6mm" (a measured 5.9 within tolerance of 6 is reported as 6).
+            csvThickness = Fmt.N(Nominal(double.IsNaN(value) ? measured : value, c), 2) + "mm";
             bool check = c.AllowedThicknesses.Count > 0;
 
             if (double.IsNaN(value))
@@ -129,6 +137,61 @@ namespace LaserDxf.Core
             if (name.Length == 0 || name.Equals(".csv", StringComparison.OrdinalIgnoreCase)) name = "LaserDxf_batch";
             if (!name.EndsWith(".csv", StringComparison.OrdinalIgnoreCase)) name += ".csv";
             return name;
+        }
+
+        static string Letters(string s)
+        {
+            var sb = new StringBuilder();
+            foreach (char ch in (s ?? "").ToLowerInvariant()) if (ch >= 'a' && ch <= 'z') sb.Append(ch);
+            return sb.ToString();
+        }
+
+        /// <summary>Picks the request-list template among the files in its folder: the exact name, else
+        /// a forgiving match (case, spaces, spelling such as "Requst", a doubled ".xlsx.xlsx"), else any
+        /// single "Jig Part..." workbook. Returns the file name or null; message explains either way.</summary>
+        public static string FindTemplate(string wanted, IList<string> files, out string message)
+        {
+            message = "";
+            string wantedName = System.IO.Path.GetFileName(wanted);
+            foreach (string f in files) if (string.Equals(f, wantedName, StringComparison.OrdinalIgnoreCase)) return f;
+
+            var xlsx = new List<string>();
+            var xls = new List<string>();
+            foreach (string f in files)
+            {
+                if (f.StartsWith("~$")) continue; // Excel's lock file while the workbook is open
+                if (f.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase)) xlsx.Add(f);
+                else if (f.EndsWith(".xls", StringComparison.OrdinalIgnoreCase)) xls.Add(f);
+            }
+            string target = Letters(System.IO.Path.GetFileNameWithoutExtension(wantedName)).Replace("requst", "request");
+            Func<string, string> key = delegate (string f)
+            {
+                string n = f;
+                while (n.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase)) n = n.Substring(0, n.Length - 5);
+                return Letters(n).Replace("requst", "request");
+            };
+            var close = new List<string>();
+            foreach (string f in xlsx) if (key(f) == target) close.Add(f);
+            if (close.Count == 0)
+                foreach (string f in xlsx) if (key(f).StartsWith("jigpart")) close.Add(f);
+            if (close.Count == 1)
+            {
+                message = "Request list: using the template \"" + close[0] + "\" (looked for \"" + wantedName + "\").";
+                return close[0];
+            }
+            if (close.Count > 1)
+            {
+                message = "Request list not written: several possible templates (" + string.Join(", ", close.ToArray()) + ") - set requestList.template to the one to use.";
+                return null;
+            }
+            var oldFormat = new List<string>();
+            foreach (string f in xls) if (key(f.Substring(0, f.Length - 4)).StartsWith("jigpart") || key(f.Substring(0, f.Length - 4)) == target) oldFormat.Add(f);
+            if (oldFormat.Count > 0)
+                message = "Request list not written: \"" + oldFormat[0] + "\" is an old .xls workbook - open it in Excel and use Save As > Excel Workbook (.xlsx).";
+            else
+                message = "Request list not written: no template \"" + wantedName + "\" found." +
+                          (xlsx.Count > 0 ? " Workbooks in that folder: " + string.Join(", ", xlsx.ToArray()) + "." : " There are no .xlsx workbooks in that folder.");
+            return null;
         }
 
         /// <summary>Parses CSV text (quoted fields, doubled quotes, CRLF/LF, optional BOM).</summary>

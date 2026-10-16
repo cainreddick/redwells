@@ -184,3 +184,40 @@ namespace LaserDxf.Tests
         }
     }
 }
+
+
+namespace LaserDxf.Tests
+{
+    using System.Collections.Generic;
+    using LaserDxf.Core;
+
+    public static class TemplateLookupTests
+    {
+        static string Find(params string[] files)
+        {
+            string msg;
+            return Batch.FindTemplate(@"C:\nx_settings\Jig Part Request List.xlsx", new List<string>(files), out msg) ?? "null: " + msg;
+        }
+
+        public static void TestFindTemplate()
+        {
+            TestMain.Check(Find("LaserDxf.cs", "Jig Part Request List.xlsx") == "Jig Part Request List.xlsx", "exact name");
+            TestMain.Check(Find("jig part request list.XLSX") == "jig part request list.XLSX", "case");
+            TestMain.Check(Find("Jig Part Requst List.xlsx") == "Jig Part Requst List.xlsx", "the template's own spelling");
+            TestMain.Check(Find("Jig Part Request List.xlsx.xlsx") == "Jig Part Request List.xlsx.xlsx", "doubled extension (hidden in Explorer)");
+            TestMain.Check(Find("Jig_Part_Request_List_v2.xlsx", "LaserDxf.config.json") == "Jig_Part_Request_List_v2.xlsx", "any single Jig Part workbook");
+            TestMain.Check(Find("~$Jig Part Request List.xlsx", "other.xlsx").Contains("other.xlsx"), "Excel lock file ignored, folder contents listed: " + Find("~$Jig Part Request List.xlsx", "other.xlsx"));
+            TestMain.Check(Find("Jig Part Request List.xls").Contains("old .xls"), "old format explained");
+            TestMain.Check(Find("Jig Part A.xlsx", "Jig Part B.xlsx").Contains("several"), "ambiguous: asks to choose");
+            TestMain.Check(Find().Contains("no .xlsx"), "empty folder");
+        }
+
+        public static void TestNominalThickness()
+        {
+            var c = new LaserConfig();
+            TestMain.Near(Batch.Nominal(5.9, c), 6, 0, "5.9 -> 6");
+            TestMain.Near(Batch.Nominal(3.05, c), 3, 0, "3.05 -> 3");
+            TestMain.Near(Batch.Nominal(3.9, c), 3.9, 0, "3.9 stays (not near 6 or 3)");
+        }
+    }
+}
