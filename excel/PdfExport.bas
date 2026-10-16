@@ -25,8 +25,10 @@ Public Sub ExportSelectionToPDF()
     Set rng = Selection
     Set ws = rng.Worksheet
 
-    ' Suggest "<Sheet name> <date time>.pdf" next to the workbook (or in the default folder if unsaved)
-    defaultName = CleanFileName(ws.Name & " " & Format(Now, "yyyy-mm-dd hhmm")) & ".pdf"
+    ' Suggest "<workbook name>.pdf" next to the workbook (or in the default folder if unsaved)
+    defaultName = ws.Parent.Name
+    If InStrRev(defaultName, ".") > 0 Then defaultName = Left$(defaultName, InStrRev(defaultName, ".") - 1)
+    defaultName = CleanFileName(defaultName) & ".pdf"
     If Len(ws.Parent.Path) > 0 Then defaultName = ws.Parent.Path & Application.PathSeparator & defaultName
 
     savePath = Application.GetSaveAsFilename( _

@@ -5,8 +5,8 @@
 When you run it, it:
 
 1. Checks you've selected cells (not a chart or shape).
-2. Opens a Save As box with a suggested name, `<Sheet name> <yyyy-mm-dd hhmm>.pdf`, in the
-   same folder as the workbook.
+2. Opens a Save As box named after the file you're in (e.g. `S180-06068-37002-1.csv`
+   becomes `S180-06068-37002-1.pdf`), in the same folder as that file.
 3. Asks before overwriting an existing file.
 4. Scales the selection to fit one page across, exports it, then puts the sheet's page
    settings back the way they were.
