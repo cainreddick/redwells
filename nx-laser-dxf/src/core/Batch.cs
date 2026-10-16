@@ -15,7 +15,7 @@ namespace LaserDxf.Core
         public ExportRun Run;
         public BatchStatus Status = BatchStatus.Exported;
         public string Reason = "";
-        /// <summary>Thickness written to the CSV: the attribute if present, otherwise the measured value.</summary>
+        /// <summary>Thickness for the CSV, e.g. "6mm": the attribute if present, otherwise the measured value.</summary>
         public string Thickness = "";
     }
 
@@ -32,31 +32,44 @@ namespace LaserDxf.Core
             return d;
         }
 
-        /// <summary>Applies the thickness rule: the plate is exported only if its thickness attribute
-        /// equals batch.requiredThickness (0 = no check). A missing attribute, or one that disagrees
-        /// with the measured thickness, only gives a warning. Returns false with a reason to skip.</summary>
+        static string List(List<double> l)
+        {
+            var parts = new List<string>();
+            foreach (double d in l) parts.Add(Fmt.N(d, 2));
+            return string.Join(" or ", parts.ToArray());
+        }
+
+        static bool Allowed(double t, LaserConfig c)
+        {
+            foreach (double a in c.AllowedThicknesses) if (Math.Abs(t - a) <= c.ThicknessTolerance) return true;
+            return false;
+        }
+
+        /// <summary>Applies the thickness rule: the plate is exported only if its thickness attribute is one
+        /// of batch.allowedThicknesses (empty = no check). A missing attribute, or one that disagrees with
+        /// the measured thickness, only gives a warning. Returns false with a reason to skip.</summary>
         public static bool CheckThickness(ExportRun run, LaserConfig c, out string reason, out string csvThickness)
         {
             reason = "";
             double measured = run.Analysis.Thickness * run.Profile.UnitScale;
             string attr = run.Identity.Thickness;
             double value = ParseThickness(attr);
-            csvThickness = double.IsNaN(value) ? Fmt.N(measured, 2) : attr;
-            double tol = c.ThicknessTolerance;
+            csvThickness = Fmt.N(double.IsNaN(value) ? measured : value, 2) + "mm"; // e.g. "6mm"
+            bool check = c.AllowedThicknesses.Count > 0;
 
             if (double.IsNaN(value))
             {
                 run.Warnings.Add("Thickness attribute " + c.ThicknessAttr + " is " + (attr.Length == 0 ? "missing" : "\"" + attr + "\" (not a number)") +
                                  " - measured " + Fmt.N(measured, 2) + " mm.");
-                if (c.RequiredThickness > 0 && Math.Abs(measured - c.RequiredThickness) > tol)
-                    run.Warnings.Add("Measured thickness " + Fmt.N(measured, 2) + " mm is not the required " + Fmt.N(c.RequiredThickness, 2) + " mm.");
+                if (check && !Allowed(measured, c))
+                    run.Warnings.Add("Measured thickness " + Fmt.N(measured, 2) + " mm is not " + List(c.AllowedThicknesses) + " mm.");
                 return true;
             }
-            if (Math.Abs(value - measured) > tol)
+            if (Math.Abs(value - measured) > c.ThicknessTolerance)
                 run.Warnings.Add("Thickness attribute says " + Fmt.N(value, 2) + " mm but the plate measures " + Fmt.N(measured, 2) + " mm.");
-            if (c.RequiredThickness > 0 && Math.Abs(value - c.RequiredThickness) > tol)
+            if (check && !Allowed(value, c))
             {
-                reason = "thickness " + Fmt.N(value, 2) + " mm (" + c.ThicknessAttr.Title + "), batch is for " + Fmt.N(c.RequiredThickness, 2) + " mm plates";
+                reason = "thickness " + Fmt.N(value, 2) + " mm (" + c.ThicknessAttr.Title + "), batch exports " + List(c.AllowedThicknesses) + " mm plates";
                 return false;
             }
             return true;
@@ -69,17 +82,31 @@ namespace LaserDxf.Core
             return "\"" + s.Replace("\"", "\"\"") + "\"";
         }
 
-        /// <summary>CSV for the laser shop: one row per exported plate.</summary>
-        public static string CsvSummary(List<BatchItem> items)
+        /// <summary>CSV for the laser shop: one row per exported plate, columns from batch.csvColumns.</summary>
+        public static string CsvSummary(List<BatchItem> items, LaserConfig c)
         {
             var sb = new StringBuilder();
-            sb.Append("ID,Revision,Name,Material,Thickness,DXF path\r\n");
-            foreach (var it in items)
+            var headers = new List<string>();
+            foreach (var col in c.CsvColumns) headers.Add(Csv(col.Key));
+            sb.Append(string.Join(",", headers.ToArray())).Append("\r\n");
+            // Grouped by thickness (thickest first), then by part number - the order the laser shop works in.
+            var rows = new List<BatchItem>();
+            foreach (var it in items) if (it.Status == BatchStatus.Exported) rows.Add(it);
+            rows.Sort(delegate (BatchItem x, BatchItem y)
             {
-                if (it.Status != BatchStatus.Exported) continue;
-                PartIdentity id = it.Run.Identity;
-                sb.Append(Csv(id.Id)).Append(',').Append(Csv(id.RevisionRaw)).Append(',').Append(Csv(id.Name)).Append(',')
-                  .Append(Csv(id.Material)).Append(',').Append(Csv(it.Thickness)).Append(',').Append(Csv(it.Run.OutputPath)).Append("\r\n");
+                double tx = ParseThickness(x.Thickness), ty = ParseThickness(y.Thickness);
+                if (Math.Abs(tx - ty) > 1e-9) return ty.CompareTo(tx);
+                return string.Compare(x.Run.Identity.Id, y.Run.Identity.Id, StringComparison.OrdinalIgnoreCase);
+            });
+            foreach (var it in rows)
+            {
+                Dictionary<string, string> t = it.Run.Identity.Tokens();
+                t["THICKNESS"] = it.Thickness;
+                t["DXF"] = it.Run.OutputPath;
+                t["DXFNAME"] = it.Run.FileName;
+                var cells = new List<string>();
+                foreach (var col in c.CsvColumns) cells.Add(Csv(Identity.Format(col.Value, t, null)));
+                sb.Append(string.Join(",", cells.ToArray())).Append("\r\n");
             }
             return sb.ToString();
         }

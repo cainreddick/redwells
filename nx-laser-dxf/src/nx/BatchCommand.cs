@@ -159,7 +159,7 @@ namespace LaserDxf.Nx
                 try
                 {
                     csvPath = Path.Combine(folder, "LaserDxf_batch_" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".csv");
-                    File.WriteAllText(csvPath, Batch.CsvSummary(items), new UTF8Encoding(true)); // BOM so Excel reads UTF-8
+                    File.WriteAllText(csvPath, Batch.CsvSummary(items, cfg), new UTF8Encoding(true)); // BOM so Excel reads UTF-8
                 }
                 catch (Exception ex)
                 {

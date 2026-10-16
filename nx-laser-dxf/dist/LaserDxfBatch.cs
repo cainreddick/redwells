@@ -181,7 +181,7 @@ namespace LaserDxf.Nx
                 try
                 {
                     csvPath = Path.Combine(folder, "LaserDxf_batch_" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".csv");
-                    File.WriteAllText(csvPath, Batch.CsvSummary(items), new UTF8Encoding(true)); // BOM so Excel reads UTF-8
+                    File.WriteAllText(csvPath, Batch.CsvSummary(items, cfg), new UTF8Encoding(true)); // BOM so Excel reads UTF-8
                 }
                 catch (Exception ex)
                 {
@@ -2317,7 +2317,7 @@ namespace LaserDxf.Core
         public ExportRun Run;
         public BatchStatus Status = BatchStatus.Exported;
         public string Reason = "";
-        /// <summary>Thickness written to the CSV: the attribute if present, otherwise the measured value.</summary>
+        /// <summary>Thickness for the CSV, e.g. "6mm": the attribute if present, otherwise the measured value.</summary>
         public string Thickness = "";
     }
 
@@ -2334,31 +2334,44 @@ namespace LaserDxf.Core
             return d;
         }
 
-        /// <summary>Applies the thickness rule: the plate is exported only if its thickness attribute
-        /// equals batch.requiredThickness (0 = no check). A missing attribute, or one that disagrees
-        /// with the measured thickness, only gives a warning. Returns false with a reason to skip.</summary>
+        static string List(List<double> l)
+        {
+            var parts = new List<string>();
+            foreach (double d in l) parts.Add(Fmt.N(d, 2));
+            return string.Join(" or ", parts.ToArray());
+        }
+
+        static bool Allowed(double t, LaserConfig c)
+        {
+            foreach (double a in c.AllowedThicknesses) if (Math.Abs(t - a) <= c.ThicknessTolerance) return true;
+            return false;
+        }
+
+        /// <summary>Applies the thickness rule: the plate is exported only if its thickness attribute is one
+        /// of batch.allowedThicknesses (empty = no check). A missing attribute, or one that disagrees with
+        /// the measured thickness, only gives a warning. Returns false with a reason to skip.</summary>
         public static bool CheckThickness(ExportRun run, LaserConfig c, out string reason, out string csvThickness)
         {
             reason = "";
             double measured = run.Analysis.Thickness * run.Profile.UnitScale;
             string attr = run.Identity.Thickness;
             double value = ParseThickness(attr);
-            csvThickness = double.IsNaN(value) ? Fmt.N(measured, 2) : attr;
-            double tol = c.ThicknessTolerance;
+            csvThickness = Fmt.N(double.IsNaN(value) ? measured : value, 2) + "mm"; // e.g. "6mm"
+            bool check = c.AllowedThicknesses.Count > 0;
 
             if (double.IsNaN(value))
             {
                 run.Warnings.Add("Thickness attribute " + c.ThicknessAttr + " is " + (attr.Length == 0 ? "missing" : "\"" + attr + "\" (not a number)") +
                                  " - measured " + Fmt.N(measured, 2) + " mm.");
-                if (c.RequiredThickness > 0 && Math.Abs(measured - c.RequiredThickness) > tol)
-                    run.Warnings.Add("Measured thickness " + Fmt.N(measured, 2) + " mm is not the required " + Fmt.N(c.RequiredThickness, 2) + " mm.");
+                if (check && !Allowed(measured, c))
+                    run.Warnings.Add("Measured thickness " + Fmt.N(measured, 2) + " mm is not " + List(c.AllowedThicknesses) + " mm.");
                 return true;
             }
-            if (Math.Abs(value - measured) > tol)
+            if (Math.Abs(value - measured) > c.ThicknessTolerance)
                 run.Warnings.Add("Thickness attribute says " + Fmt.N(value, 2) + " mm but the plate measures " + Fmt.N(measured, 2) + " mm.");
-            if (c.RequiredThickness > 0 && Math.Abs(value - c.RequiredThickness) > tol)
+            if (check && !Allowed(value, c))
             {
-                reason = "thickness " + Fmt.N(value, 2) + " mm (" + c.ThicknessAttr.Title + "), batch is for " + Fmt.N(c.RequiredThickness, 2) + " mm plates";
+                reason = "thickness " + Fmt.N(value, 2) + " mm (" + c.ThicknessAttr.Title + "), batch exports " + List(c.AllowedThicknesses) + " mm plates";
                 return false;
             }
             return true;
@@ -2371,17 +2384,31 @@ namespace LaserDxf.Core
             return "\"" + s.Replace("\"", "\"\"") + "\"";
         }
 
-        /// <summary>CSV for the laser shop: one row per exported plate.</summary>
-        public static string CsvSummary(List<BatchItem> items)
+        /// <summary>CSV for the laser shop: one row per exported plate, columns from batch.csvColumns.</summary>
+        public static string CsvSummary(List<BatchItem> items, LaserConfig c)
         {
             var sb = new StringBuilder();
-            sb.Append("ID,Revision,Name,Material,Thickness,DXF path\r\n");
-            foreach (var it in items)
+            var headers = new List<string>();
+            foreach (var col in c.CsvColumns) headers.Add(Csv(col.Key));
+            sb.Append(string.Join(",", headers.ToArray())).Append("\r\n");
+            // Grouped by thickness (thickest first), then by part number - the order the laser shop works in.
+            var rows = new List<BatchItem>();
+            foreach (var it in items) if (it.Status == BatchStatus.Exported) rows.Add(it);
+            rows.Sort(delegate (BatchItem x, BatchItem y)
             {
-                if (it.Status != BatchStatus.Exported) continue;
-                PartIdentity id = it.Run.Identity;
-                sb.Append(Csv(id.Id)).Append(',').Append(Csv(id.RevisionRaw)).Append(',').Append(Csv(id.Name)).Append(',')
-                  .Append(Csv(id.Material)).Append(',').Append(Csv(it.Thickness)).Append(',').Append(Csv(it.Run.OutputPath)).Append("\r\n");
+                double tx = ParseThickness(x.Thickness), ty = ParseThickness(y.Thickness);
+                if (Math.Abs(tx - ty) > 1e-9) return ty.CompareTo(tx);
+                return string.Compare(x.Run.Identity.Id, y.Run.Identity.Id, StringComparison.OrdinalIgnoreCase);
+            });
+            foreach (var it in rows)
+            {
+                Dictionary<string, string> t = it.Run.Identity.Tokens();
+                t["THICKNESS"] = it.Thickness;
+                t["DXF"] = it.Run.OutputPath;
+                t["DXFNAME"] = it.Run.FileName;
+                var cells = new List<string>();
+                foreach (var col in c.CsvColumns) cells.Add(Csv(Identity.Format(col.Value, t, null)));
+                sb.Append(string.Join(",", cells.ToArray())).Append("\r\n");
             }
             return sb.ToString();
         }
@@ -2783,7 +2810,10 @@ namespace LaserDxf.Core
         };
 
         // batch (phase 2)
-        public double RequiredThickness = 6;
+        /// <summary>Plate thicknesses (mm) the batch exports; empty = any thickness.</summary>
+        public List<double> AllowedThicknesses = new List<double> { 6, 3 };
+        /// <summary>CSV columns: header + {TOKEN} template ({ID} {REV} {REVRAW} {NAME} {MATERIAL} {THICKNESS} {DXF} {DXFNAME}).</summary>
+        public List<KeyValuePair<string, string>> CsvColumns = DefaultCsvColumns();
         public double ThicknessTolerance = 0.1;
         public bool WriteCsv = true;
 
@@ -2796,6 +2826,18 @@ namespace LaserDxf.Core
             FallbackIdAttr.IgnoreValues.Add("model-plain-1");
             LabelTable.Add(new LabelRule { Label = "R6", Diameter = 5.8, Description = "6 mm reamed dowel hole - ream after cutting" });
             LabelTable.Add(new LabelRule { Label = "M8", Diameter = 5.5, Description = "M8 tapped hole - drill and tap after cutting" });
+        }
+
+        public static List<KeyValuePair<string, string>> DefaultCsvColumns()
+        {
+            var l = new List<KeyValuePair<string, string>>();
+            l.Add(new KeyValuePair<string, string>("ID", "{ID}-{REV}"));
+            l.Add(new KeyValuePair<string, string>("Revision", "{REVRAW}"));
+            l.Add(new KeyValuePair<string, string>("Name", "{NAME}"));
+            l.Add(new KeyValuePair<string, string>("Material", "{MATERIAL}"));
+            l.Add(new KeyValuePair<string, string>("Thickness", "{THICKNESS}"));
+            l.Add(new KeyValuePair<string, string>("DXF path", "{DXF}"));
+            return l;
         }
 
         public List<string> AttributeTitles()
@@ -3034,7 +3076,31 @@ namespace LaserDxf.Core
             pdf.Finish();
 
             Section b = s.Sub("batch");
-            c.RequiredThickness = b.Num("requiredThickness", c.RequiredThickness, 0, 1000);
+            List<object> thk = b.Arr("allowedThicknesses");
+            if (thk != null)
+            {
+                c.AllowedThicknesses.Clear();
+                foreach (object o in thk)
+                {
+                    if (o is double && (double)o > 0) c.AllowedThicknesses.Add((double)o);
+                    else warnings.Add("Config: batch.allowedThicknesses should be a list of numbers in mm, e.g. [6, 3]");
+                }
+            }
+            List<object> cols = b.Arr("csvColumns");
+            if (cols != null)
+            {
+                c.CsvColumns.Clear();
+                int ci = 0;
+                foreach (object o in cols)
+                {
+                    var cs = new Section(o as JObj, "batch.csvColumns[" + ci++ + "]", warnings);
+                    string header = cs.Str("header", ""), value = cs.Str("value", "");
+                    cs.Finish();
+                    if (header.Length == 0) warnings.Add("Config: batch.csvColumns entry " + (ci - 1) + " needs a header - skipped");
+                    else c.CsvColumns.Add(new KeyValuePair<string, string>(header, value));
+                }
+                if (c.CsvColumns.Count == 0) c.CsvColumns = DefaultCsvColumns();
+            }
             c.ThicknessTolerance = b.Num("thicknessTolerance", c.ThicknessTolerance, 0, 100);
             c.WriteCsv = b.Bool("writeCsv", c.WriteCsv);
             b.Finish();

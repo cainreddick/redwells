@@ -87,10 +87,10 @@ several plates in one go:
    times, still gives one DXF.
 3. The options dialog appears once and applies to every plate.
 4. Every plate is read first. Then:
-   - **Thickness rule:** only plates whose `Matl_Thk` equals `batch.requiredThickness`
-     (default 6) are exported; others are skipped with the reason. A missing `Matl_Thk`, or
-     one that disagrees with the measured thickness, only gives a warning. Set
-     `requiredThickness` to 0 to export any thickness.
+   - **Thickness rule:** only plates whose `Matl_Thk` is in `batch.allowedThicknesses`
+     (default 6 and 3 mm) are exported; others are skipped with the reason. A missing
+     `Matl_Thk`, or one that disagrees with the measured thickness, only gives a warning. Set
+     `"allowedThicknesses": []` to export any thickness.
    - **Overwrite:** one question covers every file that already exists (No = skip those
      plates).
    - **Duplicates:** two plates that would get the same file name are reported; only the
@@ -99,9 +99,17 @@ several plates in one go:
    tools, plus **Export DXF**, **Skip plate** and **Cancel batch**. Each DXF is written as
    soon as you approve it. Cancel batch keeps the plates already written.
 6. The listing shows one line per plate (exported / skipped / failed, with reasons and
-   warnings). `LaserDxf_batch_<date-time>.csv` is written next to the DXFs, with columns
-   ID, Revision, Name, Material, Thickness and DXF path. Per-plate details go to the daily
-   log.
+   warnings). `LaserDxf_batch_<date-time>.csv` is written next to the DXFs:
+
+   | ID | Revision | Name | Material | Thickness | DXF path |
+   |---|---|---|---|---|---|
+   | S180-06068-47002-1 | 1 | RING SUPPORT - JIG VALVE ASSEMBLY | | 6mm | C:\Laser DXF\S180-06068-47002-1.dxf |
+   | S180-06068-47003-1 | 1 | RING SUPPORT - JIG VALVE ASSEMBLY | | 3mm | C:\Laser DXF\S180-06068-47003-1.dxf |
+
+   Rows are grouped by thickness (6 mm first), then sorted by ID. The columns are set in
+   `batch.csvColumns` (header + value with `{ID}`, `{REV}`, `{REVRAW}`, `{NAME}`, `{MATERIAL}`,
+   `{THICKNESS}`, `{DXF}`, `{DXFNAME}`), so they can be renamed, reordered or dropped.
+   Per-plate details go to the daily log.
 
 Batch mode writes DXFs only (no PDF sheets). Pick-a-point placement for the part number isn't
 available in batch mode; move the part number in the preview instead.

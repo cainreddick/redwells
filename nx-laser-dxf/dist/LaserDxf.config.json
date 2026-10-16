@@ -84,10 +84,21 @@
     ]
   },
 
-  "batch": {                          // phase 2
-    "requiredThickness": 6,
+  "batch": {                          // LaserDxfBatch.cs
+    "allowedThicknesses": [6, 3],     // mm (Matl_Thk); other plates are skipped. [] = any thickness
     "thicknessTolerance": 0.1,
-    "writeCsv": true
+    "writeCsv": true,
+    // CSV columns: header + value. Placeholders: {ID} {REV} {REVRAW} {NAME} {MATERIAL}
+    // {THICKNESS} (e.g. 6mm: Matl_Thk, or the measured thickness if it's missing) {DXF} (full path) {DXFNAME}.
+    // Rows are grouped by thickness (thickest first), then sorted by part number.
+    "csvColumns": [
+      { "header": "ID",        "value": "{ID}-{REV}" },
+      { "header": "Revision",  "value": "{REVRAW}" },
+      { "header": "Name",      "value": "{NAME}" },
+      { "header": "Material",  "value": "{MATERIAL}" },
+      { "header": "Thickness", "value": "{THICKNESS}" },
+      { "header": "DXF path",  "value": "{DXF}" }
+    ]
   },
 
   "debug": {

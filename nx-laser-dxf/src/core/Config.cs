@@ -100,7 +100,10 @@ namespace LaserDxf.Core
         };
 
         // batch (phase 2)
-        public double RequiredThickness = 6;
+        /// <summary>Plate thicknesses (mm) the batch exports; empty = any thickness.</summary>
+        public List<double> AllowedThicknesses = new List<double> { 6, 3 };
+        /// <summary>CSV columns: header + {TOKEN} template ({ID} {REV} {REVRAW} {NAME} {MATERIAL} {THICKNESS} {DXF} {DXFNAME}).</summary>
+        public List<KeyValuePair<string, string>> CsvColumns = DefaultCsvColumns();
         public double ThicknessTolerance = 0.1;
         public bool WriteCsv = true;
 
@@ -113,6 +116,18 @@ namespace LaserDxf.Core
             FallbackIdAttr.IgnoreValues.Add("model-plain-1");
             LabelTable.Add(new LabelRule { Label = "R6", Diameter = 5.8, Description = "6 mm reamed dowel hole - ream after cutting" });
             LabelTable.Add(new LabelRule { Label = "M8", Diameter = 5.5, Description = "M8 tapped hole - drill and tap after cutting" });
+        }
+
+        public static List<KeyValuePair<string, string>> DefaultCsvColumns()
+        {
+            var l = new List<KeyValuePair<string, string>>();
+            l.Add(new KeyValuePair<string, string>("ID", "{ID}-{REV}"));
+            l.Add(new KeyValuePair<string, string>("Revision", "{REVRAW}"));
+            l.Add(new KeyValuePair<string, string>("Name", "{NAME}"));
+            l.Add(new KeyValuePair<string, string>("Material", "{MATERIAL}"));
+            l.Add(new KeyValuePair<string, string>("Thickness", "{THICKNESS}"));
+            l.Add(new KeyValuePair<string, string>("DXF path", "{DXF}"));
+            return l;
         }
 
         public List<string> AttributeTitles()
@@ -351,7 +366,31 @@ namespace LaserDxf.Core
             pdf.Finish();
 
             Section b = s.Sub("batch");
-            c.RequiredThickness = b.Num("requiredThickness", c.RequiredThickness, 0, 1000);
+            List<object> thk = b.Arr("allowedThicknesses");
+            if (thk != null)
+            {
+                c.AllowedThicknesses.Clear();
+                foreach (object o in thk)
+                {
+                    if (o is double && (double)o > 0) c.AllowedThicknesses.Add((double)o);
+                    else warnings.Add("Config: batch.allowedThicknesses should be a list of numbers in mm, e.g. [6, 3]");
+                }
+            }
+            List<object> cols = b.Arr("csvColumns");
+            if (cols != null)
+            {
+                c.CsvColumns.Clear();
+                int ci = 0;
+                foreach (object o in cols)
+                {
+                    var cs = new Section(o as JObj, "batch.csvColumns[" + ci++ + "]", warnings);
+                    string header = cs.Str("header", ""), value = cs.Str("value", "");
+                    cs.Finish();
+                    if (header.Length == 0) warnings.Add("Config: batch.csvColumns entry " + (ci - 1) + " needs a header - skipped");
+                    else c.CsvColumns.Add(new KeyValuePair<string, string>(header, value));
+                }
+                if (c.CsvColumns.Count == 0) c.CsvColumns = DefaultCsvColumns();
+            }
             c.ThicknessTolerance = b.Num("thicknessTolerance", c.ThicknessTolerance, 0, 100);
             c.WriteCsv = b.Bool("writeCsv", c.WriteCsv);
             b.Finish();
