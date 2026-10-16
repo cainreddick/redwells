@@ -40,14 +40,16 @@ namespace LaserDxf.Tests
                 var layer = v as DxfLayer;
                 var attr = v as AttrRef;
                 var table = v as List<LabelRule>;
+                var strings = v as List<string>;
                 if (layer != null) v = layer.Name + "/" + layer.Color;
                 else if (attr != null) v = attr + string.Join(",", attr.IgnoreValues.ToArray());
                 else if (table != null)
                 {
                     var sb = new StringBuilder();
-                    foreach (var r in table) sb.Append(r.Label + r.Diameter + r.Tolerance + r.CutDiameter + ";");
+                    foreach (var r in table) sb.Append(r.Label + r.Diameter + r.Tolerance + r.CutDiameter + r.Description + ";");
                     v = sb.ToString();
                 }
+                else if (strings != null) v = string.Join("|", strings.ToArray());
                 o.Add(f.Name, Convert.ToString(v, Fmt.Inv));
             }
             return o;
@@ -272,6 +274,106 @@ namespace LaserDxf.Tests
                 .Add("entities", (double)r.Profile.Doc.Entities.Count)
                 .Add("minEtch", (double)(r.Labels.Count + (r.Etch != null ? 1 : 0)))
                 .Add("texts", (double)(r.Config.TextMode == TextMode.Text ? r.Labels.Count + (r.Etch != null ? 1 : 0) : 0));
+        }
+    }
+}
+
+namespace LaserDxf.Tests
+{
+    using System;
+    using System.Collections.Generic;
+    using System.IO;
+    using System.Text;
+    using LaserDxf.Core;
+
+    public static class PdfTests
+    {
+        public static void TestXrefOffsetsPointAtObjects()
+        {
+            var doc = new PdfDocument { Title = "t (1)" };
+            var p = new PdfPage(297, 210);
+            p.Text(10, 10, 3, "Hole Ø5.8 (R6) \\ test", false, PdfAlign.Left);
+            p.Circle(new Vec2(50, 50), 10);
+            doc.Pages.Add(p);
+            byte[] bytes = doc.Save();
+            string s = Encoding.GetEncoding(1252).GetString(bytes);
+            int sx = s.LastIndexOf("startxref");
+            long xref = long.Parse(s.Substring(sx + 10).Split('\n')[0]);
+            TestMain.Check(s.Substring((int)xref, 4) == "xref", "startxref points at the xref table");
+            string[] rows = s.Substring((int)xref).Split('\n');
+            int count = int.Parse(rows[1].Split(' ')[1]);
+            for (int i = 1; i < count; i++)
+            {
+                long off = long.Parse(rows[2 + i].Substring(0, 10));
+                TestMain.Check(s.Substring((int)off).StartsWith(i + " 0 obj"), "xref entry " + i + " points at its object");
+            }
+            TestMain.Check(s.Contains("(Hole Ø5.8 \\(R6\\) \\\\ test) Tj"), "text escaped, Ø kept in WinAnsi");
+        }
+
+        public static void TestFontTablesComplete()
+        {
+            TestMain.Near(PdfFonts.Width("A", 10, false), 6.67, 1e-9, "Helvetica A");
+            TestMain.Near(PdfFonts.Width("~", 10, false), 5.84, 1e-9, "Helvetica table reaches ~ (95 entries)");
+            TestMain.Near(PdfFonts.Width("~", 10, true), 5.84, 1e-9, "Bold table reaches ~");
+            var lines = PdfFonts.Wrap("one two three four five six seven", 3, false, 20);
+            foreach (string l in lines) TestMain.Check(PdfFonts.Width(l, 3, false) <= 20 || !l.Contains(" "), "wrapped line fits: " + l);
+            TestMain.Check(string.Join(" ", lines.ToArray()) == "one two three four five six seven", "wrap keeps every word");
+        }
+
+        public static void TestSheetChoiceAndHoleKey()
+        {
+            TestMain.Check(LaserSheet.ScaleText(0.2) == "1:5" && LaserSheet.ScaleText(1) == "1:1" && LaserSheet.ScaleText(2) == "2:1", "scale text");
+            TestMain.Near(LaserSheet.FitScale(800, 760, 270, 130), 0.1, 1e-12, "800 mm plate on A4 view area: 1:10");
+
+            Synth s = Synth.Irregular();
+            s.M.Attributes = IdentityTests.Attrs();
+            var c = new LaserConfig();
+            ExportRun r = ExportPipeline.Prepare(s.M, s.TopFace, c, c.ToAnalysisOptions(), "t");
+            string name; double pw, ph, sc;
+            LaserSheet.ChooseSheet(r, out name, out pw, out ph, out sc);
+            TestMain.Check(name == "A3" && Math.Abs(sc - 0.2) < 1e-12, "805 mm plate: A3 at 1:5 (A4 would be 1:10), got " + name + " " + LaserSheet.ScaleText(sc));
+            List<string> key = LaserSheet.HoleKey(r);
+            string all = string.Join(" | ", key.ToArray());
+            TestMain.Check(all.Contains("R6  x3  -  6 mm reamed dowel hole") && all.Contains("M8  x2") && all.Contains("CS  x1  -  countersunk"), all);
+            TestMain.Check(all.Contains("laser cut Ø5.8"), "cut diameter in the key");
+            TestMain.Check(r.PdfFileName == "S180-06068-47009-1.pdf" && r.PdfBytes != null && r.PdfBytes.Length > 1000, "PDF made alongside the DXF");
+        }
+
+        public static void TestWritePdfSamples()
+        {
+            var samples = new List<object>();
+            // Large irregular plate (A3), a small plate (A4, 1:1) and one with hand edits.
+            Synth irr = Synth.Irregular();
+            irr.M.Attributes = IdentityTests.Attrs();
+            var c = new LaserConfig { Company = "POLAR" };
+            ExportRun big = ExportPipeline.Prepare(irr.M, irr.TopFace, c, c.ToAnalysisOptions(), "t");
+            samples.Add(Write("sheet_irregular.pdf", big, "A3"));
+
+            var small = new Synth(6);
+            small.Rectangle(120, 60);
+            small.SimpleHole(20, 30, 5.8);
+            small.SimpleHole(40, 30, 5.5);
+            small.SimpleHole(100, 30, 9);
+            small.M.Attributes = IdentityTests.Attrs();
+            ExportRun sm = ExportPipeline.Prepare(small.M, small.TopFace, c, c.ToAnalysisOptions(), "t");
+            samples.Add(Write("sheet_small.pdf", sm, "A4"));
+
+            var ed = new LayoutEditor(sm);
+            ed.Delete(sm.Labels[0]);
+            ed.SetHeight(sm.Etch, 3);
+            ed.AddLabelAt("M8", new Vec2(100 + 4.5 + 6, 30));
+            ed.Apply();
+            samples.Add(Write("sheet_small_edited.pdf", sm, "A4"));
+            File.WriteAllText(Path.Combine(TestMain.OutDir, "pdf_samples.json"), Json.Write(samples));
+        }
+
+        static JObj Write(string file, ExportRun r, string sheet)
+        {
+            File.WriteAllBytes(Path.Combine(TestMain.OutDir, file), r.PdfBytes);
+            var labels = new List<object>();
+            foreach (var t in r.Labels) if (!t.Deleted) labels.Add(t.Text);
+            return new JObj().Add("file", file).Add("sheet", sheet).Add("etch", r.Etch.Text).Add("dxf", r.FileName)
+                .Add("key", new List<object>(LaserSheet.HoleKey(r).ToArray()));
         }
     }
 }

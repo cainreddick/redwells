@@ -77,12 +77,16 @@ namespace LaserDxf.Nx
             // ---------- write the DXF ----------
             string folder = NxUtil.EnsureFolder(cfg.OutputFolder, run.Warnings);
             string path = Path.Combine(folder, run.FileName);
+            string pdfPath = run.PdfBytes != null ? Path.Combine(folder, run.PdfFileName) : "";
             run.OutputPath = path;
             bool write = true;
-            if (File.Exists(path) && cfg.AskBeforeOverwrite)
+            var existing = new List<string>();
+            if (File.Exists(path)) existing.Add(run.FileName);
+            if (pdfPath.Length > 0 && File.Exists(pdfPath)) existing.Add(run.PdfFileName);
+            if (existing.Count > 0 && cfg.AskBeforeOverwrite)
             {
                 int answer = UI.GetUI().NXMessageBox.Show(NxPlate.Title, NXMessageBox.DialogType.Question,
-                    run.FileName + " already exists in\n" + folder + "\n\nOverwrite it?");
+                    string.Join(" and ", existing.ToArray()) + (existing.Count > 1 ? " already exist in\n" : " already exists in\n") + folder + "\n\nOverwrite?");
                 write = answer == 1; // NXMessageBox: 1 = Yes, 2 = No
                 run.Notes.Add("Overwrite prompt answer code: " + answer);
             }
@@ -99,6 +103,25 @@ namespace LaserDxf.Nx
                 }
             }
             else run.Outcome = "NOT written - overwrite declined";
+
+            if (pdfPath.Length > 0)
+            {
+                run.PdfPath = pdfPath;
+                if (!write) run.PdfOutcome = "NOT written - overwrite declined";
+                else
+                {
+                    try
+                    {
+                        File.WriteAllBytes(pdfPath, run.PdfBytes);
+                        run.PdfOutcome = "written";
+                    }
+                    catch (Exception pex)
+                    {
+                        run.PdfOutcome = "NOT written";
+                        run.Warnings.Add("Could not write the PDF sheet " + pdfPath + ": " + pex.Message + " (is it open in a PDF viewer?)");
+                    }
+                }
+            }
 
             // ---------- debug output ----------
             string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");

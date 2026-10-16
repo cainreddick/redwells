@@ -100,12 +100,16 @@ namespace LaserDxf.Nx
             // ---------- write the DXF ----------
             string folder = NxUtil.EnsureFolder(cfg.OutputFolder, run.Warnings);
             string path = Path.Combine(folder, run.FileName);
+            string pdfPath = run.PdfBytes != null ? Path.Combine(folder, run.PdfFileName) : "";
             run.OutputPath = path;
             bool write = true;
-            if (File.Exists(path) && cfg.AskBeforeOverwrite)
+            var existing = new List<string>();
+            if (File.Exists(path)) existing.Add(run.FileName);
+            if (pdfPath.Length > 0 && File.Exists(pdfPath)) existing.Add(run.PdfFileName);
+            if (existing.Count > 0 && cfg.AskBeforeOverwrite)
             {
                 int answer = UI.GetUI().NXMessageBox.Show(NxPlate.Title, NXMessageBox.DialogType.Question,
-                    run.FileName + " already exists in\n" + folder + "\n\nOverwrite it?");
+                    string.Join(" and ", existing.ToArray()) + (existing.Count > 1 ? " already exist in\n" : " already exists in\n") + folder + "\n\nOverwrite?");
                 write = answer == 1; // NXMessageBox: 1 = Yes, 2 = No
                 run.Notes.Add("Overwrite prompt answer code: " + answer);
             }
@@ -122,6 +126,25 @@ namespace LaserDxf.Nx
                 }
             }
             else run.Outcome = "NOT written - overwrite declined";
+
+            if (pdfPath.Length > 0)
+            {
+                run.PdfPath = pdfPath;
+                if (!write) run.PdfOutcome = "NOT written - overwrite declined";
+                else
+                {
+                    try
+                    {
+                        File.WriteAllBytes(pdfPath, run.PdfBytes);
+                        run.PdfOutcome = "written";
+                    }
+                    catch (Exception pex)
+                    {
+                        run.PdfOutcome = "NOT written";
+                        run.Warnings.Add("Could not write the PDF sheet " + pdfPath + ": " + pex.Message + " (is it open in a PDF viewer?)");
+                    }
+                }
+            }
 
             // ---------- debug output ----------
             string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
@@ -918,6 +941,9 @@ namespace LaserDxf.Nx
 
                 var preview = new CheckBox { Text = "Preview and adjust the text before writing the DXF", Left = 14, Top = y, Width = 416, Checked = cfg.ShowPreview };
                 f.Controls.Add(preview);
+                y += 26;
+                var pdf = new CheckBox { Text = "Also write the PDF instruction sheet for the laser shop", Left = 14, Top = y, Width = 416, Checked = cfg.WritePdf };
+                f.Controls.Add(pdf);
                 y += 32;
 
                 var ok = new Button { Text = "Continue", Left = 250, Top = y, Width = 85, Height = 28, DialogResult = DialogResult.OK };
@@ -936,6 +962,7 @@ namespace LaserDxf.Nx
                 cfg.DxfVersion = version.SelectedIndex == 1 ? DxfVersion.R12 : DxfVersion.R2000;
                 if (folder.Text.Trim().Length > 0) cfg.OutputFolder = folder.Text.Trim();
                 cfg.ShowPreview = preview.Checked;
+                cfg.WritePdf = pdf.Checked;
                 return true;
             }
         }
@@ -2216,6 +2243,8 @@ namespace LaserDxf.Core
         public double Tolerance = 0.05;
         /// <summary>Optional laser cut diameter replacing the modelled one (NaN = keep).</summary>
         public double CutDiameter = double.NaN;
+        /// <summary>What the label means, for the hole key on the PDF sheet.</summary>
+        public string Description = "";
     }
 
     public sealed class LaserConfig
@@ -2248,6 +2277,7 @@ namespace LaserDxf.Core
         public bool UseHoleFeatures = true;
         public string ThreadLabelFormat = "{THREAD}";
         public string CountersinkLabel = "CS";
+        public string CountersinkDescription = "countersunk hole - countersink after cutting";
         public List<LabelRule> LabelTable = new List<LabelRule>();
 
         // etch
@@ -2266,8 +2296,25 @@ namespace LaserDxf.Core
         public AttrRef NameAttr = new AttrRef("DB_PART_NAME", "ONE4_MCAD");
         public AttrRef MaterialAttr = new AttrRef("Polar_Material", "ONE4_MCADRevision");
         public AttrRef ThicknessAttr = new AttrRef("Matl_Thk", "Materials");
+        public AttrRef DrawnByAttr = new AttrRef("DRAWN_BY", "person");
         /// <summary>If the revision attribute is missing, take it from a Teamcenter part name "ID/REV".</summary>
         public bool RevisionFromPartName = true;
+
+        // PDF instruction sheet for the laser shop
+        public bool WritePdf = true;
+        public string PdfFileNameFormat = "{ID}-{REV}.pdf";
+        public string SheetSize = "Auto";
+        public string Company = "";
+        public string SheetTitle = "LASER CUTTING INSTRUCTION";
+        public double SheetMinTextHeight = 1.8;
+        public List<string> SheetNotes = new List<string>
+        {
+            "Cut the profile and all holes from the DXF file {DXF} (layer CUT).",
+            "!ETCH ALL TEXT ON LAYER ETCH (shown blue on this sheet): the part number {ETCH} and every hole label. Do not omit any etching.",
+            "Etch on the face shown - this view is from the etch side.",
+            "Material: {MATERIAL} {THK} mm thick.",
+            "Remove all burrs and sharp edges."
+        };
 
         // batch (phase 2)
         public double RequiredThickness = 6;
@@ -2281,14 +2328,14 @@ namespace LaserDxf.Core
         public LaserConfig()
         {
             FallbackIdAttr.IgnoreValues.Add("model-plain-1");
-            LabelTable.Add(new LabelRule { Label = "R6", Diameter = 5.8 });
-            LabelTable.Add(new LabelRule { Label = "M8", Diameter = 5.5 });
+            LabelTable.Add(new LabelRule { Label = "R6", Diameter = 5.8, Description = "6 mm reamed dowel hole - ream after cutting" });
+            LabelTable.Add(new LabelRule { Label = "M8", Diameter = 5.5, Description = "M8 tapped hole - drill and tap after cutting" });
         }
 
         public List<string> AttributeTitles()
         {
             var l = new List<string>();
-            foreach (var a in new[] { IdAttr, RevisionAttr, FallbackIdAttr, NameAttr, MaterialAttr, ThicknessAttr }) l.Add(a.Title);
+            foreach (var a in new[] { IdAttr, RevisionAttr, FallbackIdAttr, NameAttr, MaterialAttr, ThicknessAttr, DrawnByAttr }) l.Add(a.Title);
             return l;
         }
 
@@ -2449,6 +2496,7 @@ namespace LaserDxf.Core
             c.UseHoleFeatures = l.Bool("useHoleFeatures", c.UseHoleFeatures);
             c.ThreadLabelFormat = l.Str("threadLabelFormat", c.ThreadLabelFormat);
             c.CountersinkLabel = l.Str("countersinkLabel", c.CountersinkLabel);
+            c.CountersinkDescription = l.Str("countersinkDescription", c.CountersinkDescription);
             List<object> table = l.Arr("table");
             if (table != null)
             {
@@ -2462,7 +2510,8 @@ namespace LaserDxf.Core
                         Label = rs.Str("label", ""),
                         Diameter = rs.Num("diameter", 0, 0, 10000),
                         Tolerance = rs.Num("tolerance", 0.05, 0, 10),
-                        CutDiameter = rs.OptNum("cutDiameter", 0.01, 10000)
+                        CutDiameter = rs.OptNum("cutDiameter", 0.01, 10000),
+                        Description = rs.Str("description", "")
                     };
                     rs.Finish();
                     if (r.Label.Length == 0 || r.Diameter <= 0)
@@ -2494,8 +2543,29 @@ namespace LaserDxf.Core
             c.NameAttr = a.Attr("name", c.NameAttr);
             c.MaterialAttr = a.Attr("material", c.MaterialAttr);
             c.ThicknessAttr = a.Attr("thickness", c.ThicknessAttr);
+            c.DrawnByAttr = a.Attr("drawnBy", c.DrawnByAttr);
             c.RevisionFromPartName = a.Bool("revisionFromPartName", c.RevisionFromPartName);
             a.Finish();
+
+            Section pdf = s.Sub("pdf");
+            c.WritePdf = pdf.Bool("enabled", c.WritePdf);
+            c.PdfFileNameFormat = pdf.Str("fileNameFormat", c.PdfFileNameFormat);
+            c.SheetSize = pdf.Str("sheet", c.SheetSize);
+            if (c.SheetSize != "Auto" && c.SheetSize != "A4" && c.SheetSize != "A3")
+            {
+                warnings.Add("Config: pdf.sheet = \"" + c.SheetSize + "\" should be Auto, A4 or A3 - using Auto");
+                c.SheetSize = "Auto";
+            }
+            c.Company = pdf.Str("company", c.Company);
+            c.SheetTitle = pdf.Str("title", c.SheetTitle);
+            c.SheetMinTextHeight = pdf.Num("minTextHeight", c.SheetMinTextHeight, 0.5, 10);
+            List<object> notes = pdf.Arr("notes");
+            if (notes != null)
+            {
+                c.SheetNotes.Clear();
+                foreach (object o in notes) if (o is string) c.SheetNotes.Add((string)o);
+            }
+            pdf.Finish();
 
             Section b = s.Sub("batch");
             c.RequiredThickness = b.Num("requiredThickness", c.RequiredThickness, 0, 1000);
@@ -3006,6 +3076,12 @@ namespace LaserDxf.Core
             if (run.Etch != null) run.Etch.IsEtch = true;
 
             run.FileName = FileNameFor(run.Identity, c, run.Warnings);
+            if (c.WritePdf)
+            {
+                string pdf = Identity.SafeFileName(Identity.Format(c.PdfFileNameFormat, run.Identity.Tokens(), run.Warnings));
+                if (!pdf.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase)) pdf += ".pdf";
+                run.PdfFileName = pdf;
+            }
             Finish(run);
             return run;
         }
@@ -3020,6 +3096,7 @@ namespace LaserDxf.Core
             foreach (var t in run.Labels) if (!t.Deleted) Annotator.Emit(doc, t, run.Config);
             if (run.Etch != null && !run.Etch.Deleted) Annotator.Emit(doc, run.Etch, run.Config);
             run.DxfText = DxfWriter.Write(doc, run.Config.DxfVersion);
+            run.PdfBytes = run.Config.WritePdf ? LaserSheet.Build(run).Save() : null;
         }
 
         public static string FileNameFor(PartIdentity id, LaserConfig c, List<string> warnings)
@@ -3058,6 +3135,11 @@ namespace LaserDxf.Core
         /// <summary>Attribute table shown when the ID or revision can't be found.</summary>
         public List<string> AttributeDump = new List<string>();
         public string FileName = "";
+        public string Date = DateTime.Now.ToString("dd/MM/yyyy");
+        public string PdfFileName = "";
+        public byte[] PdfBytes;
+        public string PdfPath = "";
+        public string PdfOutcome = "";
         public string DxfText = "";
         public string OutputPath = "";
         public string Outcome = "";
@@ -3148,6 +3230,7 @@ namespace LaserDxf.Core
                       r.Config.EtchLayer.Name + " (colour " + r.Config.EtchLayer.Color + ")");
             if (r.EditSummary.Length > 0) L.Add("Hand edits   : " + r.EditSummary);
             L.Add("Output       : " + (r.OutputPath.Length > 0 ? r.OutputPath : "-") + (r.Outcome.Length > 0 ? "   [" + r.Outcome + "]" : ""));
+            if (r.PdfPath.Length > 0) L.Add("PDF sheet    : " + r.PdfPath + "   [" + r.PdfOutcome + "]");
             if (r.Warnings.Count > 0)
             {
                 L.Add("");
@@ -3925,6 +4008,316 @@ namespace LaserDxf.Core
     }
 }
 
+// ----- core/LaserSheet.cs -----
+// The PDF instruction sheet that goes to the laser shop with the DXF: the plate as cut
+// (etching in blue, exactly as in the DXF), the etching instruction, a hole key, and a
+// title block. Landscape A4 or A3 with a border.
+namespace LaserDxf.Core
+{
+    using System;
+    using System.Collections.Generic;
+
+    public static class LaserSheet
+    {
+        const double Margin = 10;          // page edge to border
+        const double BandHeight = 62;      // notes + title block band at the bottom
+        static readonly double[] Scales = { 5, 2, 1, 0.5, 0.2, 0.1, 0.05, 0.02 }; // paper mm per model mm
+
+        sealed class Rgb
+        {
+            public double R, G, B;
+            public Rgb(double r, double g, double b) { R = r; G = g; B = b; }
+        }
+
+        static readonly Rgb Black = new Rgb(0, 0, 0);
+        static readonly Rgb Blue = new Rgb(0, 0.25, 0.85);
+        static readonly Rgb Red = new Rgb(0.8, 0, 0);
+        static readonly Rgb Grey = new Rgb(0.45, 0.45, 0.45);
+
+        public static string ScaleText(double s)
+        {
+            if (s >= 1) return Fmt.N(s, 2) + ":1";
+            return "1:" + Fmt.N(1 / s, 2);
+        }
+
+        /// <summary>Largest standard scale at which a plate of size w x h fits the area.</summary>
+        public static double FitScale(double w, double h, double areaW, double areaH)
+        {
+            foreach (double s in Scales)
+                if (w * s <= areaW && h * s <= areaH) return s;
+            return Math.Min(areaW / Math.Max(w, 1), areaH / Math.Max(h, 1));
+        }
+
+        static void ViewArea(double pw, double ph, out double x, out double y, out double w, out double h)
+        {
+            x = Margin + 6;
+            y = Margin + BandHeight + 10;
+            w = pw - 2 * Margin - 12;
+            h = ph - 2 * Margin - BandHeight - 22;
+        }
+
+        /// <summary>A4, unless the plate would be drawn smaller than 1:1 there and A3 shows it larger.</summary>
+        public static void ChooseSheet(ExportRun run, out string name, out double pw, out double ph, out double scale)
+        {
+            string want = run.Config.SheetSize.ToUpperInvariant();
+            double w = run.Profile.Width, h = run.Profile.Height;
+            double ax, ay, aw, ah;
+            ViewArea(297, 210, out ax, out ay, out aw, out ah);
+            double s4 = FitScale(w, h, aw, ah);
+            ViewArea(420, 297, out ax, out ay, out aw, out ah);
+            double s3 = FitScale(w, h, aw, ah);
+            // A3 only when A4 would have to shrink the plate and A3 shows it larger.
+            bool a3 = want == "A3" || (want != "A4" && s4 < 1 - 1e-9 && s3 > s4 * 1.01);
+            name = a3 ? "A3" : "A4";
+            pw = a3 ? 420 : 297;
+            ph = a3 ? 297 : 210;
+            scale = a3 ? s3 : s4;
+        }
+
+        public static PdfDocument Build(ExportRun run)
+        {
+            LaserConfig c = run.Config;
+            string sheetName;
+            double pw, ph, s;
+            ChooseSheet(run, out sheetName, out pw, out ph, out s);
+            var page = new PdfPage(pw, ph);
+            var doc = new PdfDocument { Title = run.EtchText + " laser cutting instruction", Author = run.Identity.DrawnBy, Subject = run.FileName };
+            doc.Pages.Add(page);
+
+            // Border.
+            Color(page, Black, 0.5);
+            page.Rect(Margin, Margin, pw - 2 * Margin, ph - 2 * Margin, false, true);
+
+            // ---------- the plate ----------
+            double vx, vy, vw, vh;
+            ViewArea(pw, ph, out vx, out vy, out vw, out vh);
+            double ox = vx + (vw - run.Profile.Width * s) / 2, oy = vy + (vh - run.Profile.Height * s) / 2;
+            Func<Vec2, Vec2> P = delegate (Vec2 m) { return new Vec2(ox + m.X * s, oy + m.Y * s); };
+
+            page.Text(vx, ph - Margin - 7, 3.2, "VIEW FROM THE ETCH FACE   -   SCALE " + ScaleText(s) + "   -   DO NOT SCALE: USE THE DXF FOR ALL GEOMETRY", true, PdfAlign.Left);
+
+            Color(page, Black, 0.35);
+            foreach (DxfEntity e in run.Profile.CutEntities) DrawEntity(page, e, P, s);
+
+            Color(page, Blue, 0.25);
+            foreach (PlacedText t in AllText(run)) DrawEtchText(page, t, P, s, c.SheetMinTextHeight);
+
+            // ---------- bottom band: notes (left) and title block (right) ----------
+            double titleW = pw >= 400 ? 175 : 140;
+            double bandY = Margin, bandX = Margin, bandW = pw - 2 * Margin;
+            Color(page, Black, 0.5);
+            page.Line(new Vec2(bandX, bandY + BandHeight), new Vec2(bandX + bandW, bandY + BandHeight));
+            double tbX = bandX + bandW - titleW;
+            page.Line(new Vec2(tbX, bandY), new Vec2(tbX, bandY + BandHeight));
+
+            DrawNotes(page, run, bandX + 3, bandY + BandHeight - 5, tbX - bandX - 6, bandY + 2);
+            DrawTitleBlock(page, run, tbX, bandY, titleW, BandHeight, ScaleText(s), sheetName);
+            return doc;
+        }
+
+        static void Color(PdfPage p, Rgb c, double width)
+        {
+            p.Stroke(c.R, c.G, c.B, width);
+            p.Fill(c.R, c.G, c.B);
+        }
+
+        static IEnumerable<PlacedText> AllText(ExportRun run)
+        {
+            foreach (var t in run.Labels) if (!t.Deleted) yield return t;
+            if (run.Etch != null && !run.Etch.Deleted) yield return run.Etch;
+        }
+
+        static void DrawEntity(PdfPage page, DxfEntity e, Func<Vec2, Vec2> P, double s)
+        {
+            var line = e as DxfLine;
+            var circle = e as DxfCircle;
+            var arc = e as DxfArc;
+            var poly = e as DxfPolyline;
+            if (line != null) page.Line(P(line.A), P(line.B));
+            else if (circle != null) page.Circle(P(circle.Center), circle.Radius * s);
+            else if (arc != null)
+            {
+                double sweep = (arc.EndDeg - arc.StartDeg) % 360;
+                if (sweep <= 0) sweep += 360;
+                int n = Math.Max(4, (int)Math.Ceiling(sweep / 3));
+                var pts = new List<Vec2>();
+                for (int i = 0; i <= n; i++) pts.Add(P(arc.PointAt(arc.StartDeg + sweep * i / n)));
+                page.Polyline(pts, false);
+            }
+            else if (poly != null)
+            {
+                var pts = new List<Vec2>();
+                foreach (var q in poly.Points) pts.Add(P(q));
+                page.Polyline(pts, poly.Closed);
+            }
+        }
+
+        /// <summary>Etch text drawn with the same stroke font as the DXF. If it would print smaller
+        /// than minHeight it is enlarged so it stays readable; a hole label then grows away from its
+        /// hole (keeping a small gap) instead of over it.</summary>
+        static void DrawEtchText(PdfPage page, PlacedText t, Func<Vec2, Vec2> P, double s, double minHeight)
+        {
+            double h = Math.Max(t.Height * s, minHeight);
+            double w = StrokeFont.Measure(t.Text, h);
+            Rect2 atZero = PlacedText.BoxAt(new Vec2(0, 0), w, h, t.RotationDeg);
+            Vec2 centre = P(t.Box.Center);
+            if (h > t.Height * s + 1e-9 && t.Hole != null && t.Hole.Circle != null)
+            {
+                Vec2 hc = P(t.Hole.Circle.Center);
+                double hr = t.Hole.Circle.Radius * s;
+                Vec2 u = centre - hc;
+                double len = u.Length;
+                u = len < 1e-9 ? new Vec2(1, 0) : u * (1 / len);
+                const double gap = 0.6; // mm on paper between the hole and its label
+                for (int i = 0; i < 400; i++)
+                {
+                    Rect2 box = new Rect2(centre.X + atZero.MinX - atZero.Center.X, centre.Y + atZero.MinY - atZero.Center.Y,
+                                          centre.X + atZero.MaxX - atZero.Center.X, centre.Y + atZero.MaxY - atZero.Center.Y);
+                    if (Layout2.PointRect(hc, box) - hr >= gap) break;
+                    centre = centre + u * 0.05;
+                }
+            }
+            Vec2 origin = centre - atZero.Center;
+            foreach (var stroke in StrokeFont.Render(t.Text, origin, h, t.RotationDeg))
+                page.Polyline(stroke, false);
+        }
+
+        // ------------------------------------------------------------ notes and hole key
+
+        public static Dictionary<string, string> NoteTokens(ExportRun run)
+        {
+            Dictionary<string, string> t = run.Identity.Tokens();
+            t["DXF"] = run.FileName;
+            t["ETCH"] = run.Etch != null && !run.Etch.Deleted ? run.Etch.Text : run.EtchText;
+            t["THK"] = Fmt.N(run.Analysis.Thickness * run.Profile.UnitScale, 2);
+            return t;
+        }
+
+        /// <summary>One line per label actually on the plate: "R6  x12  6 mm reamed dowel hole (laser cut dia 5.8)".</summary>
+        public static List<string> HoleKey(ExportRun run)
+        {
+            var count = new Dictionary<string, int>();
+            var dias = new Dictionary<string, List<double>>();
+            var order = new List<string>();
+            foreach (var t in run.Labels)
+            {
+                if (t.Deleted) continue;
+                if (!count.ContainsKey(t.Text)) { count[t.Text] = 0; dias[t.Text] = new List<double>(); order.Add(t.Text); }
+                count[t.Text]++;
+                if (t.Hole != null && !double.IsNaN(t.Hole.CutDiameter))
+                {
+                    double d = Math.Round(t.Hole.CutDiameter, 3);
+                    if (!dias[t.Text].Contains(d)) dias[t.Text].Add(d);
+                }
+            }
+            var lines = new List<string>();
+            foreach (string label in order)
+            {
+                string desc = "";
+                foreach (var r in run.Config.LabelTable)
+                    if (string.Equals(r.Label, label, StringComparison.OrdinalIgnoreCase) && r.Description.Length > 0) { desc = r.Description; break; }
+                if (desc.Length == 0 && string.Equals(label, run.Config.CountersinkLabel, StringComparison.OrdinalIgnoreCase)) desc = run.Config.CountersinkDescription;
+                var ds = new List<string>();
+                foreach (double d in dias[label]) ds.Add("Ø" + Fmt.N(d, 2));
+                lines.Add(label + "  x" + count[label] + (desc.Length > 0 ? "  -  " + desc : "") +
+                          (ds.Count > 0 ? "  (laser cut " + string.Join(" / ", ds.ToArray()) + ")" : ""));
+            }
+            return lines;
+        }
+
+        static void DrawNotes(PdfPage page, ExportRun run, double x, double top, double width, double bottom)
+        {
+            LaserConfig c = run.Config;
+            const double size = 2.6, lead = 3.6;
+            double y = top;
+            Color(page, Black, 0.3);
+            page.Text(x, y, 3.2, "LASER CUTTING NOTES", true, PdfAlign.Left);
+            y -= lead + 1.2;
+
+            Dictionary<string, string> tokens = NoteTokens(run);
+            int n = 1;
+            foreach (string raw in c.SheetNotes)
+            {
+                bool strong = raw.StartsWith("!");
+                string text = Identity.Format(strong ? raw.Substring(1) : raw, tokens, null);
+                Color(page, strong ? Red : Black, 0.3);
+                string num = n++ + ".";
+                List<string> lines = PdfFonts.Wrap(text, size, strong, width - 6);
+                for (int i = 0; i < lines.Count && y > bottom + 2; i++)
+                {
+                    if (i == 0) page.Text(x, y, size, num, strong, PdfAlign.Left);
+                    page.Text(x + 6, y, size, lines[i], strong, PdfAlign.Left);
+                    y -= lead;
+                }
+            }
+
+            List<string> key = HoleKey(run);
+            if (key.Count > 0 && y > bottom + 2)
+            {
+                y -= 1;
+                Color(page, Black, 0.3);
+                page.Text(x, y, size, "HOLE LABELS (etched next to each hole, shown blue):", true, PdfAlign.Left);
+                y -= lead;
+                foreach (string k in key)
+                {
+                    if (y <= bottom + 2) { page.Text(x + 6, y + lead - 0.01, size, "...", false, PdfAlign.Left); break; }
+                    Color(page, Blue, 0.3);
+                    page.Text(x + 6, y, size, k, false, PdfAlign.Left);
+                    y -= lead;
+                }
+            }
+        }
+
+        // ------------------------------------------------------------ title block
+
+        static void DrawTitleBlock(PdfPage page, ExportRun run, double x, double y, double w, double h, string scale, string sheet)
+        {
+            LaserConfig c = run.Config;
+            PartIdentity id = run.Identity;
+            double rowH = h / 6;
+            double half = w / 2;
+            Color(page, Black, 0.3);
+            for (int i = 1; i < 6; i++) page.Line(new Vec2(x, y + i * rowH), new Vec2(x + w, y + i * rowH));
+
+            // Row 6 (top): company + sheet title
+            double r6 = y + 5 * rowH;
+            page.Line(new Vec2(x + half * 0.7, r6), new Vec2(x + half * 0.7, r6 + rowH));
+            page.Text(x + 2, r6 + rowH / 2 - 1.6, 4.5, c.Company.Length > 0 ? c.Company : " ", true, PdfAlign.Left);
+            page.Text(x + half * 0.7 + 2, r6 + rowH / 2 - 1.3, 3.6, c.SheetTitle, true, PdfAlign.Left);
+
+            Cell(page, x, y + 4 * rowH, w, rowH, "DESCRIPTION", id.Name);
+            Cell(page, x, y + 3 * rowH, half * 1.3, rowH, "PART No", id.Id, 4.2);
+            Cell(page, x + half * 1.3, y + 3 * rowH, w - half * 1.3, rowH, "REV", id.RevisionRaw.Length > 0 ? id.Revision : "-", 4.2);
+            Cell(page, x, y + 2 * rowH, half * 1.3, rowH, "MATERIAL", id.Material.Length > 0 ? id.Material : "-");
+            Cell(page, x + half * 1.3, y + 2 * rowH, w - half * 1.3, rowH, "THICKNESS", Fmt.N(run.Analysis.Thickness * run.Profile.UnitScale, 2) + " mm");
+            double third = w / 3;
+            Cell(page, x, y + rowH, third, rowH, "QTY", "");
+            Cell(page, x + third, y + rowH, third, rowH, "SCALE", scale);
+            Cell(page, x + 2 * third, y + rowH, third, rowH, "SHEET", sheet);
+            Cell(page, x, y, third, rowH, "DRAWN", id.DrawnBy);
+            Cell(page, x + third, y, third, rowH, "DATE", run.Date);
+            Cell(page, x + 2 * third, y, third, rowH, "DXF FILE", run.FileName, 2.2);
+        }
+
+        static void Cell(PdfPage page, double x, double y, double w, double h, string label, string value)
+        {
+            Cell(page, x, y, w, h, label, value, 3.0);
+        }
+
+        static void Cell(PdfPage page, double x, double y, double w, double h, string label, string value, double size)
+        {
+            page.Line(new Vec2(x, y), new Vec2(x, y + h));
+            page.Line(new Vec2(x + w, y), new Vec2(x + w, y + h));
+            Color(page, Grey, 0.3);
+            page.Text(x + 1.5, y + h - 2.6, 1.9, label, false, PdfAlign.Left);
+            Color(page, Black, 0.3);
+            string v = value ?? "";
+            while (v.Length > 1 && size > 1.2 && PdfFonts.Width(v, size, true) > w - 3) size *= 0.92; // shrink long values to fit
+            page.Text(x + 1.5, y + 1.6, size, v, true, PdfAlign.Left);
+        }
+    }
+}
+
 // ----- core/Layout2.cs -----
 // 2D layout geometry for placing text: rectangles, clearances, point-in-polygon.
 namespace LaserDxf.Core
@@ -4371,6 +4764,7 @@ namespace LaserDxf.Core
         public string Name = "";
         public string Material = "";
         public string Thickness = "";
+        public string DrawnBy = "";
         public List<string> Warnings = new List<string>();
         /// <summary>True when the ID or revision attribute could not be found.</summary>
         public bool AttributesMissing;
@@ -4384,6 +4778,7 @@ namespace LaserDxf.Core
             t["NAME"] = Name;
             t["MATERIAL"] = Material;
             t["THK"] = Thickness;
+            t["DRAWNBY"] = DrawnBy;
             return t;
         }
     }
@@ -4504,6 +4899,7 @@ namespace LaserDxf.Core
             p.Name = Find(m.Attributes, c.NameAttr) ?? "";
             p.Material = Find(m.Attributes, c.MaterialAttr) ?? "";
             p.Thickness = Find(m.Attributes, c.ThicknessAttr) ?? "";
+            p.DrawnBy = Find(m.Attributes, c.DrawnByAttr) ?? "";
             return p;
         }
 
@@ -4556,6 +4952,214 @@ namespace LaserDxf.Core
             var sb = new StringBuilder();
             foreach (char c in s) sb.Append(c < 32 || bad.IndexOf(c) >= 0 ? '_' : c);
             return sb.ToString().Trim().TrimEnd('.');
+        }
+    }
+}
+
+// ----- core/Pdf.cs -----
+// Minimal vector PDF writer (lines, curves, rectangles, Helvetica text).
+// NX journals can't pull in a PDF library, and this is all the instruction sheet needs.
+// Coordinates are millimetres from the bottom-left corner of the page.
+namespace LaserDxf.Core
+{
+    using System;
+    using System.Collections.Generic;
+    using System.Globalization;
+    using System.IO;
+    using System.Text;
+
+    public enum PdfAlign { Left, Center, Right }
+
+    public sealed class PdfPage
+    {
+        public readonly double WidthMm, HeightMm;
+        readonly StringBuilder c = new StringBuilder();
+
+        public PdfPage(double widthMm, double heightMm)
+        {
+            WidthMm = widthMm;
+            HeightMm = heightMm;
+            // Work in millimetres: scale user space by 72/25.4 points per mm.
+            c.Append("2.83464567 0 0 2.83464567 0 0 cm\n1 J 1 j\n");
+        }
+
+        internal string Content { get { return c.ToString(); } }
+
+        static string N(double v) { return Math.Round(v, 4).ToString("0.####", CultureInfo.InvariantCulture); }
+
+        public void Stroke(double r, double g, double b, double widthMm)
+        {
+            c.Append(N(r)).Append(' ').Append(N(g)).Append(' ').Append(N(b)).Append(" RG ").Append(N(widthMm)).Append(" w\n");
+        }
+
+        public void Fill(double r, double g, double b)
+        {
+            c.Append(N(r)).Append(' ').Append(N(g)).Append(' ').Append(N(b)).Append(" rg\n");
+        }
+
+        public void Line(Vec2 a, Vec2 b)
+        {
+            c.Append(N(a.X)).Append(' ').Append(N(a.Y)).Append(" m ").Append(N(b.X)).Append(' ').Append(N(b.Y)).Append(" l S\n");
+        }
+
+        public void Polyline(IList<Vec2> pts, bool closed)
+        {
+            if (pts.Count < 2) return;
+            c.Append(N(pts[0].X)).Append(' ').Append(N(pts[0].Y)).Append(" m");
+            for (int i = 1; i < pts.Count; i++) c.Append(' ').Append(N(pts[i].X)).Append(' ').Append(N(pts[i].Y)).Append(" l");
+            c.Append(closed ? " s\n" : " S\n");
+        }
+
+        public void Rect(double x, double y, double w, double h, bool fill, bool stroke)
+        {
+            if (!fill && !stroke) return;
+            c.Append(N(x)).Append(' ').Append(N(y)).Append(' ').Append(N(w)).Append(' ').Append(N(h)).Append(" re ")
+             .Append(fill && stroke ? "B" : fill ? "f" : "S").Append('\n');
+        }
+
+        /// <summary>Circle as four cubic Beziers.</summary>
+        public void Circle(Vec2 ctr, double r)
+        {
+            const double k = 0.5522847498;
+            double x = ctr.X, y = ctr.Y, d = r * k;
+            c.Append(N(x + r)).Append(' ').Append(N(y)).Append(" m\n");
+            c.Append(N(x + r)).Append(' ').Append(N(y + d)).Append(' ').Append(N(x + d)).Append(' ').Append(N(y + r)).Append(' ').Append(N(x)).Append(' ').Append(N(y + r)).Append(" c\n");
+            c.Append(N(x - d)).Append(' ').Append(N(y + r)).Append(' ').Append(N(x - r)).Append(' ').Append(N(y + d)).Append(' ').Append(N(x - r)).Append(' ').Append(N(y)).Append(" c\n");
+            c.Append(N(x - r)).Append(' ').Append(N(y - d)).Append(' ').Append(N(x - d)).Append(' ').Append(N(y - r)).Append(' ').Append(N(x)).Append(' ').Append(N(y - r)).Append(" c\n");
+            c.Append(N(x + d)).Append(' ').Append(N(y - r)).Append(' ').Append(N(x + r)).Append(' ').Append(N(y - d)).Append(' ').Append(N(x + r)).Append(' ').Append(N(y)).Append(" c S\n");
+        }
+
+        /// <summary>Single-line text; (x, y) is on the baseline. Size is the font size in mm.</summary>
+        public void Text(double x, double y, double sizeMm, string text, bool bold, PdfAlign align)
+        {
+            double w = PdfFonts.Width(text, sizeMm, bold);
+            if (align == PdfAlign.Center) x -= w / 2;
+            else if (align == PdfAlign.Right) x -= w;
+            c.Append("BT /").Append(bold ? "F2" : "F1").Append(' ').Append(N(sizeMm)).Append(" Tf ")
+             .Append(N(x)).Append(' ').Append(N(y)).Append(" Td (").Append(Escape(text)).Append(") Tj ET\n");
+        }
+
+        static string Escape(string s)
+        {
+            var sb = new StringBuilder();
+            foreach (char ch in s ?? "")
+            {
+                if (ch == '\\' || ch == '(' || ch == ')') sb.Append('\\').Append(ch);
+                else if (ch < 32) sb.Append(' ');
+                else sb.Append(ch);
+            }
+            return sb.ToString();
+        }
+    }
+
+    /// <summary>Helvetica / Helvetica-Bold advance widths (standard AFM, 1/1000 em) for text layout.</summary>
+    public static class PdfFonts
+    {
+        static readonly short[] Regular =
+        {
+            278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278,
+            556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 278, 278, 584, 584, 584, 556,
+            1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833, 722, 778,
+            667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 278, 278, 278, 469, 556,
+            333, 556, 556, 500, 556, 556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556,
+            556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334, 260, 334, 584
+        };
+
+        static readonly short[] Bold =
+        {
+            278, 333, 474, 556, 556, 889, 722, 238, 333, 333, 389, 584, 278, 333, 278, 278,
+            556, 556, 556, 556, 556, 556, 556, 556, 556, 556, 333, 333, 584, 584, 584, 611,
+            975, 722, 722, 722, 722, 667, 611, 778, 722, 278, 556, 722, 611, 833, 722, 778,
+            667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 333, 278, 333, 584, 556,
+            333, 556, 611, 556, 611, 556, 333, 611, 611, 278, 278, 556, 278, 889, 611, 611,
+            611, 611, 389, 556, 333, 611, 556, 778, 556, 556, 500, 389, 280, 389, 584
+        };
+
+        public static double Width(string s, double sizeMm, bool bold)
+        {
+            short[] t = bold ? Bold : Regular;
+            double units = 0;
+            foreach (char ch in s ?? "")
+            {
+                if (ch >= 32 && ch <= 126) units += t[ch - 32];
+                else if (ch == 'Ø' || ch == 'ø') units += 778;
+                else units += 556;
+            }
+            return units / 1000.0 * sizeMm;
+        }
+
+        /// <summary>Greedy word wrap to the given width.</summary>
+        public static List<string> Wrap(string text, double sizeMm, bool bold, double maxWidthMm)
+        {
+            var lines = new List<string>();
+            string line = "";
+            foreach (string word in (text ?? "").Split(' '))
+            {
+                string candidate = line.Length == 0 ? word : line + " " + word;
+                if (line.Length > 0 && Width(candidate, sizeMm, bold) > maxWidthMm)
+                {
+                    lines.Add(line);
+                    line = word;
+                }
+                else line = candidate;
+            }
+            if (line.Length > 0 || lines.Count == 0) lines.Add(line);
+            return lines;
+        }
+    }
+
+    public sealed class PdfDocument
+    {
+        public readonly List<PdfPage> Pages = new List<PdfPage>();
+        public string Title = "", Author = "", Subject = "";
+
+        static readonly Encoding Win1252 = Encoding.GetEncoding(1252);
+
+        public byte[] Save()
+        {
+            var ms = new MemoryStream();
+            var offsets = new List<long>();
+            Action<string> write = delegate (string s) { byte[] b = Win1252.GetBytes(s); ms.Write(b, 0, b.Length); };
+
+            // Object numbers: 1 catalog, 2 pages, 3 Helvetica, 4 Helvetica-Bold, 5 info, then page/content pairs.
+            int n = 5 + Pages.Count * 2;
+            var objects = new string[n + 1];
+            var kids = new StringBuilder();
+            for (int i = 0; i < Pages.Count; i++) kids.Append(6 + i * 2).Append(" 0 R ");
+            objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+            objects[2] = "<< /Type /Pages /Kids [" + kids.ToString().Trim() + "] /Count " + Pages.Count + " >>";
+            objects[3] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>";
+            objects[4] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>";
+            objects[5] = "<< /Title (" + Lit(Title) + ") /Author (" + Lit(Author) + ") /Subject (" + Lit(Subject) +
+                         ") /Producer (Laser DXF journal) /CreationDate (D:" + DateTime.Now.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture) + ") >>";
+            for (int i = 0; i < Pages.Count; i++)
+            {
+                PdfPage p = Pages[i];
+                double w = p.WidthMm * 72 / 25.4, h = p.HeightMm * 72 / 25.4;
+                objects[6 + i * 2] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + w.ToString("0.##", CultureInfo.InvariantCulture) + " " +
+                                     h.ToString("0.##", CultureInfo.InvariantCulture) + "] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents " + (7 + i * 2) + " 0 R >>";
+                string content = p.Content;
+                objects[7 + i * 2] = "<< /Length " + Win1252.GetByteCount(content) + " >>\nstream\n" + content + "endstream";
+            }
+
+            write("%PDF-1.4\n%âãÏÓ\n");
+            for (int i = 1; i <= n; i++)
+            {
+                offsets.Add(ms.Position);
+                write(i + " 0 obj\n" + objects[i] + "\nendobj\n");
+            }
+            long xref = ms.Position;
+            var x = new StringBuilder();
+            x.Append("xref\n0 ").Append(n + 1).Append("\n0000000000 65535 f \n");
+            foreach (long off in offsets) x.Append(off.ToString("D10", CultureInfo.InvariantCulture)).Append(" 00000 n \n");
+            x.Append("trailer\n<< /Size ").Append(n + 1).Append(" /Root 1 0 R /Info 5 0 R >>\nstartxref\n").Append(xref).Append("\n%%EOF\n");
+            write(x.ToString());
+            return ms.ToArray();
+        }
+
+        static string Lit(string s)
+        {
+            return (s ?? "").Replace("\\", "\\\\").Replace("(", "\\(").Replace(")", "\\)");
         }
     }
 }

@@ -42,6 +42,12 @@ namespace LaserDxf.Core
             if (run.Etch != null) run.Etch.IsEtch = true;
 
             run.FileName = FileNameFor(run.Identity, c, run.Warnings);
+            if (c.WritePdf)
+            {
+                string pdf = Identity.SafeFileName(Identity.Format(c.PdfFileNameFormat, run.Identity.Tokens(), run.Warnings));
+                if (!pdf.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase)) pdf += ".pdf";
+                run.PdfFileName = pdf;
+            }
             Finish(run);
             return run;
         }
@@ -56,6 +62,7 @@ namespace LaserDxf.Core
             foreach (var t in run.Labels) if (!t.Deleted) Annotator.Emit(doc, t, run.Config);
             if (run.Etch != null && !run.Etch.Deleted) Annotator.Emit(doc, run.Etch, run.Config);
             run.DxfText = DxfWriter.Write(doc, run.Config.DxfVersion);
+            run.PdfBytes = run.Config.WritePdf ? LaserSheet.Build(run).Save() : null;
         }
 
         public static string FileNameFor(PartIdentity id, LaserConfig c, List<string> warnings)

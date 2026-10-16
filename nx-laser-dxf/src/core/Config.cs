@@ -26,6 +26,8 @@ namespace LaserDxf.Core
         public double Tolerance = 0.05;
         /// <summary>Optional laser cut diameter replacing the modelled one (NaN = keep).</summary>
         public double CutDiameter = double.NaN;
+        /// <summary>What the label means, for the hole key on the PDF sheet.</summary>
+        public string Description = "";
     }
 
     public sealed class LaserConfig
@@ -58,6 +60,7 @@ namespace LaserDxf.Core
         public bool UseHoleFeatures = true;
         public string ThreadLabelFormat = "{THREAD}";
         public string CountersinkLabel = "CS";
+        public string CountersinkDescription = "countersunk hole - countersink after cutting";
         public List<LabelRule> LabelTable = new List<LabelRule>();
 
         // etch
@@ -76,8 +79,25 @@ namespace LaserDxf.Core
         public AttrRef NameAttr = new AttrRef("DB_PART_NAME", "ONE4_MCAD");
         public AttrRef MaterialAttr = new AttrRef("Polar_Material", "ONE4_MCADRevision");
         public AttrRef ThicknessAttr = new AttrRef("Matl_Thk", "Materials");
+        public AttrRef DrawnByAttr = new AttrRef("DRAWN_BY", "person");
         /// <summary>If the revision attribute is missing, take it from a Teamcenter part name "ID/REV".</summary>
         public bool RevisionFromPartName = true;
+
+        // PDF instruction sheet for the laser shop
+        public bool WritePdf = true;
+        public string PdfFileNameFormat = "{ID}-{REV}.pdf";
+        public string SheetSize = "Auto";
+        public string Company = "";
+        public string SheetTitle = "LASER CUTTING INSTRUCTION";
+        public double SheetMinTextHeight = 1.8;
+        public List<string> SheetNotes = new List<string>
+        {
+            "Cut the profile and all holes from the DXF file {DXF} (layer CUT).",
+            "!ETCH ALL TEXT ON LAYER ETCH (shown blue on this sheet): the part number {ETCH} and every hole label. Do not omit any etching.",
+            "Etch on the face shown - this view is from the etch side.",
+            "Material: {MATERIAL} {THK} mm thick.",
+            "Remove all burrs and sharp edges."
+        };
 
         // batch (phase 2)
         public double RequiredThickness = 6;
@@ -91,14 +111,14 @@ namespace LaserDxf.Core
         public LaserConfig()
         {
             FallbackIdAttr.IgnoreValues.Add("model-plain-1");
-            LabelTable.Add(new LabelRule { Label = "R6", Diameter = 5.8 });
-            LabelTable.Add(new LabelRule { Label = "M8", Diameter = 5.5 });
+            LabelTable.Add(new LabelRule { Label = "R6", Diameter = 5.8, Description = "6 mm reamed dowel hole - ream after cutting" });
+            LabelTable.Add(new LabelRule { Label = "M8", Diameter = 5.5, Description = "M8 tapped hole - drill and tap after cutting" });
         }
 
         public List<string> AttributeTitles()
         {
             var l = new List<string>();
-            foreach (var a in new[] { IdAttr, RevisionAttr, FallbackIdAttr, NameAttr, MaterialAttr, ThicknessAttr }) l.Add(a.Title);
+            foreach (var a in new[] { IdAttr, RevisionAttr, FallbackIdAttr, NameAttr, MaterialAttr, ThicknessAttr, DrawnByAttr }) l.Add(a.Title);
             return l;
         }
 
@@ -259,6 +279,7 @@ namespace LaserDxf.Core
             c.UseHoleFeatures = l.Bool("useHoleFeatures", c.UseHoleFeatures);
             c.ThreadLabelFormat = l.Str("threadLabelFormat", c.ThreadLabelFormat);
             c.CountersinkLabel = l.Str("countersinkLabel", c.CountersinkLabel);
+            c.CountersinkDescription = l.Str("countersinkDescription", c.CountersinkDescription);
             List<object> table = l.Arr("table");
             if (table != null)
             {
@@ -272,7 +293,8 @@ namespace LaserDxf.Core
                         Label = rs.Str("label", ""),
                         Diameter = rs.Num("diameter", 0, 0, 10000),
                         Tolerance = rs.Num("tolerance", 0.05, 0, 10),
-                        CutDiameter = rs.OptNum("cutDiameter", 0.01, 10000)
+                        CutDiameter = rs.OptNum("cutDiameter", 0.01, 10000),
+                        Description = rs.Str("description", "")
                     };
                     rs.Finish();
                     if (r.Label.Length == 0 || r.Diameter <= 0)
@@ -304,8 +326,29 @@ namespace LaserDxf.Core
             c.NameAttr = a.Attr("name", c.NameAttr);
             c.MaterialAttr = a.Attr("material", c.MaterialAttr);
             c.ThicknessAttr = a.Attr("thickness", c.ThicknessAttr);
+            c.DrawnByAttr = a.Attr("drawnBy", c.DrawnByAttr);
             c.RevisionFromPartName = a.Bool("revisionFromPartName", c.RevisionFromPartName);
             a.Finish();
+
+            Section pdf = s.Sub("pdf");
+            c.WritePdf = pdf.Bool("enabled", c.WritePdf);
+            c.PdfFileNameFormat = pdf.Str("fileNameFormat", c.PdfFileNameFormat);
+            c.SheetSize = pdf.Str("sheet", c.SheetSize);
+            if (c.SheetSize != "Auto" && c.SheetSize != "A4" && c.SheetSize != "A3")
+            {
+                warnings.Add("Config: pdf.sheet = \"" + c.SheetSize + "\" should be Auto, A4 or A3 - using Auto");
+                c.SheetSize = "Auto";
+            }
+            c.Company = pdf.Str("company", c.Company);
+            c.SheetTitle = pdf.Str("title", c.SheetTitle);
+            c.SheetMinTextHeight = pdf.Num("minTextHeight", c.SheetMinTextHeight, 0.5, 10);
+            List<object> notes = pdf.Arr("notes");
+            if (notes != null)
+            {
+                c.SheetNotes.Clear();
+                foreach (object o in notes) if (o is string) c.SheetNotes.Add((string)o);
+            }
+            pdf.Finish();
 
             Section b = s.Sub("batch");
             c.RequiredThickness = b.Num("requiredThickness", c.RequiredThickness, 0, 1000);

@@ -23,6 +23,11 @@ namespace LaserDxf.Core
         /// <summary>Attribute table shown when the ID or revision can't be found.</summary>
         public List<string> AttributeDump = new List<string>();
         public string FileName = "";
+        public string Date = DateTime.Now.ToString("dd/MM/yyyy");
+        public string PdfFileName = "";
+        public byte[] PdfBytes;
+        public string PdfPath = "";
+        public string PdfOutcome = "";
         public string DxfText = "";
         public string OutputPath = "";
         public string Outcome = "";
@@ -113,6 +118,7 @@ namespace LaserDxf.Core
                       r.Config.EtchLayer.Name + " (colour " + r.Config.EtchLayer.Color + ")");
             if (r.EditSummary.Length > 0) L.Add("Hand edits   : " + r.EditSummary);
             L.Add("Output       : " + (r.OutputPath.Length > 0 ? r.OutputPath : "-") + (r.Outcome.Length > 0 ? "   [" + r.Outcome + "]" : ""));
+            if (r.PdfPath.Length > 0) L.Add("PDF sheet    : " + r.PdfPath + "   [" + r.PdfOutcome + "]");
             if (r.Warnings.Count > 0)
             {
                 L.Add("");

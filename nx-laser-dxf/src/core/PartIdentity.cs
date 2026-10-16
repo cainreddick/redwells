@@ -16,6 +16,7 @@ namespace LaserDxf.Core
         public string Name = "";
         public string Material = "";
         public string Thickness = "";
+        public string DrawnBy = "";
         public List<string> Warnings = new List<string>();
         /// <summary>True when the ID or revision attribute could not be found.</summary>
         public bool AttributesMissing;
@@ -29,6 +30,7 @@ namespace LaserDxf.Core
             t["NAME"] = Name;
             t["MATERIAL"] = Material;
             t["THK"] = Thickness;
+            t["DRAWNBY"] = DrawnBy;
             return t;
         }
     }
@@ -149,6 +151,7 @@ namespace LaserDxf.Core
             p.Name = Find(m.Attributes, c.NameAttr) ?? "";
             p.Material = Find(m.Attributes, c.MaterialAttr) ?? "";
             p.Thickness = Find(m.Attributes, c.ThicknessAttr) ?? "";
+            p.DrawnBy = Find(m.Attributes, c.DrawnByAttr) ?? "";
             return p;
         }
 

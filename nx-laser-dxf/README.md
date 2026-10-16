@@ -56,7 +56,21 @@ The design is described in [ARCHITECTURE.md](ARCHITECTURE.md).
      circles. Countersunk and counterbored holes are cut at the bore.
    - **ETCH** layer (colour 5): the hole labels and the part number. By default they are
      single-stroke vectors; set `"textMode": "Text"` for DXF TEXT entities.
-7. The listing window shows the part number and where it came from, the hole counts, what was
+7. A **PDF instruction sheet** for the laser shop is written next to the DXF
+   (`{ID}-{REV}.pdf`, switch off in the options dialog or with `pdf.enabled`). It shows:
+   - the plate as cut, viewed from the etch face, at a standard scale (A4, or A3 for large
+     plates), with all etching in **blue** exactly as in the DXF, including preview edits.
+     Etch text too small to read at the sheet's scale is printed larger, so it stays legible
+   - numbered laser-cutting notes, including a bold red "ETCH ALL TEXT ON LAYER ETCH ... do
+     not omit any etching". The notes are editable in `pdf.notes`
+   - a hole key built from the labels actually on the plate, e.g. `R6 x12 - 6 mm reamed dowel
+     hole - ream after cutting (laser cut Ø5.8)`, using each label table row's `description`
+   - a title block: company, description, part number, revision, material, thickness, a
+     blank QTY box, scale, sheet size, drawn by, date and the DXF file name
+
+   If the DXF or PDF already exists you're asked once, for both files. If the PDF is open in a
+   viewer it can't be overwritten; that's reported as a warning.
+8. The listing window shows the part number and where it came from, the hole counts, what was
    labelled and why, where the part number went, any warnings, and the output path. A
    detailed log is appended to `<outputFolder>\_logs\`.
 
@@ -91,7 +105,8 @@ as NX Open reports it (category, title, alias, value, flags), so the config can 
 ### Samples
 
 `samples/` holds DXFs generated from synthetic plates. Use them to try the format in your laser
-CAM software.
+CAM software. `sheet_irregular.pdf` (A3) and `sheet_small.pdf` (A4) are example instruction
+sheets.
 
 ## Step 1: probe (diagnostic journal)
 

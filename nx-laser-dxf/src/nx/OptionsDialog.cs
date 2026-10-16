@@ -61,6 +61,9 @@ namespace LaserDxf.Nx
 
                 var preview = new CheckBox { Text = "Preview and adjust the text before writing the DXF", Left = 14, Top = y, Width = 416, Checked = cfg.ShowPreview };
                 f.Controls.Add(preview);
+                y += 26;
+                var pdf = new CheckBox { Text = "Also write the PDF instruction sheet for the laser shop", Left = 14, Top = y, Width = 416, Checked = cfg.WritePdf };
+                f.Controls.Add(pdf);
                 y += 32;
 
                 var ok = new Button { Text = "Continue", Left = 250, Top = y, Width = 85, Height = 28, DialogResult = DialogResult.OK };
@@ -79,6 +82,7 @@ namespace LaserDxf.Nx
                 cfg.DxfVersion = version.SelectedIndex == 1 ? DxfVersion.R12 : DxfVersion.R2000;
                 if (folder.Text.Trim().Length > 0) cfg.OutputFolder = folder.Text.Trim();
                 cfg.ShowPreview = preview.Checked;
+                cfg.WritePdf = pdf.Checked;
                 return true;
             }
         }

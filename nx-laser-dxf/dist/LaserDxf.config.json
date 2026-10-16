@@ -32,10 +32,12 @@
     "useHoleFeatures": true,          // read thread size / countersink from NX Hole features first
     "threadLabelFormat": "{THREAD}",  // "M8 x 1.25" -> {THREAD} = "M8"
     "countersinkLabel": "CS",
+    "countersinkDescription": "countersunk hole - countersink after cutting",
     "table": [
       // label, modelled diameter (mm), +/- tolerance, optional laser cut diameter (null = as modelled)
-      { "label": "R6", "diameter": 5.8, "tolerance": 0.05, "cutDiameter": null },
-      { "label": "M8", "diameter": 5.5, "tolerance": 0.05, "cutDiameter": null }
+      // "description" is printed in the hole key on the PDF sheet.
+      { "label": "R6", "diameter": 5.8, "tolerance": 0.05, "cutDiameter": null, "description": "6 mm reamed dowel hole - ream after cutting" },
+      { "label": "M8", "diameter": 5.5, "tolerance": 0.05, "cutDiameter": null, "description": "M8 tapped hole - drill and tap after cutting" }
     ]
   },
 
@@ -59,7 +61,27 @@
     "name":       { "title": "DB_PART_NAME",   "category": "ONE4_MCAD" },
     "material":   { "title": "Polar_Material", "category": "ONE4_MCADRevision" },
     "thickness":  { "title": "Matl_Thk",       "category": "Materials" },
+    "drawnBy":    { "title": "DRAWN_BY",       "category": "person" },
     "revisionFromPartName": true      // no revision attribute? use the "/1" of a part name like S180-06068-47020/1
+  },
+
+  // PDF instruction sheet written next to each DXF, to send to the laser shop.
+  "pdf": {
+    "enabled": true,
+    "fileNameFormat": "{ID}-{REV}.pdf",
+    "sheet": "Auto",                  // "Auto" (A4, or A3 when it shows the plate larger), "A4" or "A3"
+    "company": "",                    // shown in the title block
+    "title": "LASER CUTTING INSTRUCTION",
+    "minTextHeight": 1.8,             // mm on paper: small etch text is enlarged on the sheet so it stays readable
+    // Notes, numbered in order. A leading "!" prints the note in bold red.
+    // Placeholders: {DXF} {ETCH} {ID} {REV} {NAME} {MATERIAL} {THK} {DRAWNBY}
+    "notes": [
+      "Cut the profile and all holes from the DXF file {DXF} (layer CUT).",
+      "!ETCH ALL TEXT ON LAYER ETCH (shown blue on this sheet): the part number {ETCH} and every hole label. Do not omit any etching.",
+      "Etch on the face shown - this view is from the etch side.",
+      "Material: {MATERIAL} {THK} mm thick.",
+      "Remove all burrs and sharp edges."
+    ]
   },
 
   "batch": {                          // phase 2
