@@ -17,6 +17,7 @@ DIST = ROOT / "dist"
 # journal file name -> entry file
 JOURNALS = {
     "LaserDxf.cs": "entry/LaserDxf.cs",
+    "LaserDxfBatch.cs": "entry/LaserDxfBatch.cs",
     "LaserDxfProbe.cs": "entry/LaserDxfProbe.cs",
 }
 CONFIG = ROOT / "config" / "LaserDxf.config.json"

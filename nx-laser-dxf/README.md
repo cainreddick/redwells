@@ -17,7 +17,8 @@ The design is described in [ARCHITECTURE.md](ARCHITECTURE.md).
 | 4. Hole labels | `dist/LaserDxf.cs` | tested in NX 2412 |
 | 5. Part number etch, options dialog, pick-a-point | `dist/LaserDxf.cs` | etch tested; dialog and pick **ready to test** |
 | 6. Preview & adjust window | `dist/LaserDxf.cs` | **ready to test** |
-| 7. NX drawing-sheet layout + export from the sheet | | planned |
+| 7. Batch export from an assembly (one DXF per plate, CSV) | `dist/LaserDxfBatch.cs` | **ready to test** |
+| 8. NX drawing-sheet layout + export from the sheet | | planned |
 
 ## Running it
 
@@ -73,6 +74,37 @@ The design is described in [ARCHITECTURE.md](ARCHITECTURE.md).
 8. The listing window shows the part number and where it came from, the hole counts, what was
    labelled and why, where the part number went, any warnings, and the output path. A
    detailed log is appended to `<outputFolder>\_logs\`.
+
+## Batch export from an assembly
+
+`dist/LaserDxfBatch.cs` (keep it in the same folder as `LaserDxf.cs` and the config) exports
+several plates in one go:
+
+1. Open the jig assembly and play `LaserDxfBatch.cs`.
+2. Select **one face on each plate**: the face to view it from, i.e. the etch/countersink side.
+   You can also select plate bodies, in which case the face is picked automatically. Plates
+   can be anywhere in the assembly. Picking a part twice, or a part that's used several
+   times, still gives one DXF.
+3. The options dialog appears once and applies to every plate.
+4. Every plate is read first. Then:
+   - **Thickness rule:** only plates whose `Matl_Thk` equals `batch.requiredThickness`
+     (default 6) are exported; others are skipped with the reason. A missing `Matl_Thk`, or
+     one that disagrees with the measured thickness, only gives a warning. Set
+     `requiredThickness` to 0 to export any thickness.
+   - **Overwrite:** one question covers every file that already exists (No = skip those
+     plates).
+   - **Duplicates:** two plates that would get the same file name are reported; only the
+     first is written.
+5. The **preview** opens for each plate in turn ("plate 2 of 5"), with the same editing
+   tools, plus **Export DXF**, **Skip plate** and **Cancel batch**. Each DXF is written as
+   soon as you approve it. Cancel batch keeps the plates already written.
+6. The listing shows one line per plate (exported / skipped / failed, with reasons and
+   warnings). `LaserDxf_batch_<date-time>.csv` is written next to the DXFs, with columns
+   ID, Revision, Name, Material, Thickness and DXF path. Per-plate details go to the daily
+   log.
+
+Batch mode writes DXFs only (no PDF sheets). Pick-a-point placement for the part number isn't
+available in batch mode; move the part number in the preview instead.
 
 ### How holes are labelled
 

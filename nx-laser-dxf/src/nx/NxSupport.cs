@@ -21,6 +21,18 @@ namespace LaserDxf.Nx
             return s ?? "unknown";
         }
 
+        /// <summary>Components in an assembly are often only partially loaded, which hides their
+        /// features (so Hole-feature data would be missing). Loads the part fully if needed.</summary>
+        public static void EnsureFullyLoaded(Part part, List<string> log)
+        {
+            object full = NxReflect.Member(part, "IsFullyLoaded");
+            if (!(full is bool) || (bool)full) return;
+            object status = NxReflect.Call(part, "LoadThisPartFully");
+            var d = status as IDisposable;
+            if (d != null) d.Dispose();
+            log.Add(PartLabel(part) + ": was partially loaded - loaded fully to read its features.");
+        }
+
         public static string SafeFileName(string s)
         {
             var sb = new StringBuilder();

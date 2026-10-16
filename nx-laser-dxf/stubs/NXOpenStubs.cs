@@ -112,6 +112,9 @@ namespace NXOpen
             public int Type, Subtype, SolidBodySubtype;
             public MaskTriple(int type, int subtype, int solidBodySubtype) { Type = type; Subtype = subtype; SolidBodySubtype = solidBodySubtype; }
         }
+        public Response SelectTaggedObjects(string message, string title, SelectionScope scope, SelectionAction action,
+            bool includeFeatures, bool keepHighlighted, MaskTriple[] maskArray, out TaggedObject[] selectedObjects)
+        { selectedObjects = null; return Response.Cancel; }
         public Response SelectTaggedObject(string message, string title, SelectionScope scope, SelectionAction action,
             bool includeFeatures, bool keepHighlighted, MaskTriple[] maskArray, out TaggedObject selectedObject, out Point3d cursor)
         { selectedObject = null; cursor = new Point3d(); return Response.Cancel; }

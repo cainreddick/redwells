@@ -231,7 +231,10 @@ parts.
 6. Preview & adjust window: `LayoutEditor` (pure, unit-tested) + a thin WinForms view
    (smoke-tested under Mono/Xvfb). `ExportPipeline` is split into `Prepare` (geometry + layout)
    and `Finish` (DXF from the cut geometry + the current, possibly hand-edited, text).
-7. *Planned*: NX drawing-sheet route. One journal lays the profile and text out on a drawing
+7. Batch export (`LaserDxfBatch.cs`): `NxPlate.SelectMany` (one plate per component part),
+   `PlateJobs` (prepare / write, shared with the single-plate journal), `Batch` (thickness rule,
+   CSV, report; pure and unit-tested), preview in batch mode (Export / Skip / Cancel batch).
+8. *Planned*: NX drawing-sheet route. One journal lays the profile and text out on a drawing
    sheet for editing with NX drafting tools, and a second exports that sheet with our DXF
    writer.
 

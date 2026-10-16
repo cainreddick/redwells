@@ -135,6 +135,20 @@ namespace LaserDxf.Tests
             ed.Apply();
             Console.WriteLine("preview returned " + ok + "; " + run.EditSummary + "; target labelled: " + (target.Label == "R6"));
 
+            // Batch preview: title shows the plate number; "Skip plate" returns Skip.
+            Synth s2 = Synth.Irregular();
+            s2.M.Attributes = IdentityTests.Attrs();
+            ExportRun run2 = ExportPipeline.Prepare(s2.M, s2.TopFace, c, c.ToAnalysisOptions(), "smoke");
+            After(1200, delegate
+            {
+                Form bp = Top("Laser DXF preview - plate 2 of 5");
+                Shot("preview_batch.png");
+                bp.GetType().GetMethod("TrySkip", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(bp, null);
+            });
+            PreviewResult br = PreviewWindow.ShowBatch(new LayoutEditor(run2), "S180-06068-47009  (S180-06068-47009-1.dxf)", 2, 5);
+            Console.WriteLine("batch preview returned " + br);
+            smokeOk &= br == PreviewResult.Skip;
+
             After(1000, delegate
             {
                 Shot("options_dialog.png");

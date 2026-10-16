@@ -20,8 +20,9 @@ public class LaserDxfJournal
     }
 }
 
-// ----- nx/ExportCommand.cs -----
-// Main journal: select the plate, write the DXF, report.
+// ----- nx/BatchCommand.cs -----
+// Batch journal: pick one face (or the body) on each plate in an assembly and
+// export a DXF per plate. DXF only - no PDF sheets in batch mode.
 namespace LaserDxf.Nx
 {
     using System;
@@ -29,12 +30,195 @@ namespace LaserDxf.Nx
     using System.IO;
     using System.Text;
     using NXOpen;
-    using NXOpen.UF;
+    using LaserDxf.Core;
+
+    public static class BatchCommand
+    {
+        public const string Version = ExportCommand.Version;
+
+        public static void Run()
+        {
+            NxPlate.Run(RunInner);
+        }
+
+        static void RunInner(Session s, ListingWindow lw, List<string> log)
+        {
+            var cfgWarnings = new List<string>();
+            LaserConfig cfg = NxPlate.LoadConfig(s, cfgWarnings);
+
+            List<PlateSelection> plates = NxPlate.SelectMany(s, log);
+            if (plates == null) return;
+
+            if (cfg.ShowOptionsDialog && !OptionsDialog.Show(cfg, plates.Count + " plate(s)"))
+            {
+                lw.WriteLine("Laser DXF batch: cancelled.");
+                return;
+            }
+            cfg.WritePdf = false; // batch writes DXFs only
+            if (string.Equals(cfg.EtchPlacement, "Pick", StringComparison.OrdinalIgnoreCase))
+            {
+                cfgWarnings.Add("Picking the part-number position isn't available in batch mode - placed automatically (move it in the preview if needed).");
+                cfg.EtchPlacement = "Auto";
+            }
+            string folder = NxUtil.EnsureFolder(cfg.OutputFolder, cfgWarnings);
+
+            // 1. Read and lay out every plate first, so file names (and clashes) are known up front.
+            var items = new List<BatchItem>();
+            var jobs = new Dictionary<BatchItem, PlateJob>();
+            foreach (PlateSelection sel in plates)
+            {
+                var item = new BatchItem { PartLabel = NxUtil.PartLabel(sel.Part) };
+                items.Add(item);
+                try
+                {
+                    NxUtil.EnsureFullyLoaded(sel.Part, log);
+                    PlateJob job = PlateJobs.Prepare(s, cfg, sel, null, new List<string>());
+                    job.Run.Version = Version;
+                    item.Run = job.Run;
+                    jobs[item] = job;
+                    string reason, thickness;
+                    if (!Batch.CheckThickness(job.Run, cfg, out reason, out thickness))
+                    {
+                        item.Status = BatchStatus.Skipped;
+                        item.Reason = reason;
+                    }
+                    item.Thickness = thickness;
+                }
+                catch (Exception ex)
+                {
+                    item.Status = BatchStatus.Failed;
+                    item.Reason = ex.Message.Replace("\n", " ");
+                }
+            }
+
+            // Two plates with the same file name would overwrite each other.
+            var byName = new Dictionary<string, BatchItem>(StringComparer.OrdinalIgnoreCase);
+            foreach (var it in items)
+            {
+                if (it.Status != BatchStatus.Exported) continue;
+                BatchItem first;
+                if (byName.TryGetValue(it.Run.FileName, out first))
+                {
+                    it.Status = BatchStatus.Skipped;
+                    it.Reason = "same file name as " + first.PartLabel + " (" + it.Run.FileName + ")";
+                }
+                else byName[it.Run.FileName] = it;
+            }
+
+            // 2. One overwrite question for all existing files.
+            var existing = new List<string>();
+            foreach (var it in items)
+                if (it.Status == BatchStatus.Exported) existing.AddRange(PlateJobs.Existing(jobs[it], folder));
+            bool overwrite = true;
+            if (existing.Count > 0 && cfg.AskBeforeOverwrite)
+            {
+                string list = string.Join("\n", existing.GetRange(0, Math.Min(existing.Count, 12)).ToArray()) + (existing.Count > 12 ? "\n..." : "");
+                int answer = UI.GetUI().NXMessageBox.Show(NxPlate.Title, NXMessageBox.DialogType.Question,
+                    existing.Count + " file(s) already exist in " + folder + ":\n" + list + "\n\nOverwrite them?\n(No = skip those plates, export the others)");
+                overwrite = answer == 1;
+            }
+            if (!overwrite)
+                foreach (var it in items)
+                    if (it.Status == BatchStatus.Exported && PlateJobs.Existing(jobs[it], folder).Count > 0)
+                    {
+                        it.Status = BatchStatus.Skipped;
+                        it.Reason = it.Run.FileName + " already exists (overwrite declined)";
+                    }
+
+            // 3. Preview and write each plate in turn.
+            int todo = 0;
+            foreach (var it in items) if (it.Status == BatchStatus.Exported) todo++;
+            int n = 0;
+            bool cancelled = false;
+            foreach (var it in items)
+            {
+                if (it.Status != BatchStatus.Exported) continue;
+                if (cancelled)
+                {
+                    it.Status = BatchStatus.Cancelled;
+                    it.Reason = "batch cancelled before this plate";
+                    continue;
+                }
+                n++;
+                PlateJob job = jobs[it];
+                if (cfg.ShowPreview)
+                {
+                    var editor = new LayoutEditor(job.Run);
+                    PreviewResult r = PreviewWindow.ShowBatch(editor, job.Run.Identity.Id + "  (" + job.Run.FileName + ")", n, todo);
+                    if (r == PreviewResult.Skip)
+                    {
+                        it.Status = BatchStatus.Skipped;
+                        it.Reason = "skipped in the preview";
+                        continue;
+                    }
+                    if (r == PreviewResult.Cancel)
+                    {
+                        cancelled = true;
+                        it.Status = BatchStatus.Cancelled;
+                        it.Reason = "batch cancelled in the preview";
+                        continue;
+                    }
+                    editor.Apply();
+                }
+                try
+                {
+                    PlateJobs.Write(job, cfg, folder, true);
+                    List<string> summary = ExportReport.Summary(job.Run);
+                    PlateJobs.AppendLog(job, cfg, folder, summary);
+                }
+                catch (Exception ex)
+                {
+                    it.Status = BatchStatus.Failed;
+                    it.Reason = ex.Message.Replace("\n", " ");
+                }
+            }
+
+            // 4. CSV for the laser shop + listing.
+            string csvPath = null;
+            int exported = 0;
+            foreach (var it in items) if (it.Status == BatchStatus.Exported) exported++;
+            if (cfg.WriteCsv && exported > 0)
+            {
+                try
+                {
+                    csvPath = Path.Combine(folder, "LaserDxf_batch_" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".csv");
+                    File.WriteAllText(csvPath, Batch.CsvSummary(items), new UTF8Encoding(true)); // BOM so Excel reads UTF-8
+                }
+                catch (Exception ex)
+                {
+                    log.Add("Could not write the CSV summary: " + ex.Message);
+                    csvPath = null;
+                }
+            }
+
+            List<string> lines = Batch.Summary(items, Version, cfg.SourcePath, csvPath);
+            var notes = new List<string>(cfgWarnings);
+            notes.AddRange(log);
+            if (notes.Count > 0)
+            {
+                lines.Add("");
+                lines.Add("Notes:");
+                foreach (string l in notes) lines.Add("  " + l);
+            }
+            lines.Add("");
+            lines.Add("Per-plate details are in " + Path.Combine(Path.Combine(folder, "_logs"), "LaserDxf_" + DateTime.Now.ToString("yyyyMMdd") + ".log"));
+            foreach (string l in lines) lw.WriteLine(l);
+        }
+    }
+}
+
+// ----- nx/ExportCommand.cs -----
+// Main journal: select the plate, preview, write the DXF, report.
+namespace LaserDxf.Nx
+{
+    using System;
+    using System.Collections.Generic;
+    using NXOpen;
     using LaserDxf.Core;
 
     public static class ExportCommand
     {
-        public const string Version = "0.5";
+        public const string Version = "0.6";
 
         public static void Run()
         {
@@ -67,21 +251,9 @@ namespace LaserDxf.Nx
                     cfgWarnings.Add("No point picked - part number placed automatically.");
             }
 
-            AnalysisOptions opt = cfg.ToAnalysisOptions();
-            if (cfg.XAlign == XAlignMode.Hint)
-            {
-                Vec3 x;
-                if (NxPlate.TryWcsX(s, sel.Part, out x)) opt.XHint = x;
-                else cfgWarnings.Add("WCS alignment only works when the plate part is the displayed part - used the part's own X axis.");
-            }
-
-            var ex = new NxBodyExtractor(UFSession.GetUFSession(), log) { ChordTol = cfg.ChordTolerance };
-            ex.WantedAttributeTitles.AddRange(cfg.AttributeTitles());
-            BodyModel m = ex.Extract(sel.Body, sel.Part);
-            string note;
-            int faceId = NxPlate.PlateFaceId(sel, ex, m, opt, log, out note);
-
-            ExportRun run = ExportPipeline.Prepare(m, faceId, cfg, opt, note, etchPick);
+            PlateJob job = PlateJobs.Prepare(s, cfg, sel, etchPick, cfgWarnings);
+            job.Log.InsertRange(0, log);
+            ExportRun run = job.Run;
             run.Version = Version;
 
             if (cfg.ShowPreview)
@@ -94,18 +266,10 @@ namespace LaserDxf.Nx
                 }
                 editor.Apply();
             }
-            run.Warnings.InsertRange(0, cfgWarnings);
-            run.Notes.AddRange(log);
 
-            // ---------- write the DXF ----------
             string folder = NxUtil.EnsureFolder(cfg.OutputFolder, run.Warnings);
-            string path = Path.Combine(folder, run.FileName);
-            string pdfPath = run.PdfBytes != null ? Path.Combine(folder, run.PdfFileName) : "";
-            run.OutputPath = path;
             bool write = true;
-            var existing = new List<string>();
-            if (File.Exists(path)) existing.Add(run.FileName);
-            if (pdfPath.Length > 0 && File.Exists(pdfPath)) existing.Add(run.PdfFileName);
+            List<string> existing = PlateJobs.Existing(job, folder);
             if (existing.Count > 0 && cfg.AskBeforeOverwrite)
             {
                 int answer = UI.GetUI().NXMessageBox.Show(NxPlate.Title, NXMessageBox.DialogType.Question,
@@ -113,76 +277,11 @@ namespace LaserDxf.Nx
                 write = answer == 1; // NXMessageBox: 1 = Yes, 2 = No
                 run.Notes.Add("Overwrite prompt answer code: " + answer);
             }
-            if (write)
-            {
-                try
-                {
-                    File.WriteAllText(path, run.DxfText, Encoding.GetEncoding(1252));
-                    run.Outcome = "written";
-                }
-                catch (Exception wex)
-                {
-                    throw new PlateException("Could not write " + path + "\n" + wex.Message + "\n\nIs the file open in another program?");
-                }
-            }
-            else run.Outcome = "NOT written - overwrite declined";
-
-            if (pdfPath.Length > 0)
-            {
-                run.PdfPath = pdfPath;
-                if (!write) run.PdfOutcome = "NOT written - overwrite declined";
-                else
-                {
-                    try
-                    {
-                        File.WriteAllBytes(pdfPath, run.PdfBytes);
-                        run.PdfOutcome = "written";
-                    }
-                    catch (Exception pex)
-                    {
-                        run.PdfOutcome = "NOT written";
-                        run.Warnings.Add("Could not write the PDF sheet " + pdfPath + ": " + pex.Message + " (is it open in a PDF viewer?)");
-                    }
-                }
-            }
-
-            // ---------- debug output ----------
-            string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
-            if (cfg.SaveBodyJson)
-            {
-                try
-                {
-                    string dbg = NxUtil.EnsureFolder(Path.Combine(folder, "_debug"), run.Notes);
-                    JObj json = m.ToJson();
-                    json.Add("selectedFaceId", (double)faceId);
-                    string jp = Path.Combine(dbg, Path.GetFileNameWithoutExtension(run.FileName) + "_" + stamp + "_body.json");
-                    NxUtil.WriteText(jp, Json.Write(json));
-                    run.Notes.Add("Body model saved: " + jp);
-                }
-                catch (Exception jex) { run.Notes.Add("Could not save the body model: " + jex.Message); }
-            }
+            PlateJobs.Write(job, cfg, folder, write);
 
             List<string> lines = ExportReport.Summary(run);
-            if (cfg.WriteLog)
-            {
-                try
-                {
-                    string logDir = NxUtil.EnsureFolder(Path.Combine(folder, "_logs"), run.Notes);
-                    string logPath = Path.Combine(logDir, "LaserDxf_" + DateTime.Now.ToString("yyyyMMdd") + ".log");
-                    var detail = new List<string>(lines);
-                    detail.Add("");
-                    detail.AddRange(ProbeReport.Summary(m, run.Analysis, note));
-                    detail.Add("");
-                    detail.AddRange(ProbeReport.FaceEdges(m, run.Analysis));
-                    detail.Add("");
-                    detail.Add(new string('-', 100));
-                    detail.Add("");
-                    File.AppendAllText(logPath, ProbeReport.Join(detail), new UTF8Encoding(false));
-                    lines.Add("Log          : " + logPath);
-                }
-                catch (Exception lex) { lines.Add("Could not write the log file: " + lex.Message); }
-            }
-
+            string logPath = PlateJobs.AppendLog(job, cfg, folder, lines);
+            if (logPath != null) lines.Add("Log          : " + logPath);
             foreach (string l in lines) lw.WriteLine(l);
         }
     }
@@ -499,6 +598,13 @@ namespace LaserDxf.Nx
                 false, false, mask, out picked, out cursor);
             if (resp != Selection.Response.ObjectSelected && resp != Selection.Response.ObjectSelectedByName) return null;
 
+            return FromPicked(picked, log);
+        }
+
+        /// <summary>Turns a picked face or body (possibly an assembly occurrence) into a plate selection
+        /// on the component part itself.</summary>
+        public static PlateSelection FromPicked(TaggedObject picked, List<string> log)
+        {
             var sel = new PlateSelection { Face = picked as Face, Body = picked as Body };
 
             // Work on the part itself, not an assembly occurrence: coordinates are then the part's own.
@@ -526,6 +632,48 @@ namespace LaserDxf.Nx
             sel.Part = sel.Body.OwningPart as Part;
             if (sel.Part == null) throw new PlateException("Could not find the part that owns the selected body.");
             return sel;
+        }
+
+        /// <summary>Batch selection: any number of faces (or bodies) anywhere in the assembly.
+        /// Returns null if the user cancels. Several picks on the same part give one plate (the first).</summary>
+        public static List<PlateSelection> SelectMany(Session s, List<string> log)
+        {
+            if (s.Parts.Work == null) throw new PlateException("Open the assembly (or a plate part) first.");
+            Selection.MaskTriple[] mask =
+            {
+                new Selection.MaskTriple(UFConstants.UF_solid_type, 0, UFConstants.UF_UI_SEL_FEATURE_ANY_FACE),
+                new Selection.MaskTriple(UFConstants.UF_solid_type, 0, UFConstants.UF_UI_SEL_FEATURE_BODY)
+            };
+            TaggedObject[] picked;
+            Selection.Response resp = UI.GetUI().SelectionManager.SelectTaggedObjects(
+                "Select one face (the face to view from) on each plate to export - or the plate bodies", "Laser DXF batch - select plates",
+                Selection.SelectionScope.AnyInAssembly, Selection.SelectionAction.ClearAndEnableSpecific,
+                false, false, mask, out picked);
+            if (resp != Selection.Response.Ok && resp != Selection.Response.ObjectSelected && resp != Selection.Response.ObjectSelectedByName) return null;
+            if (picked == null || picked.Length == 0) throw new PlateException("Nothing was selected.");
+
+            var result = new List<PlateSelection>();
+            var seenParts = new Dictionary<Tag, string>();
+            foreach (TaggedObject o in picked)
+            {
+                PlateSelection sel;
+                try { sel = FromPicked(o, new List<string>()); }
+                catch (PlateException ex)
+                {
+                    log.Add("Ignored one selection: " + ex.Message);
+                    continue;
+                }
+                string label = NxUtil.PartLabel(sel.Part);
+                if (seenParts.ContainsKey(sel.Part.Tag))
+                {
+                    log.Add(label + ": more than one face/body picked (or the part is used more than once) - exported once, from the first pick.");
+                    continue;
+                }
+                seenParts[sel.Part.Tag] = label;
+                result.Add(sel);
+            }
+            if (result.Count == 0) throw new PlateException("None of the selected objects is a planar face or solid body of a plate.");
+            return result;
         }
 
         /// <summary>Asks the user to click on the plate where the part number should go.
@@ -623,6 +771,18 @@ namespace LaserDxf.Nx
             try { s = part.Leaf; } catch { }
             if (string.IsNullOrEmpty(s)) try { s = part.Name; } catch { }
             return s ?? "unknown";
+        }
+
+        /// <summary>Components in an assembly are often only partially loaded, which hides their
+        /// features (so Hole-feature data would be missing). Loads the part fully if needed.</summary>
+        public static void EnsureFullyLoaded(Part part, List<string> log)
+        {
+            object full = NxReflect.Member(part, "IsFullyLoaded");
+            if (!(full is bool) || (bool)full) return;
+            object status = NxReflect.Call(part, "LoadThisPartFully");
+            var d = status as IDisposable;
+            if (d != null) d.Dispose();
+            log.Add(PartLabel(part) + ": was partially loaded - loaded fully to read its features.");
         }
 
         public static string SafeFileName(string s)
@@ -981,6 +1141,147 @@ namespace LaserDxf.Nx
     }
 }
 
+// ----- nx/PlateJob.cs -----
+// One plate's export, shared by the single-plate and batch journals:
+// extract -> analyse/layout (ExportPipeline) -> write the files, debug copy and log.
+namespace LaserDxf.Nx
+{
+    using System;
+    using System.Collections.Generic;
+    using System.IO;
+    using System.Text;
+    using NXOpen;
+    using NXOpen.UF;
+    using LaserDxf.Core;
+
+    public sealed class PlateJob
+    {
+        public PlateSelection Selection;
+        public BodyModel Model;
+        public int FaceId;
+        public string Note = "";
+        public ExportRun Run;
+        public List<string> Log = new List<string>();
+    }
+
+    public static class PlateJobs
+    {
+        /// <summary>Reads the plate from NX and lays it out (no files written).</summary>
+        public static PlateJob Prepare(Session s, LaserConfig cfg, PlateSelection sel, Vec3? etchPick, List<string> warnings)
+        {
+            var job = new PlateJob { Selection = sel };
+            AnalysisOptions opt = cfg.ToAnalysisOptions();
+            if (cfg.XAlign == XAlignMode.Hint)
+            {
+                Vec3 x;
+                if (NxPlate.TryWcsX(s, sel.Part, out x)) opt.XHint = x;
+                else warnings.Add("WCS alignment only works when the plate part is the displayed part - used the part's own X axis.");
+            }
+
+            var ex = new NxBodyExtractor(UFSession.GetUFSession(), job.Log) { ChordTol = cfg.ChordTolerance };
+            ex.WantedAttributeTitles.AddRange(cfg.AttributeTitles());
+            job.Model = ex.Extract(sel.Body, sel.Part);
+            job.FaceId = NxPlate.PlateFaceId(sel, ex, job.Model, opt, job.Log, out job.Note);
+            job.Run = ExportPipeline.Prepare(job.Model, job.FaceId, cfg, opt, job.Note, etchPick);
+            job.Run.Warnings.InsertRange(0, warnings);
+            return job;
+        }
+
+        /// <summary>Output files of the job that already exist in the folder.</summary>
+        public static List<string> Existing(PlateJob job, string folder)
+        {
+            var l = new List<string>();
+            if (File.Exists(Path.Combine(folder, job.Run.FileName))) l.Add(job.Run.FileName);
+            if (job.Run.PdfBytes != null && File.Exists(Path.Combine(folder, job.Run.PdfFileName))) l.Add(job.Run.PdfFileName);
+            return l;
+        }
+
+        /// <summary>Writes the DXF (and the PDF sheet if the run has one), the debug body model
+        /// and the log entry. write = false records that overwriting was declined.</summary>
+        public static void Write(PlateJob job, LaserConfig cfg, string folder, bool write)
+        {
+            ExportRun run = job.Run;
+            run.Notes.AddRange(job.Log);
+            string path = Path.Combine(folder, run.FileName);
+            run.OutputPath = path;
+            if (write)
+            {
+                try
+                {
+                    File.WriteAllText(path, run.DxfText, Encoding.GetEncoding(1252));
+                    run.Outcome = "written";
+                }
+                catch (Exception wex)
+                {
+                    throw new PlateException("Could not write " + path + "\n" + wex.Message + "\n\nIs the file open in another program?");
+                }
+            }
+            else run.Outcome = "NOT written - overwrite declined";
+
+            if (run.PdfBytes != null)
+            {
+                string pdfPath = Path.Combine(folder, run.PdfFileName);
+                run.PdfPath = pdfPath;
+                if (!write) run.PdfOutcome = "NOT written - overwrite declined";
+                else
+                {
+                    try
+                    {
+                        File.WriteAllBytes(pdfPath, run.PdfBytes);
+                        run.PdfOutcome = "written";
+                    }
+                    catch (Exception pex)
+                    {
+                        run.PdfOutcome = "NOT written";
+                        run.Warnings.Add("Could not write the PDF sheet " + pdfPath + ": " + pex.Message + " (is it open in a PDF viewer?)");
+                    }
+                }
+            }
+
+            string stamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            if (cfg.SaveBodyJson)
+            {
+                try
+                {
+                    string dbg = NxUtil.EnsureFolder(Path.Combine(folder, "_debug"), run.Notes);
+                    JObj json = job.Model.ToJson();
+                    json.Add("selectedFaceId", (double)job.FaceId);
+                    string jp = Path.Combine(dbg, Path.GetFileNameWithoutExtension(run.FileName) + "_" + stamp + "_body.json");
+                    NxUtil.WriteText(jp, Json.Write(json));
+                    run.Notes.Add("Body model saved: " + jp);
+                }
+                catch (Exception jex) { run.Notes.Add("Could not save the body model: " + jex.Message); }
+            }
+        }
+
+        /// <summary>Appends the job's summary plus the geometry detail to the daily log. Returns the log path or null.</summary>
+        public static string AppendLog(PlateJob job, LaserConfig cfg, string folder, List<string> summary)
+        {
+            if (!cfg.WriteLog) return null;
+            try
+            {
+                string logDir = NxUtil.EnsureFolder(Path.Combine(folder, "_logs"), job.Run.Notes);
+                string logPath = Path.Combine(logDir, "LaserDxf_" + DateTime.Now.ToString("yyyyMMdd") + ".log");
+                var detail = new List<string>(summary);
+                detail.Add("");
+                detail.AddRange(ProbeReport.Summary(job.Model, job.Run.Analysis, job.Note));
+                detail.Add("");
+                detail.AddRange(ProbeReport.FaceEdges(job.Model, job.Run.Analysis));
+                detail.Add("");
+                detail.Add(new string('-', 100));
+                detail.Add("");
+                File.AppendAllText(logPath, ProbeReport.Join(detail), new UTF8Encoding(false));
+                return logPath;
+            }
+            catch (Exception lex)
+            {
+                summary.Add("Could not write the log file: " + lex.Message);
+                return null;
+            }
+        }
+    }
+}
+
 // ----- nx/PreviewWindow.cs -----
 // Preview & adjust window (Windows Forms): shows the finished layout and lets the
 // user drag, rotate, edit, resize or delete the hole labels and the part number -
@@ -996,13 +1297,25 @@ namespace LaserDxf.Nx
     using System.Windows.Forms;
     using LaserDxf.Core;
 
+    public enum PreviewResult { Export, Skip, Cancel }
+
     public static class PreviewWindow
     {
         /// <summary>Returns true if the user clicked Export.</summary>
         public static bool Show(LayoutEditor editor, string title)
         {
-            using (var f = new PreviewForm(editor, title))
+            using (var f = new PreviewForm(editor, title, false))
                 return f.ShowDialog() == DialogResult.OK;
+        }
+
+        /// <summary>Batch mode: Export this plate, Skip it, or Cancel the rest of the batch.</summary>
+        public static PreviewResult ShowBatch(LayoutEditor editor, string title, int index, int count)
+        {
+            using (var f = new PreviewForm(editor, "plate " + index + " of " + count + " - " + title, true))
+            {
+                DialogResult r = f.ShowDialog();
+                return r == DialogResult.OK ? PreviewResult.Export : r == DialogResult.Ignore ? PreviewResult.Skip : PreviewResult.Cancel;
+            }
         }
     }
 
@@ -1023,6 +1336,7 @@ namespace LaserDxf.Nx
         readonly PreviewCanvas canvas;
         readonly Label status;
         readonly Button rotateBtn, editBtn, deleteBtn;
+        readonly bool batch;
 
         double scale = 1, offX, offY;
         bool userZoomed;
@@ -1042,9 +1356,10 @@ namespace LaserDxf.Nx
         static readonly Color OverlapColour = Color.FromArgb(220, 0, 0);
         static readonly Color SelectColour = Color.FromArgb(40, 40, 40);
 
-        public PreviewForm(LayoutEditor editor, string title)
+        public PreviewForm(LayoutEditor editor, string title, bool batchMode)
         {
             ed = editor;
+            batch = batchMode;
             Text = "Laser DXF preview - " + title;
             StartPosition = FormStartPosition.CenterScreen;
             Size = new Size(1200, 850);
@@ -1074,7 +1389,8 @@ namespace LaserDxf.Nx
             bar.Controls.Add(new Label { Width = 40 });
             Button export = MakeButton(bar, "Export DXF", delegate { TryExport(); });
             export.Font = new Font(Font, FontStyle.Bold);
-            MakeButton(bar, "Cancel", delegate { TryCancel(); });
+            if (batch) MakeButton(bar, "Skip plate", delegate { TrySkip(); });
+            MakeButton(bar, batch ? "Cancel batch" : "Cancel", delegate { TryCancel(); });
 
             // Fill control first, bottom bars after: WinForms docks the last-added control first.
             Controls.Add(canvas);
@@ -1095,7 +1411,13 @@ namespace LaserDxf.Nx
             FormClosing += delegate (object s, FormClosingEventArgs e)
             {
                 // Closing with the window's X counts as Cancel: confirm if there are edits to lose.
-                if (DialogResult != DialogResult.OK && !discardConfirmed && HasEdits() && !ConfirmDiscard()) e.Cancel = true;
+                if (DialogResult == DialogResult.OK || discardConfirmed) return;
+                if (batch)
+                {
+                    if (MessageBox.Show(this, "Stop the batch here? Plates already exported are kept; this and the remaining plates are not written.",
+                            "Laser DXF", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) e.Cancel = true;
+                }
+                else if (HasEdits() && !ConfirmDiscard()) e.Cancel = true;
             };
             Shown += delegate { FitAll(); Changed(); canvas.Focus(); };
         }
@@ -1470,9 +1792,21 @@ namespace LaserDxf.Nx
 
         void TryCancel()
         {
-            if (HasEdits() && !ConfirmDiscard()) return;
+            if (batch)
+            {
+                if (MessageBox.Show(this, "Stop the batch here? Plates already exported are kept; this and the remaining plates are not written.",
+                        "Laser DXF", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            }
+            else if (HasEdits() && !ConfirmDiscard()) return;
             discardConfirmed = true;
             DialogResult = DialogResult.Cancel;
+        }
+
+        void TrySkip()
+        {
+            if (HasEdits() && !ConfirmDiscard()) return;
+            discardConfirmed = true;
+            DialogResult = DialogResult.Ignore;
         }
 
         void TryExport()
@@ -1962,6 +2296,139 @@ namespace LaserDxf.Core
                 }
                 doc.Entities.Add(pl);
             }
+        }
+    }
+}
+
+// ----- core/Batch.cs -----
+// Batch export (several plates from an assembly in one go): thickness check,
+// per-plate results, the CSV summary for the laser shop and the batch report.
+namespace LaserDxf.Core
+{
+    using System;
+    using System.Collections.Generic;
+    using System.Globalization;
+    using System.Text;
+
+    public enum BatchStatus { Exported, Skipped, Failed, Cancelled }
+
+    public sealed class BatchItem
+    {
+        public string PartLabel = "";
+        public ExportRun Run;
+        public BatchStatus Status = BatchStatus.Exported;
+        public string Reason = "";
+        /// <summary>Thickness written to the CSV: the attribute if present, otherwise the measured value.</summary>
+        public string Thickness = "";
+    }
+
+    public static class Batch
+    {
+        /// <summary>Leading number of an attribute value such as "6", "6 mm", "6.0mm"; NaN if none.</summary>
+        public static double ParseThickness(string s)
+        {
+            s = (s ?? "").Trim();
+            int n = 0;
+            while (n < s.Length && (char.IsDigit(s[n]) || s[n] == '.' || s[n] == ',')) n++;
+            double d;
+            if (n == 0 || !double.TryParse(s.Substring(0, n).Replace(',', '.'), NumberStyles.Float, CultureInfo.InvariantCulture, out d)) return double.NaN;
+            return d;
+        }
+
+        /// <summary>Applies the thickness rule: the plate is exported only if its thickness attribute
+        /// equals batch.requiredThickness (0 = no check). A missing attribute, or one that disagrees
+        /// with the measured thickness, only gives a warning. Returns false with a reason to skip.</summary>
+        public static bool CheckThickness(ExportRun run, LaserConfig c, out string reason, out string csvThickness)
+        {
+            reason = "";
+            double measured = run.Analysis.Thickness * run.Profile.UnitScale;
+            string attr = run.Identity.Thickness;
+            double value = ParseThickness(attr);
+            csvThickness = double.IsNaN(value) ? Fmt.N(measured, 2) : attr;
+            double tol = c.ThicknessTolerance;
+
+            if (double.IsNaN(value))
+            {
+                run.Warnings.Add("Thickness attribute " + c.ThicknessAttr + " is " + (attr.Length == 0 ? "missing" : "\"" + attr + "\" (not a number)") +
+                                 " - measured " + Fmt.N(measured, 2) + " mm.");
+                if (c.RequiredThickness > 0 && Math.Abs(measured - c.RequiredThickness) > tol)
+                    run.Warnings.Add("Measured thickness " + Fmt.N(measured, 2) + " mm is not the required " + Fmt.N(c.RequiredThickness, 2) + " mm.");
+                return true;
+            }
+            if (Math.Abs(value - measured) > tol)
+                run.Warnings.Add("Thickness attribute says " + Fmt.N(value, 2) + " mm but the plate measures " + Fmt.N(measured, 2) + " mm.");
+            if (c.RequiredThickness > 0 && Math.Abs(value - c.RequiredThickness) > tol)
+            {
+                reason = "thickness " + Fmt.N(value, 2) + " mm (" + c.ThicknessAttr.Title + "), batch is for " + Fmt.N(c.RequiredThickness, 2) + " mm plates";
+                return false;
+            }
+            return true;
+        }
+
+        static string Csv(string s)
+        {
+            s = s ?? "";
+            if (s.IndexOfAny(new[] { ',', '"', '\n', '\r' }) < 0) return s;
+            return "\"" + s.Replace("\"", "\"\"") + "\"";
+        }
+
+        /// <summary>CSV for the laser shop: one row per exported plate.</summary>
+        public static string CsvSummary(List<BatchItem> items)
+        {
+            var sb = new StringBuilder();
+            sb.Append("ID,Revision,Name,Material,Thickness,DXF path\r\n");
+            foreach (var it in items)
+            {
+                if (it.Status != BatchStatus.Exported) continue;
+                PartIdentity id = it.Run.Identity;
+                sb.Append(Csv(id.Id)).Append(',').Append(Csv(id.RevisionRaw)).Append(',').Append(Csv(id.Name)).Append(',')
+                  .Append(Csv(id.Material)).Append(',').Append(Csv(it.Thickness)).Append(',').Append(Csv(it.Run.OutputPath)).Append("\r\n");
+            }
+            return sb.ToString();
+        }
+
+        public static List<string> Summary(List<BatchItem> items, string version, string configPath, string csvPath)
+        {
+            var L = new List<string>();
+            int exported = 0, skipped = 0, failed = 0, cancelled = 0;
+            foreach (var it in items)
+            {
+                if (it.Status == BatchStatus.Exported) exported++;
+                else if (it.Status == BatchStatus.Skipped) skipped++;
+                else if (it.Status == BatchStatus.Failed) failed++;
+                else cancelled++;
+            }
+            L.Add("=== Laser DXF batch " + version + " ===   " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+            L.Add("Config       : " + configPath);
+            L.Add("Plates       : " + items.Count + " selected - " + exported + " exported, " + skipped + " skipped" +
+                  (failed > 0 ? ", " + failed + " failed" : "") + (cancelled > 0 ? ", " + cancelled + " not done (batch cancelled)" : ""));
+            if (csvPath != null) L.Add("CSV summary  : " + csvPath);
+            L.Add("");
+            foreach (var it in items)
+            {
+                ExportRun r = it.Run;
+                string id = r != null && r.Identity != null ? r.Identity.Id + (r.Identity.RevisionRaw.Length > 0 ? "-" + r.Identity.RevisionRaw : "") : it.PartLabel;
+                if (it.Status == BatchStatus.Exported)
+                {
+                    int round = 0, labelled = 0;
+                    foreach (var h in r.Profile.Holes)
+                    {
+                        if (h.Circle == null) continue;
+                        round++;
+                        if (h.Label.Length > 0) labelled++;
+                    }
+                    L.Add("  OK       " + id + "   " + Fmt.N(r.Profile.Width, 1) + " x " + Fmt.N(r.Profile.Height, 1) + " mm, " +
+                          round + " holes (" + labelled + " labelled)" + (r.EditSummary.Length > 0 ? ", edited" : "") +
+                          (r.Warnings.Count > 0 ? ", " + r.Warnings.Count + " warning(s)" : "") + "  ->  " + r.OutputPath);
+                    foreach (string w in r.Warnings) L.Add("             - " + w);
+                }
+                else
+                {
+                    string tag = it.Status == BatchStatus.Skipped ? "SKIPPED " : it.Status == BatchStatus.Failed ? "FAILED  " : "NOT DONE";
+                    L.Add("  " + tag + " " + id + "   " + it.Reason);
+                }
+            }
+            return L;
         }
     }
 }

@@ -12,13 +12,25 @@ namespace LaserDxf.Nx
     using System.Windows.Forms;
     using LaserDxf.Core;
 
+    public enum PreviewResult { Export, Skip, Cancel }
+
     public static class PreviewWindow
     {
         /// <summary>Returns true if the user clicked Export.</summary>
         public static bool Show(LayoutEditor editor, string title)
         {
-            using (var f = new PreviewForm(editor, title))
+            using (var f = new PreviewForm(editor, title, false))
                 return f.ShowDialog() == DialogResult.OK;
+        }
+
+        /// <summary>Batch mode: Export this plate, Skip it, or Cancel the rest of the batch.</summary>
+        public static PreviewResult ShowBatch(LayoutEditor editor, string title, int index, int count)
+        {
+            using (var f = new PreviewForm(editor, "plate " + index + " of " + count + " - " + title, true))
+            {
+                DialogResult r = f.ShowDialog();
+                return r == DialogResult.OK ? PreviewResult.Export : r == DialogResult.Ignore ? PreviewResult.Skip : PreviewResult.Cancel;
+            }
         }
     }
 
@@ -39,6 +51,7 @@ namespace LaserDxf.Nx
         readonly PreviewCanvas canvas;
         readonly Label status;
         readonly Button rotateBtn, editBtn, deleteBtn;
+        readonly bool batch;
 
         double scale = 1, offX, offY;
         bool userZoomed;
@@ -58,9 +71,10 @@ namespace LaserDxf.Nx
         static readonly Color OverlapColour = Color.FromArgb(220, 0, 0);
         static readonly Color SelectColour = Color.FromArgb(40, 40, 40);
 
-        public PreviewForm(LayoutEditor editor, string title)
+        public PreviewForm(LayoutEditor editor, string title, bool batchMode)
         {
             ed = editor;
+            batch = batchMode;
             Text = "Laser DXF preview - " + title;
             StartPosition = FormStartPosition.CenterScreen;
             Size = new Size(1200, 850);
@@ -90,7 +104,8 @@ namespace LaserDxf.Nx
             bar.Controls.Add(new Label { Width = 40 });
             Button export = MakeButton(bar, "Export DXF", delegate { TryExport(); });
             export.Font = new Font(Font, FontStyle.Bold);
-            MakeButton(bar, "Cancel", delegate { TryCancel(); });
+            if (batch) MakeButton(bar, "Skip plate", delegate { TrySkip(); });
+            MakeButton(bar, batch ? "Cancel batch" : "Cancel", delegate { TryCancel(); });
 
             // Fill control first, bottom bars after: WinForms docks the last-added control first.
             Controls.Add(canvas);
@@ -111,7 +126,13 @@ namespace LaserDxf.Nx
             FormClosing += delegate (object s, FormClosingEventArgs e)
             {
                 // Closing with the window's X counts as Cancel: confirm if there are edits to lose.
-                if (DialogResult != DialogResult.OK && !discardConfirmed && HasEdits() && !ConfirmDiscard()) e.Cancel = true;
+                if (DialogResult == DialogResult.OK || discardConfirmed) return;
+                if (batch)
+                {
+                    if (MessageBox.Show(this, "Stop the batch here? Plates already exported are kept; this and the remaining plates are not written.",
+                            "Laser DXF", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) e.Cancel = true;
+                }
+                else if (HasEdits() && !ConfirmDiscard()) e.Cancel = true;
             };
             Shown += delegate { FitAll(); Changed(); canvas.Focus(); };
         }
@@ -486,9 +507,21 @@ namespace LaserDxf.Nx
 
         void TryCancel()
         {
-            if (HasEdits() && !ConfirmDiscard()) return;
+            if (batch)
+            {
+                if (MessageBox.Show(this, "Stop the batch here? Plates already exported are kept; this and the remaining plates are not written.",
+                        "Laser DXF", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+            }
+            else if (HasEdits() && !ConfirmDiscard()) return;
             discardConfirmed = true;
             DialogResult = DialogResult.Cancel;
+        }
+
+        void TrySkip()
+        {
+            if (HasEdits() && !ConfirmDiscard()) return;
+            discardConfirmed = true;
+            DialogResult = DialogResult.Ignore;
         }
 
         void TryExport()

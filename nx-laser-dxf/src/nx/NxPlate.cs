@@ -69,6 +69,13 @@ namespace LaserDxf.Nx
                 false, false, mask, out picked, out cursor);
             if (resp != Selection.Response.ObjectSelected && resp != Selection.Response.ObjectSelectedByName) return null;
 
+            return FromPicked(picked, log);
+        }
+
+        /// <summary>Turns a picked face or body (possibly an assembly occurrence) into a plate selection
+        /// on the component part itself.</summary>
+        public static PlateSelection FromPicked(TaggedObject picked, List<string> log)
+        {
             var sel = new PlateSelection { Face = picked as Face, Body = picked as Body };
 
             // Work on the part itself, not an assembly occurrence: coordinates are then the part's own.
@@ -96,6 +103,48 @@ namespace LaserDxf.Nx
             sel.Part = sel.Body.OwningPart as Part;
             if (sel.Part == null) throw new PlateException("Could not find the part that owns the selected body.");
             return sel;
+        }
+
+        /// <summary>Batch selection: any number of faces (or bodies) anywhere in the assembly.
+        /// Returns null if the user cancels. Several picks on the same part give one plate (the first).</summary>
+        public static List<PlateSelection> SelectMany(Session s, List<string> log)
+        {
+            if (s.Parts.Work == null) throw new PlateException("Open the assembly (or a plate part) first.");
+            Selection.MaskTriple[] mask =
+            {
+                new Selection.MaskTriple(UFConstants.UF_solid_type, 0, UFConstants.UF_UI_SEL_FEATURE_ANY_FACE),
+                new Selection.MaskTriple(UFConstants.UF_solid_type, 0, UFConstants.UF_UI_SEL_FEATURE_BODY)
+            };
+            TaggedObject[] picked;
+            Selection.Response resp = UI.GetUI().SelectionManager.SelectTaggedObjects(
+                "Select one face (the face to view from) on each plate to export - or the plate bodies", "Laser DXF batch - select plates",
+                Selection.SelectionScope.AnyInAssembly, Selection.SelectionAction.ClearAndEnableSpecific,
+                false, false, mask, out picked);
+            if (resp != Selection.Response.Ok && resp != Selection.Response.ObjectSelected && resp != Selection.Response.ObjectSelectedByName) return null;
+            if (picked == null || picked.Length == 0) throw new PlateException("Nothing was selected.");
+
+            var result = new List<PlateSelection>();
+            var seenParts = new Dictionary<Tag, string>();
+            foreach (TaggedObject o in picked)
+            {
+                PlateSelection sel;
+                try { sel = FromPicked(o, new List<string>()); }
+                catch (PlateException ex)
+                {
+                    log.Add("Ignored one selection: " + ex.Message);
+                    continue;
+                }
+                string label = NxUtil.PartLabel(sel.Part);
+                if (seenParts.ContainsKey(sel.Part.Tag))
+                {
+                    log.Add(label + ": more than one face/body picked (or the part is used more than once) - exported once, from the first pick.");
+                    continue;
+                }
+                seenParts[sel.Part.Tag] = label;
+                result.Add(sel);
+            }
+            if (result.Count == 0) throw new PlateException("None of the selected objects is a planar face or solid body of a plate.");
+            return result;
         }
 
         /// <summary>Asks the user to click on the plate where the part number should go.
