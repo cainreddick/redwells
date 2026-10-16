@@ -14,6 +14,11 @@ namespace LaserDxf.Core
         public FaceAnalysis Analysis;
         public ProfileResult Profile;
         public LaserConfig Config;
+        public List<PlacedText> Labels = new List<PlacedText>();
+        public string EtchText = "";
+        public PlacedText Etch;
+        /// <summary>Attribute table shown when the ID or revision can't be found.</summary>
+        public List<string> AttributeDump = new List<string>();
         public string FileName = "";
         public string DxfText = "";
         public string OutputPath = "";
@@ -66,12 +71,27 @@ namespace LaserDxf.Core
                     L.Add("Diameters    : " + string.Join(";  ", parts.ToArray()));
                 }
                 int labelled = 0;
-                foreach (var h in r.Profile.Holes) if (h.Label.Length > 0) labelled++;
-                L.Add("Labelled     : " + labelled);
+                var byLabel = new SortedDictionary<string, int>();
+                var sources = new SortedDictionary<string, bool>();
+                foreach (var h in r.Profile.Holes)
+                {
+                    if (h.Label.Length == 0) continue;
+                    labelled++;
+                    int n;
+                    byLabel.TryGetValue(h.Label, out n);
+                    byLabel[h.Label] = n + 1;
+                    sources[h.Label + ": " + h.LabelSource] = true;
+                }
+                var lp = new List<string>();
+                foreach (var kv in byLabel) lp.Add(kv.Key + " x" + kv.Value);
+                L.Add("Labelled     : " + labelled + " of " + circles + " round holes" + (lp.Count > 0 ? "  (" + string.Join(", ", lp.ToArray()) + ")" : ""));
+                foreach (var kv in sources) L.Add("               " + kv.Key);
+                if (r.Etch != null)
+                    L.Add("Etch         : \"" + r.Etch.Text + "\"  " + Fmt.N(r.Etch.Height, 1) + " mm high, " + r.Etch.Position);
                 L.Add("Entities     : " + r.Profile.Doc.Entities.Count + " (" + r.Profile.OuterEntityCount + " in the outer profile)");
             }
             if (r.Config != null)
-                L.Add("DXF format   : " + r.Config.DxfVersion + ", mm, layers " + r.Config.CutLayer.Name + " (colour " + r.Config.CutLayer.Color + ") / " +
+                L.Add("DXF format   : " + r.Config.DxfVersion + ", text as " + (r.Config.TextMode == TextMode.Stroke ? "single-stroke vectors" : "DXF TEXT") + ", mm, layers " + r.Config.CutLayer.Name + " (colour " + r.Config.CutLayer.Color + ") / " +
                       r.Config.EtchLayer.Name + " (colour " + r.Config.EtchLayer.Color + ")");
             L.Add("Output       : " + (r.OutputPath.Length > 0 ? r.OutputPath : "-") + (r.Outcome.Length > 0 ? "   [" + r.Outcome + "]" : ""));
             if (r.Warnings.Count > 0)
@@ -79,6 +99,11 @@ namespace LaserDxf.Core
                 L.Add("");
                 L.Add("Warnings (" + r.Warnings.Count + "):");
                 foreach (string w in r.Warnings) L.Add("  - " + w);
+            }
+            if (r.AttributeDump.Count > 0)
+            {
+                L.Add("");
+                L.AddRange(r.AttributeDump);
             }
             if (r.Notes.Count > 0)
             {

@@ -188,6 +188,7 @@ namespace LaserDxf.Tests
             ExportRun r = Run(s, s.TopFace, new LaserConfig());
             DxfDocument d = r.Profile.Doc;
             TestMain.Check(Count<DxfLine>(d) == 4 + 4, "4 outer + 4 slot lines, got " + Count<DxfLine>(d));
+            TestMain.Check(r.Etch != null && r.Etch.Clear && r.Etch.Text == "S180-06068-47009-A", "part number etched");
             TestMain.Check(Count<DxfCircle>(d) == 4, "4 round through holes (blind one skipped), got " + Count<DxfCircle>(d));
             TestMain.Check(r.Profile.SkippedLoops == 1, "blind hole skipped");
             TestMain.Check(r.FileName == "S180-06068-47009-A.dxf", "file name " + r.FileName);
@@ -196,7 +197,12 @@ namespace LaserDxf.Tests
             TestMain.Check(csAtBore, "countersunk hole cut at the bore");
             string warn = string.Join(" | ", r.Warnings.ToArray());
             TestMain.Check(warn.Contains("countersink") && warn.Contains("counterbore") && warn.Contains("does not go through"), warn);
-            foreach (var e in d.Entities) TestMain.Check(e.Layer == "CUT" && e.Color == 7, "CUT layer, colour 7");
+            foreach (var e in d.Entities)
+            {
+                bool cut = e.Layer == "CUT" && e.Color == 7 && !(e is DxfPolyline);
+                bool etch = e.Layer == "ETCH" && e.Color == 5 && e is DxfPolyline;
+                TestMain.Check(cut || etch, "geometry on CUT (7), text strokes on ETCH (5): " + e.GetType().Name + " on " + e.Layer);
+            }
         }
 
         public static void TestInchPartIsScaled()
@@ -223,6 +229,9 @@ namespace LaserDxf.Tests
                 Synth bottom = TestPlate();
                 samples.Add(WriteSample("testplate_bottomface_" + v, Run(bottom, bottom.BottomFace, c), 4, 4, 0));
             }
+            var tc = new LaserConfig { TextMode = TextMode.Text };
+            Synth irrText = Synth.Irregular();
+            samples.Add(WriteSample("irregular_TEXT_R2000", Run(irrText, irrText.TopFace, tc), 5, 24, 4));
             File.WriteAllText(Path.Combine(TestMain.OutDir, "samples.json"), Json.Write(samples));
         }
 
@@ -234,7 +243,9 @@ namespace LaserDxf.Tests
             return new JObj().Add("file", file).Add("version", r.Config.DxfVersion.ToString())
                 .Add("circles", (double)circles).Add("arcs", (double)arcs)
                 .Add("width", r.Profile.Width).Add("height", r.Profile.Height)
-                .Add("entities", (double)r.Profile.Doc.Entities.Count);
+                .Add("entities", (double)r.Profile.Doc.Entities.Count)
+                .Add("minEtch", (double)(r.Labels.Count + (r.Etch != null ? 1 : 0)))
+                .Add("texts", (double)(r.Config.TextMode == TextMode.Text ? r.Labels.Count + (r.Etch != null ? 1 : 0) : 0));
         }
     }
 }

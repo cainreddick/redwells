@@ -92,6 +92,13 @@ namespace LaserDxf.Core
             LabelTable.Add(new LabelRule { Label = "M8", Diameter = 5.5 });
         }
 
+        public List<string> AttributeTitles()
+        {
+            var l = new List<string>();
+            foreach (var a in new[] { IdAttr, RevisionAttr, FallbackIdAttr, NameAttr, MaterialAttr, ThicknessAttr }) l.Add(a.Title);
+            return l;
+        }
+
         public AnalysisOptions ToAnalysisOptions()
         {
             return new AnalysisOptions { Tol = Tolerance, XAlign = XAlign };

@@ -224,9 +224,9 @@ parts.
 ## Build steps
 
 1. **Probe**: select a face, dump edges, loops, holes, features and attributes. *(done, tested in NX 2412)*
-2. Plain profile DXF (CUT layer) + config file + part number/file name from attributes. *(current)*
-3. Hole classification (feature data → table, cut diameter override).
-4. Hole labels with collision-avoiding placement.
-5. Part-number etch (attributes, auto placement / pick point), options dialog, report + log.
+2. Plain profile DXF (CUT layer) + config file + part number/file name from attributes. *(done, tested in NX 2412)*
+3. Hole classification (feature data → countersink geometry → table, cut diameter override). *(current)*
+4. Hole labels with collision-avoiding placement. *(current)*
+5. Part-number etch with auto placement *(current)*; still to come: the options dialog and pick-a-point placement.
 
 Each step ships as `dist/*.cs` plus a note on what to check and what to send back.

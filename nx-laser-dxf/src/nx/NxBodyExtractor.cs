@@ -28,6 +28,9 @@ namespace LaserDxf.Nx
             this.log = log;
         }
 
+        /// <summary>Attribute titles to look up directly if GetUserAttributes() doesn't list them.</summary>
+        public List<string> WantedAttributeTitles = new List<string>();
+
         public BodyModel Extract(Body body, Part part)
         {
             var m = new BodyModel();
@@ -66,7 +69,7 @@ namespace LaserDxf.Nx
                 log.Add("WARNING: " + vertexMismatches + " edge(s) whose sampled end points do not match their NX vertices. Please send me the debug file.");
 
             ExtractFeatures(body, part, m);
-            NxAttributes.Read(part, m, log);
+            NxAttributes.Read(part, m, log, WantedAttributeTitles);
             return m;
         }
 

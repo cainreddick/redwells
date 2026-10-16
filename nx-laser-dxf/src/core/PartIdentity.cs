@@ -17,6 +17,8 @@ namespace LaserDxf.Core
         public string Material = "";
         public string Thickness = "";
         public List<string> Warnings = new List<string>();
+        /// <summary>True when the ID or revision attribute could not be found.</summary>
+        public bool AttributesMissing;
 
         public Dictionary<string, string> Tokens()
         {
@@ -33,24 +35,36 @@ namespace LaserDxf.Core
 
     public static class Identity
     {
-        /// <summary>Finds an attribute by category plus title-or-alias (case-insensitive).
-        /// An empty category in the config matches any category. Returns null if unset/empty/ignored.</summary>
-        public static string Find(List<AttributeEntry> attrs, AttrRef r)
+        /// <summary>Finds an attribute by title-or-alias (case-insensitive) in the configured category.
+        /// If it isn't in that category, any category is accepted and a note says where it was found.
+        /// Empty and ignored values count as missing.</summary>
+        public static string Find(List<AttributeEntry> attrs, AttrRef r, List<string> notes)
         {
             if (r == null || r.Title.Trim().Length == 0) return null;
-            foreach (var a in attrs)
+            bool anyCategory = r.Category.Trim().Length == 0;
+            for (int pass = 0; pass < 2; pass++)
             {
-                if (r.Category.Trim().Length > 0 && !Same(a.Category, r.Category)) continue;
-                if (!Same(a.Title, r.Title) && !Same(a.Alias, r.Title)) continue;
-                if (!a.IsSet) continue;
-                string v = (a.Value ?? "").Trim();
-                if (v.Length == 0) continue;
-                bool ignored = false;
-                foreach (string ig in r.IgnoreValues) if (Same(v, ig)) ignored = true;
-                if (ignored) continue;
-                return v;
+                if (pass == 1 && anyCategory) break;
+                foreach (var a in attrs)
+                {
+                    if (pass == 0 && !anyCategory && !Same(a.Category, r.Category)) continue;
+                    if (!Same(a.Title, r.Title) && !Same(a.Alias, r.Title)) continue;
+                    string v = (a.Value ?? "").Trim();
+                    if (v.Length == 0) continue;
+                    bool ignored = false;
+                    foreach (string ig in r.IgnoreValues) if (Same(v, ig)) ignored = true;
+                    if (ignored) continue;
+                    if (pass == 1 && notes != null)
+                        notes.Add("Attribute \"" + r.Title + "\" found in category \"" + a.Category + "\", not \"" + r.Category + "\" - update the config if that is right.");
+                    return v;
+                }
             }
             return null;
+        }
+
+        public static string Find(List<AttributeEntry> attrs, AttrRef r)
+        {
+            return Find(attrs, r, null);
         }
 
         static bool Same(string a, string b)
@@ -84,27 +98,33 @@ namespace LaserDxf.Core
         public static PartIdentity Resolve(BodyModel m, LaserConfig c)
         {
             var p = new PartIdentity();
-            string id = Find(m.Attributes, c.IdAttr);
+            string id = Find(m.Attributes, c.IdAttr, p.Warnings);
             if (id != null) p.IdSource = "attribute " + c.IdAttr;
             else
             {
-                id = Find(m.Attributes, c.FallbackIdAttr);
+                id = Find(m.Attributes, c.FallbackIdAttr, p.Warnings);
                 if (id != null)
                 {
                     p.IdSource = "fallback attribute " + c.FallbackIdAttr;
+                    p.AttributesMissing = true;
                     p.Warnings.Add("Attribute " + c.IdAttr + " not found - used " + c.FallbackIdAttr + ".");
                 }
                 else
                 {
                     id = StripRevision(m.PartName);
                     p.IdSource = "part name";
+                    p.AttributesMissing = true;
                     p.Warnings.Add("Neither " + c.IdAttr + " nor " + c.FallbackIdAttr + " found - used the part name \"" + id + "\".");
                 }
             }
             p.Id = id;
 
-            string rev = Find(m.Attributes, c.RevisionAttr);
-            if (rev == null) p.Warnings.Add("Attribute " + c.RevisionAttr + " not found - revision left out.");
+            string rev = Find(m.Attributes, c.RevisionAttr, p.Warnings);
+            if (rev == null)
+            {
+                p.Warnings.Add("Attribute " + c.RevisionAttr + " not found - revision left out.");
+                p.AttributesMissing = true;
+            }
             p.RevisionRaw = rev ?? "";
             p.Revision = rev == null ? "" : (c.RevisionAsLetter ? RevisionLetters(rev) : rev);
 

@@ -59,48 +59,73 @@ namespace LaserDxf.Nx
 
     public static class NxAttributes
     {
-        static readonly string[] AliasMembers = { "Alias", "TitleAlias", "AliasName" };
-        static readonly string[] UnsetMembers = { "Unset", "IsUnset" };
+        static readonly string[] AliasMembers = { "TitleAlias", "Alias" };
 
-        /// <summary>Reads every part attribute with its category. Uses reflection on
-        /// NXObject.AttributeInformation so differing member names between NX versions don't break the build.</summary>
-        public static void Read(Part part, BodyModel m, List<string> log)
+        /// <summary>Reads every part attribute with its category. Teamcenter-synced attributes
+        /// can behave differently from plain NX ones, so: values missing from the struct are
+        /// re-read with GetUserAttributeAsString, and each configured title not in the list is
+        /// looked up directly with GetUserAttribute.</summary>
+        public static void Read(Part part, BodyModel m, List<string> log, IEnumerable<string> wantedTitles)
         {
             NXObject.AttributeInformation[] infos;
             try { infos = part.GetUserAttributes(); }
             catch (Exception ex)
             {
                 log.Add("GetUserAttributes failed: " + ex.Message);
-                return;
+                infos = new NXObject.AttributeInformation[0];
             }
+            foreach (NXObject.AttributeInformation info in infos) m.Attributes.Add(ToEntry(part, info, ""));
 
-            if (infos.Length > 0)
-                log.Add("AttributeInformation members: " + NxReflect.MemberNames(infos[0]));
-
-            foreach (NXObject.AttributeInformation info in infos)
+            foreach (string title in wantedTitles)
             {
-                object boxed = info;
-                var a = new AttributeEntry
+                if (string.IsNullOrEmpty(title)) continue;
+                bool present = false;
+                foreach (var a in m.Attributes)
+                    if (string.Equals(a.Title, title, StringComparison.OrdinalIgnoreCase) || string.Equals(a.Alias, title, StringComparison.OrdinalIgnoreCase)) present = true;
+                if (present) continue;
+                object info = NxReflect.CallByTitle(part, "GetUserAttribute", title);
+                if (info is NXObject.AttributeInformation)
                 {
-                    Title = info.Title ?? "",
-                    Category = info.Category ?? "",
-                    Type = info.Type.ToString()
-                };
-                foreach (string n in AliasMembers)
-                {
-                    object v = NxReflect.Member(boxed, n);
-                    if (v != null) { a.Alias = v.ToString(); break; }
+                    m.Attributes.Add(ToEntry(part, (NXObject.AttributeInformation)info, "direct"));
+                    log.Add("Attribute \"" + title + "\" was not in GetUserAttributes() but was found by a direct lookup.");
                 }
-                foreach (string n in UnsetMembers)
-                {
-                    object v = NxReflect.Member(boxed, n);
-                    if (v is bool) { a.IsSet = !(bool)v; break; }
-                }
-                object val = NxReflect.Member(boxed, a.Type + "Value");
-                if (val == null) val = NxReflect.Member(boxed, "StringValue");
-                a.Value = val == null ? "" : Convert.ToString(val, Fmt.Inv);
-                m.Attributes.Add(a);
             }
+        }
+
+        static AttributeEntry ToEntry(Part part, NXObject.AttributeInformation info, string extraFlag)
+        {
+            object boxed = info;
+            var a = new AttributeEntry
+            {
+                Title = info.Title ?? "",
+                Category = info.Category ?? "",
+                Type = info.Type.ToString()
+            };
+            foreach (string n in AliasMembers)
+            {
+                object v = NxReflect.Member(boxed, n);
+                if (v != null && v.ToString().Length > 0) { a.Alias = v.ToString(); break; }
+            }
+            var flags = new List<string>();
+            if (extraFlag.Length > 0) flags.Add(extraFlag);
+            if (NxReflect.Member(boxed, "Unset") is bool && (bool)NxReflect.Member(boxed, "Unset")) { a.IsSet = false; flags.Add("unset"); }
+            if (NxReflect.Member(boxed, "PdmBased") is bool && (bool)NxReflect.Member(boxed, "PdmBased")) flags.Add("pdm");
+            if (NxReflect.Member(boxed, "Inherited") is bool && (bool)NxReflect.Member(boxed, "Inherited")) flags.Add("inherited");
+
+            object val = NxReflect.Member(boxed, a.Type + "Value");
+            if (val == null) val = NxReflect.Member(boxed, "StringValue");
+            a.Value = val == null ? "" : Convert.ToString(val, Fmt.Inv);
+            if (a.Value.Length == 0)
+            {
+                object s = NxReflect.CallByTitle(part, "GetUserAttributeAsString", a.Title);
+                if (s is string && ((string)s).Length > 0)
+                {
+                    a.Value = (string)s;
+                    flags.Add("asString");
+                }
+            }
+            a.Flags = string.Join(",", flags.ToArray());
+            return a;
         }
     }
 
@@ -204,6 +229,28 @@ namespace LaserDxf.Nx
                     catch (Exception ex) { log.Add("Builder.Destroy failed: " + ex.Message); }
                 }
             }
+        }
+
+        /// <summary>Calls obj.method(title, AttributeType, -1) by reflection, trying the String then
+        /// Any attribute type. Returns null if the method is missing or the attribute isn't there.</summary>
+        public static object CallByTitle(object obj, string method, string title)
+        {
+            foreach (MethodInfo mi in obj.GetType().GetMethods())
+            {
+                ParameterInfo[] ps = mi.GetParameters();
+                if (mi.Name != method || ps.Length != 3 || ps[0].ParameterType != typeof(string) || !ps[1].ParameterType.IsEnum || ps[2].ParameterType != typeof(int)) continue;
+                foreach (string typeName in new[] { "String", "Any" })
+                {
+                    try
+                    {
+                        object type = Enum.Parse(ps[1].ParameterType, typeName);
+                        object r = mi.Invoke(obj, new object[] { title, type, -1 });
+                        if (r != null) return r;
+                    }
+                    catch { }
+                }
+            }
+            return null;
         }
 
         /// <summary>Path of the running journal, if this NX version exposes Session.ExecutingJournal.</summary>

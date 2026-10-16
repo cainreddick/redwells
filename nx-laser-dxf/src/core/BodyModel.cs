@@ -65,6 +65,8 @@ namespace LaserDxf.Core
         public string Value = "";
         public string Type = "";
         public bool IsSet = true;
+        /// <summary>Diagnostics from the NX layer, e.g. "pdm,unset".</summary>
+        public string Flags = "";
     }
 
     public sealed class BodyModel
@@ -160,7 +162,7 @@ namespace LaserDxf.Core
             var attrs = new List<object>();
             foreach (var a in Attributes)
                 attrs.Add(new JObj().Add("category", a.Category).Add("title", a.Title).Add("alias", a.Alias)
-                    .Add("value", a.Value).Add("type", a.Type).Add("isSet", a.IsSet));
+                    .Add("value", a.Value).Add("type", a.Type).Add("isSet", a.IsSet).Add("flags", a.Flags));
 
             return new JObj().Add("format", "laserdxf-body-1").Add("partName", PartName).Add("units", Units)
                 .Add("faces", faces).Add("edges", edges).Add("features", feats).Add("attributes", attrs);
@@ -231,7 +233,8 @@ namespace LaserDxf.Core
                         Alias = a.Str("alias", ""),
                         Value = a.Str("value", ""),
                         Type = a.Str("type", ""),
-                        IsSet = a.Bool("isSet", true)
+                        IsSet = a.Bool("isSet", true),
+                        Flags = a.Str("flags", "")
                     });
                 }
             }

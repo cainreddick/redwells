@@ -34,7 +34,7 @@ namespace LaserDxf.Nx
 
     public static class ExportCommand
     {
-        public const string Version = "0.2 (step 2: profile)";
+        public const string Version = "0.3 (steps 3-5: labels + part number)";
 
         public static void Run()
         {
@@ -58,6 +58,7 @@ namespace LaserDxf.Nx
             }
 
             var ex = new NxBodyExtractor(UFSession.GetUFSession(), log) { ChordTol = cfg.ChordTolerance };
+            ex.WantedAttributeTitles.AddRange(cfg.AttributeTitles());
             BodyModel m = ex.Extract(sel.Body, sel.Part);
             string note;
             int faceId = NxPlate.PlateFaceId(sel, ex, m, opt, log, out note);
@@ -166,6 +167,9 @@ namespace LaserDxf.Nx
             this.log = log;
         }
 
+        /// <summary>Attribute titles to look up directly if GetUserAttributes() doesn't list them.</summary>
+        public List<string> WantedAttributeTitles = new List<string>();
+
         public BodyModel Extract(Body body, Part part)
         {
             var m = new BodyModel();
@@ -204,7 +208,7 @@ namespace LaserDxf.Nx
                 log.Add("WARNING: " + vertexMismatches + " edge(s) whose sampled end points do not match their NX vertices. Please send me the debug file.");
 
             ExtractFeatures(body, part, m);
-            NxAttributes.Read(part, m, log);
+            NxAttributes.Read(part, m, log, WantedAttributeTitles);
             return m;
         }
 
@@ -569,48 +573,73 @@ namespace LaserDxf.Nx
 
     public static class NxAttributes
     {
-        static readonly string[] AliasMembers = { "Alias", "TitleAlias", "AliasName" };
-        static readonly string[] UnsetMembers = { "Unset", "IsUnset" };
+        static readonly string[] AliasMembers = { "TitleAlias", "Alias" };
 
-        /// <summary>Reads every part attribute with its category. Uses reflection on
-        /// NXObject.AttributeInformation so differing member names between NX versions don't break the build.</summary>
-        public static void Read(Part part, BodyModel m, List<string> log)
+        /// <summary>Reads every part attribute with its category. Teamcenter-synced attributes
+        /// can behave differently from plain NX ones, so: values missing from the struct are
+        /// re-read with GetUserAttributeAsString, and each configured title not in the list is
+        /// looked up directly with GetUserAttribute.</summary>
+        public static void Read(Part part, BodyModel m, List<string> log, IEnumerable<string> wantedTitles)
         {
             NXObject.AttributeInformation[] infos;
             try { infos = part.GetUserAttributes(); }
             catch (Exception ex)
             {
                 log.Add("GetUserAttributes failed: " + ex.Message);
-                return;
+                infos = new NXObject.AttributeInformation[0];
             }
+            foreach (NXObject.AttributeInformation info in infos) m.Attributes.Add(ToEntry(part, info, ""));
 
-            if (infos.Length > 0)
-                log.Add("AttributeInformation members: " + NxReflect.MemberNames(infos[0]));
-
-            foreach (NXObject.AttributeInformation info in infos)
+            foreach (string title in wantedTitles)
             {
-                object boxed = info;
-                var a = new AttributeEntry
+                if (string.IsNullOrEmpty(title)) continue;
+                bool present = false;
+                foreach (var a in m.Attributes)
+                    if (string.Equals(a.Title, title, StringComparison.OrdinalIgnoreCase) || string.Equals(a.Alias, title, StringComparison.OrdinalIgnoreCase)) present = true;
+                if (present) continue;
+                object info = NxReflect.CallByTitle(part, "GetUserAttribute", title);
+                if (info is NXObject.AttributeInformation)
                 {
-                    Title = info.Title ?? "",
-                    Category = info.Category ?? "",
-                    Type = info.Type.ToString()
-                };
-                foreach (string n in AliasMembers)
-                {
-                    object v = NxReflect.Member(boxed, n);
-                    if (v != null) { a.Alias = v.ToString(); break; }
+                    m.Attributes.Add(ToEntry(part, (NXObject.AttributeInformation)info, "direct"));
+                    log.Add("Attribute \"" + title + "\" was not in GetUserAttributes() but was found by a direct lookup.");
                 }
-                foreach (string n in UnsetMembers)
-                {
-                    object v = NxReflect.Member(boxed, n);
-                    if (v is bool) { a.IsSet = !(bool)v; break; }
-                }
-                object val = NxReflect.Member(boxed, a.Type + "Value");
-                if (val == null) val = NxReflect.Member(boxed, "StringValue");
-                a.Value = val == null ? "" : Convert.ToString(val, Fmt.Inv);
-                m.Attributes.Add(a);
             }
+        }
+
+        static AttributeEntry ToEntry(Part part, NXObject.AttributeInformation info, string extraFlag)
+        {
+            object boxed = info;
+            var a = new AttributeEntry
+            {
+                Title = info.Title ?? "",
+                Category = info.Category ?? "",
+                Type = info.Type.ToString()
+            };
+            foreach (string n in AliasMembers)
+            {
+                object v = NxReflect.Member(boxed, n);
+                if (v != null && v.ToString().Length > 0) { a.Alias = v.ToString(); break; }
+            }
+            var flags = new List<string>();
+            if (extraFlag.Length > 0) flags.Add(extraFlag);
+            if (NxReflect.Member(boxed, "Unset") is bool && (bool)NxReflect.Member(boxed, "Unset")) { a.IsSet = false; flags.Add("unset"); }
+            if (NxReflect.Member(boxed, "PdmBased") is bool && (bool)NxReflect.Member(boxed, "PdmBased")) flags.Add("pdm");
+            if (NxReflect.Member(boxed, "Inherited") is bool && (bool)NxReflect.Member(boxed, "Inherited")) flags.Add("inherited");
+
+            object val = NxReflect.Member(boxed, a.Type + "Value");
+            if (val == null) val = NxReflect.Member(boxed, "StringValue");
+            a.Value = val == null ? "" : Convert.ToString(val, Fmt.Inv);
+            if (a.Value.Length == 0)
+            {
+                object s = NxReflect.CallByTitle(part, "GetUserAttributeAsString", a.Title);
+                if (s is string && ((string)s).Length > 0)
+                {
+                    a.Value = (string)s;
+                    flags.Add("asString");
+                }
+            }
+            a.Flags = string.Join(",", flags.ToArray());
+            return a;
         }
     }
 
@@ -716,6 +745,28 @@ namespace LaserDxf.Nx
             }
         }
 
+        /// <summary>Calls obj.method(title, AttributeType, -1) by reflection, trying the String then
+        /// Any attribute type. Returns null if the method is missing or the attribute isn't there.</summary>
+        public static object CallByTitle(object obj, string method, string title)
+        {
+            foreach (MethodInfo mi in obj.GetType().GetMethods())
+            {
+                ParameterInfo[] ps = mi.GetParameters();
+                if (mi.Name != method || ps.Length != 3 || ps[0].ParameterType != typeof(string) || !ps[1].ParameterType.IsEnum || ps[2].ParameterType != typeof(int)) continue;
+                foreach (string typeName in new[] { "String", "Any" })
+                {
+                    try
+                    {
+                        object type = Enum.Parse(ps[1].ParameterType, typeName);
+                        object r = mi.Invoke(obj, new object[] { title, type, -1 });
+                        if (r != null) return r;
+                    }
+                    catch { }
+                }
+            }
+            return null;
+        }
+
         /// <summary>Path of the running journal, if this NX version exposes Session.ExecutingJournal.</summary>
         public static string ExecutingJournal(Session s)
         {
@@ -759,6 +810,7 @@ namespace LaserDxf.Nx
 
             AnalysisOptions opt = cfg.ToAnalysisOptions();
             var ex = new NxBodyExtractor(UFSession.GetUFSession(), log) { ChordTol = cfg.ChordTolerance };
+            ex.WantedAttributeTitles.AddRange(cfg.AttributeTitles());
             BodyModel m = ex.Extract(sel.Body, part);
             string note;
             int faceId = NxPlate.PlateFaceId(sel, ex, m, opt, log, out note);
@@ -835,6 +887,262 @@ namespace LaserDxf.Nx
     }
 }
 
+// ----- core/Annotator.cs -----
+// Places hole labels and the part-number etch, and adds them to the DXF on the
+// ETCH layer (as single-stroke polylines or DXF TEXT).
+namespace LaserDxf.Core
+{
+    using System;
+    using System.Collections.Generic;
+
+    public sealed class PlacedText
+    {
+        public string Text = "";
+        public double Height;
+        public double RotationDeg;
+        public Rect2 Box;
+        /// <summary>Left end of the baseline (before rotation).</summary>
+        public Vec2 Origin;
+        public string Position = "";
+        public double Clearance;
+        public bool Clear;
+        public CutHole Hole;
+    }
+
+    /// <summary>Everything text must keep away from, in DXF (mm) coordinates.</summary>
+    public sealed class Obstacles
+    {
+        public List<Vec2> Outer = new List<Vec2>();
+        public List<List<Vec2>> Cutouts = new List<List<Vec2>>();
+        public List<Vec2> CircleCenters = new List<Vec2>();
+        public List<double> CircleRadii = new List<double>();
+        public List<Rect2> Texts = new List<Rect2>();
+
+        public static Obstacles From(BodyModel m, FaceAnalysis a, ProfileResult p)
+        {
+            var o = new Obstacles();
+            o.Outer = Polygon(m, a, a.Outer, p.UnitScale);
+            foreach (var h in p.Holes)
+            {
+                if (h.Circle != null)
+                {
+                    o.CircleCenters.Add(h.Circle.Center);
+                    o.CircleRadii.Add(h.Circle.Radius);
+                }
+                else o.Cutouts.Add(Polygon(m, a, h.Hole.Loop, p.UnitScale));
+            }
+            return o;
+        }
+
+        static List<Vec2> Polygon(BodyModel m, FaceAnalysis a, FaceLoop loop, double k)
+        {
+            var pts = new List<Vec2>();
+            foreach (var oe in loop.Edges)
+            {
+                List<Vec3> e = PlateAnalyzer.EdgePolyline(m.Edge(oe.EdgeId));
+                for (int i = 0; i < e.Count - 1; i++)
+                    pts.Add(a.Frame.ToLocal(e[oe.Reversed ? e.Count - 1 - i : i]) * k);
+            }
+            return pts;
+        }
+
+        /// <summary>Smallest distance from the box to anything; negative/zero when it overlaps
+        /// something or is not on the plate. skipCircle = the labelled hole itself.</summary>
+        public double Clearance(Rect2 r, int skipCircle)
+        {
+            Vec2 c = r.Center;
+            if (!Layout2.PointInPolygon(c, Outer)) return -1000;
+            double d = Layout2.PolylineRect(Outer, r);
+            for (int i = 0; i < CircleCenters.Count; i++)
+            {
+                if (i == skipCircle) continue;
+                d = Math.Min(d, Layout2.PointRect(CircleCenters[i], r) - CircleRadii[i]);
+            }
+            foreach (var cut in Cutouts)
+            {
+                if (Layout2.PointInPolygon(c, cut)) return -1000;
+                d = Math.Min(d, Layout2.PolylineRect(cut, r));
+            }
+            foreach (var t in Texts) d = Math.Min(d, Layout2.RectRect(t, r));
+            return d;
+        }
+    }
+
+    public static class Annotator
+    {
+        static readonly string[] LabelPositions = { "right", "above", "left", "below", "above right", "above left", "below left", "below right" };
+
+        static Rect2 LabelBox(string pos, Vec2 c, double r, double gap, double w, double h)
+        {
+            double d = r + gap;
+            double q = d * Math.Sqrt(0.5);
+            switch (pos)
+            {
+                case "right": return new Rect2(c.X + d, c.Y - h / 2, c.X + d + w, c.Y + h / 2);
+                case "above": return new Rect2(c.X - w / 2, c.Y + d, c.X + w / 2, c.Y + d + h);
+                case "left": return new Rect2(c.X - d - w, c.Y - h / 2, c.X - d, c.Y + h / 2);
+                case "below": return new Rect2(c.X - w / 2, c.Y - d - h, c.X + w / 2, c.Y - d);
+                case "above right": return new Rect2(c.X + q, c.Y + q, c.X + q + w, c.Y + q + h);
+                case "above left": return new Rect2(c.X - q - w, c.Y + q, c.X - q, c.Y + q + h);
+                case "below left": return new Rect2(c.X - q - w, c.Y - q - h, c.X - q, c.Y - q);
+                default: return new Rect2(c.X + q, c.Y - q - h, c.X + q + w, c.Y - q);
+            }
+        }
+
+        /// <summary>Places a label next to each labelled hole: right, above, left, below, then diagonals.
+        /// The first position clear of holes, other labels and the plate edge wins; otherwise the
+        /// position with the most room is used and a warning is logged.</summary>
+        public static List<PlacedText> PlaceLabels(ProfileResult p, Obstacles obs, LaserConfig c, List<string> warnings)
+        {
+            var placed = new List<PlacedText>();
+            var holes = new List<CutHole>();
+            foreach (var h in p.Holes) if (h.Circle != null && h.Label.Length > 0) holes.Add(h);
+            // top-to-bottom, left-to-right: deterministic and reads naturally
+            holes.Sort(delegate (CutHole x, CutHole y)
+            {
+                int cy = -x.Center.Y.CompareTo(y.Center.Y);
+                return Math.Abs(x.Center.Y - y.Center.Y) > 1e-6 ? cy : x.Center.X.CompareTo(y.Center.X);
+            });
+
+            double hgt = c.LabelHeight;
+            foreach (var h in holes)
+            {
+                int self = obs.CircleCenters.IndexOf(h.Circle.Center);
+                double w = StrokeFont.Measure(h.Label, hgt);
+                PlacedText best = null;
+                foreach (string pos in LabelPositions)
+                {
+                    Rect2 box = LabelBox(pos, h.Circle.Center, h.Circle.Radius, c.LabelGap, w, hgt);
+                    // edges need edgeClearance, everything else holeClearance
+                    double edge = Layout2.PolylineRect(obs.Outer, box);
+                    double other = obs.Clearance(box, self);
+                    double score = Math.Min(edge - c.EdgeClearance, other - c.HoleClearance);
+                    var t = new PlacedText { Text = h.Label, Height = hgt, Box = box, Origin = new Vec2(box.MinX, box.MinY), Position = pos, Clearance = score, Hole = h };
+                    if (best == null || score > best.Clearance) best = t;
+                    if (score >= 0) { best = t; break; }
+                }
+                best.Clear = best.Clearance >= 0;
+                if (!best.Clear)
+                    warnings.Add("Label " + h.Label + " for the hole at (" + Fmt.N(h.Center.X, 1) + ", " + Fmt.N(h.Center.Y, 1) +
+                                 ") has no clear spot - placed " + best.Position + ", check it in the DXF.");
+                obs.Texts.Add(best.Box);
+                placed.Add(best);
+            }
+            return placed;
+        }
+
+        /// <summary>Finds the spot on the plate with the most room for the etch text (largest clear
+        /// area), horizontal first, then rotated 90 degrees, shrinking the text down to the minimum height.</summary>
+        public static PlacedText PlaceEtch(string text, Obstacles obs, Bounds2 plate, LaserConfig c, List<string> warnings)
+        {
+            if (text.Trim().Length == 0)
+            {
+                warnings.Add("The part-number text is empty - nothing etched.");
+                return null;
+            }
+            PlacedText fallback = null;
+            double minH = Math.Min(c.EtchMinHeight, c.EtchHeight);
+            for (double h = c.EtchHeight; h >= minH - 1e-9; h -= 0.5)
+            {
+                double w = StrokeFont.Measure(text, h);
+                foreach (double rot in c.EtchAllowRotate90 ? new[] { 0.0, 90.0 } : new[] { 0.0 })
+                {
+                    double bw = rot == 0 ? w : h, bh = rot == 0 ? h : w;
+                    Vec2 centre;
+                    double clear = BestSpot(obs, plate, bw, bh, out centre);
+                    Rect2 box = Rect2.FromCenter(centre, bw, bh);
+                    var t = new PlacedText
+                    {
+                        Text = text, Height = h, RotationDeg = rot, Box = box, Clearance = clear,
+                        Origin = rot == 0 ? new Vec2(box.MinX, box.MinY) : new Vec2(box.MaxX, box.MinY),
+                        Position = (rot == 0 ? "horizontal" : "vertical") + " at (" + Fmt.N(centre.X, 1) + ", " + Fmt.N(centre.Y, 1) + ")"
+                    };
+                    if (clear >= c.EtchClearance)
+                    {
+                        t.Clear = true;
+                        if (h < c.EtchHeight) warnings.Add("Part number shrunk to " + Fmt.N(h, 1) + " mm high to fit.");
+                        obs.Texts.Add(box);
+                        return t;
+                    }
+                    if (fallback == null || clear > fallback.Clearance) fallback = t;
+                }
+            }
+            warnings.Add("No spot with " + Fmt.N(c.EtchClearance, 1) + " mm clearance for the part number - placed " + fallback.Position +
+                         " with " + Fmt.N(Math.Max(fallback.Clearance, 0), 1) + " mm. Check it in the DXF.");
+            obs.Texts.Add(fallback.Box);
+            return fallback;
+        }
+
+        /// <summary>Grid search, refined twice around the best candidates.</summary>
+        static double BestSpot(Obstacles obs, Bounds2 plate, double w, double h, out Vec2 centre)
+        {
+            double step = Math.Max(Math.Max(plate.Width, plate.Height) / 80.0, 0.5);
+            var cands = new List<KeyValuePair<double, Vec2>>();
+            for (double y = plate.MinY + h / 2; y <= plate.MaxY - h / 2 + 1e-9; y += step)
+                for (double x = plate.MinX + w / 2; x <= plate.MaxX - w / 2 + 1e-9; x += step)
+                {
+                    var p = new Vec2(x, y);
+                    cands.Add(new KeyValuePair<double, Vec2>(obs.Clearance(Rect2.FromCenter(p, w, h), -1), p));
+                }
+            centre = new Vec2((plate.MinX + plate.MaxX) / 2, (plate.MinY + plate.MaxY) / 2);
+            if (cands.Count == 0) return -1000;
+            cands.Sort(delegate (KeyValuePair<double, Vec2> a, KeyValuePair<double, Vec2> b) { return b.Key.CompareTo(a.Key); });
+
+            double bestScore = cands[0].Key;
+            centre = cands[0].Value;
+            int seeds = Math.Min(6, cands.Count);
+            for (int s = 0; s < seeds; s++)
+            {
+                Vec2 c0 = cands[s].Value;
+                double sc = cands[s].Key;
+                double st = step;
+                for (int round = 0; round < 3; round++)
+                {
+                    st /= 3;
+                    Vec2 bestLocal = c0;
+                    for (int dy = -3; dy <= 3; dy++)
+                        for (int dx = -3; dx <= 3; dx++)
+                        {
+                            var p = new Vec2(c0.X + dx * st, c0.Y + dy * st);
+                            double v = obs.Clearance(Rect2.FromCenter(p, w, h), -1);
+                            if (v > sc) { sc = v; bestLocal = p; }
+                        }
+                    c0 = bestLocal;
+                }
+                if (sc > bestScore) { bestScore = sc; centre = c0; }
+            }
+            return bestScore;
+        }
+
+        /// <summary>Adds the text to the document on the etch layer.</summary>
+        public static void Emit(DxfDocument doc, PlacedText t, LaserConfig c)
+        {
+            if (t == null) return;
+            int colour = c.EntityColors ? c.EtchLayer.Color : 256;
+            if (c.TextMode == TextMode.Text)
+            {
+                doc.Entities.Add(new DxfText
+                {
+                    Layer = c.EtchLayer.Name, Color = colour, Position = t.Origin, Height = t.Height,
+                    RotationDeg = t.RotationDeg, Value = t.Text, Width = StrokeFont.Measure(t.Text, t.Height)
+                });
+                return;
+            }
+            foreach (var stroke in StrokeFont.Render(t.Text, t.Origin, t.Height, t.RotationDeg))
+            {
+                var pl = new DxfPolyline { Layer = c.EtchLayer.Name, Color = colour };
+                pl.Points.AddRange(stroke);
+                if (pl.Points.Count > 3 && pl.Points[0].DistanceTo(pl.Points[pl.Points.Count - 1]) < 1e-9)
+                {
+                    pl.Points.RemoveAt(pl.Points.Count - 1);
+                    pl.Closed = true;
+                }
+                doc.Entities.Add(pl);
+            }
+        }
+    }
+}
+
 // ----- core/BodyModel.cs -----
 // Neutral description of a solid body's topology and geometry.
 // The NX layer fills this in; everything downstream works on it alone.
@@ -903,6 +1211,8 @@ namespace LaserDxf.Core
         public string Value = "";
         public string Type = "";
         public bool IsSet = true;
+        /// <summary>Diagnostics from the NX layer, e.g. "pdm,unset".</summary>
+        public string Flags = "";
     }
 
     public sealed class BodyModel
@@ -998,7 +1308,7 @@ namespace LaserDxf.Core
             var attrs = new List<object>();
             foreach (var a in Attributes)
                 attrs.Add(new JObj().Add("category", a.Category).Add("title", a.Title).Add("alias", a.Alias)
-                    .Add("value", a.Value).Add("type", a.Type).Add("isSet", a.IsSet));
+                    .Add("value", a.Value).Add("type", a.Type).Add("isSet", a.IsSet).Add("flags", a.Flags));
 
             return new JObj().Add("format", "laserdxf-body-1").Add("partName", PartName).Add("units", Units)
                 .Add("faces", faces).Add("edges", edges).Add("features", feats).Add("attributes", attrs);
@@ -1069,7 +1379,8 @@ namespace LaserDxf.Core
                         Alias = a.Str("alias", ""),
                         Value = a.Str("value", ""),
                         Type = a.Str("type", ""),
-                        IsSet = a.Bool("isSet", true)
+                        IsSet = a.Bool("isSet", true),
+                        Flags = a.Str("flags", "")
                     });
                 }
             }
@@ -1171,6 +1482,13 @@ namespace LaserDxf.Core
             FallbackIdAttr.IgnoreValues.Add("model-plain-1");
             LabelTable.Add(new LabelRule { Label = "R6", Diameter = 5.8 });
             LabelTable.Add(new LabelRule { Label = "M8", Diameter = 5.5 });
+        }
+
+        public List<string> AttributeTitles()
+        {
+            var l = new List<string>();
+            foreach (var a in new[] { IdAttr, RevisionAttr, FallbackIdAttr, NameAttr, MaterialAttr, ThicknessAttr }) l.Add(a.Title);
+            return l;
         }
 
         public AnalysisOptions ToAnalysisOptions()
@@ -1853,9 +2171,26 @@ namespace LaserDxf.Core
 
             run.Identity = Identity.Resolve(m, c);
             run.Warnings.AddRange(run.Identity.Warnings);
+            if (run.Identity.AttributesMissing) run.AttributeDump = ProbeReport.Attributes(m);
 
             run.Profile = ProfileBuilder.Build(m, run.Analysis, c);
             run.Warnings.AddRange(run.Profile.Warnings);
+
+            // Labels and part number.
+            HoleClassifier.Classify(m, run.Profile, c, run.Warnings);
+            Obstacles obs = Obstacles.From(m, run.Analysis, run.Profile);
+            run.Labels = Annotator.PlaceLabels(run.Profile, obs, c, run.Warnings);
+            foreach (var t in run.Labels) Annotator.Emit(run.Profile.Doc, t, c);
+
+            run.EtchText = Identity.Format(c.EtchFormat, run.Identity.Tokens(), run.Warnings);
+            string bad = StrokeFont.Unsupported(run.EtchText);
+            if (bad.Length > 0 && c.TextMode == TextMode.Stroke)
+                run.Warnings.Add("The etch font has no glyph for \"" + bad + "\" - drawn as '?'.");
+            if (!string.Equals(c.EtchPlacement, "Auto", StringComparison.OrdinalIgnoreCase))
+                run.Warnings.Add("etch.placement \"" + c.EtchPlacement + "\" is not available yet - placed automatically.");
+            var plate = new Bounds2 { MinX = 0, MinY = 0, MaxX = run.Profile.Width, MaxY = run.Profile.Height };
+            run.Etch = Annotator.PlaceEtch(run.EtchText, obs, plate, c, run.Warnings);
+            Annotator.Emit(run.Profile.Doc, run.Etch, c);
 
             run.FileName = FileNameFor(run.Identity, c, run.Warnings);
             run.DxfText = DxfWriter.Write(run.Profile.Doc, c.DxfVersion);
@@ -1889,6 +2224,11 @@ namespace LaserDxf.Core
         public FaceAnalysis Analysis;
         public ProfileResult Profile;
         public LaserConfig Config;
+        public List<PlacedText> Labels = new List<PlacedText>();
+        public string EtchText = "";
+        public PlacedText Etch;
+        /// <summary>Attribute table shown when the ID or revision can't be found.</summary>
+        public List<string> AttributeDump = new List<string>();
         public string FileName = "";
         public string DxfText = "";
         public string OutputPath = "";
@@ -1941,12 +2281,27 @@ namespace LaserDxf.Core
                     L.Add("Diameters    : " + string.Join(";  ", parts.ToArray()));
                 }
                 int labelled = 0;
-                foreach (var h in r.Profile.Holes) if (h.Label.Length > 0) labelled++;
-                L.Add("Labelled     : " + labelled);
+                var byLabel = new SortedDictionary<string, int>();
+                var sources = new SortedDictionary<string, bool>();
+                foreach (var h in r.Profile.Holes)
+                {
+                    if (h.Label.Length == 0) continue;
+                    labelled++;
+                    int n;
+                    byLabel.TryGetValue(h.Label, out n);
+                    byLabel[h.Label] = n + 1;
+                    sources[h.Label + ": " + h.LabelSource] = true;
+                }
+                var lp = new List<string>();
+                foreach (var kv in byLabel) lp.Add(kv.Key + " x" + kv.Value);
+                L.Add("Labelled     : " + labelled + " of " + circles + " round holes" + (lp.Count > 0 ? "  (" + string.Join(", ", lp.ToArray()) + ")" : ""));
+                foreach (var kv in sources) L.Add("               " + kv.Key);
+                if (r.Etch != null)
+                    L.Add("Etch         : \"" + r.Etch.Text + "\"  " + Fmt.N(r.Etch.Height, 1) + " mm high, " + r.Etch.Position);
                 L.Add("Entities     : " + r.Profile.Doc.Entities.Count + " (" + r.Profile.OuterEntityCount + " in the outer profile)");
             }
             if (r.Config != null)
-                L.Add("DXF format   : " + r.Config.DxfVersion + ", mm, layers " + r.Config.CutLayer.Name + " (colour " + r.Config.CutLayer.Color + ") / " +
+                L.Add("DXF format   : " + r.Config.DxfVersion + ", text as " + (r.Config.TextMode == TextMode.Stroke ? "single-stroke vectors" : "DXF TEXT") + ", mm, layers " + r.Config.CutLayer.Name + " (colour " + r.Config.CutLayer.Color + ") / " +
                       r.Config.EtchLayer.Name + " (colour " + r.Config.EtchLayer.Color + ")");
             L.Add("Output       : " + (r.OutputPath.Length > 0 ? r.OutputPath : "-") + (r.Outcome.Length > 0 ? "   [" + r.Outcome + "]" : ""));
             if (r.Warnings.Count > 0)
@@ -1954,6 +2309,11 @@ namespace LaserDxf.Core
                 L.Add("");
                 L.Add("Warnings (" + r.Warnings.Count + "):");
                 foreach (string w in r.Warnings) L.Add("  - " + w);
+            }
+            if (r.AttributeDump.Count > 0)
+            {
+                L.Add("");
+                L.AddRange(r.AttributeDump);
             }
             if (r.Notes.Count > 0)
             {
@@ -2191,6 +2551,156 @@ namespace LaserDxf.Core
 
         public bool Contains(int v) { return map.ContainsKey(v); }
         public int Count { get { return Items.Count; } }
+    }
+}
+
+// ----- core/HoleClassifier.cs -----
+// Works out each round hole's label: NX Hole feature data first, then countersink
+// geometry, then the diameter lookup table. Applies optional laser cut diameters.
+namespace LaserDxf.Core
+{
+    using System;
+    using System.Collections.Generic;
+
+    public sealed class HoleFeatureData
+    {
+        public string FeatureName = "";
+        public string HoleType = "";
+        public string Form = "";
+        public string ThreadSize = "";
+        public bool IsThreaded;
+        public bool IsCountersunk;
+        public bool IsCounterbored;
+    }
+
+    public static class HoleClassifier
+    {
+        static string Unquote(string s)
+        {
+            if (s == null) return "";
+            s = s.Trim();
+            if (s.Length >= 2 && s[0] == '"' && s[s.Length - 1] == '"') s = s.Substring(1, s.Length - 2);
+            return s.Trim();
+        }
+
+        static bool Has(string s, string what)
+        {
+            return s.IndexOf(what, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        /// <summary>Reads the HolePackageBuilder properties the NX layer recorded for a Hole feature.
+        /// The builder exposes a form for every hole type, so only the form of the active type counts.</summary>
+        public static HoleFeatureData ParseHoleFeature(FeatureInfo f)
+        {
+            var d = new HoleFeatureData { FeatureName = f.Name };
+            d.HoleType = Unquote(f.Prop("Types") ?? f.Prop("Type") ?? f.Prop("HoleType"));
+            if (d.HoleType.Length > 0)
+            {
+                d.Form = Unquote(f.Prop(d.HoleType + "Form"));
+                if (d.Form.Length == 0)
+                {
+                    // e.g. type "ThreadedHole" -> "ThreadedHoleForm"/"ThreadForm"; take the first matching *Form
+                    string stem = d.HoleType.EndsWith("Hole", StringComparison.OrdinalIgnoreCase) ? d.HoleType.Substring(0, d.HoleType.Length - 4) : d.HoleType;
+                    foreach (var kv in f.Props)
+                        if (kv.Key.EndsWith("Form", StringComparison.Ordinal) && kv.Key.StartsWith(stem, StringComparison.OrdinalIgnoreCase)) { d.Form = Unquote(kv.Value); break; }
+                }
+            }
+            d.IsThreaded = Has(d.HoleType, "Thread");
+            if (d.IsThreaded)
+            {
+                d.ThreadSize = Unquote(f.Prop("ThreadSize"));
+                if (d.ThreadSize.Length == 0)
+                    foreach (var kv in f.Props)
+                        if (kv.Key.EndsWith("ThreadSize", StringComparison.Ordinal)) { d.ThreadSize = Unquote(kv.Value); break; }
+            }
+            d.IsCountersunk = Has(d.Form, "Countersunk") || Has(d.Form, "Countersink");
+            d.IsCounterbored = Has(d.Form, "Counterbore");
+            return d;
+        }
+
+        /// <summary>"M8 x 1.25" -> "M8", "M10x1.5" -> "M10", "1/4-20 UNC" -> "1/4-20".</summary>
+        public static string ShortThread(string full)
+        {
+            string s = (full ?? "").Trim();
+            int sp = s.IndexOf(' ');
+            if (sp > 0) s = s.Substring(0, sp);
+            for (int i = 1; i < s.Length - 1; i++)
+                if ((s[i] == 'x' || s[i] == 'X') && char.IsDigit(s[i - 1]) && char.IsDigit(s[i + 1])) return s.Substring(0, i);
+            return s;
+        }
+
+        public static void Classify(BodyModel m, ProfileResult profile, LaserConfig c, List<string> warnings)
+        {
+            var featById = new Dictionary<int, FeatureInfo>();
+            foreach (var f in m.Features) featById[f.Id] = f;
+
+            foreach (CutHole ch in profile.Holes)
+            {
+                if (ch.Circle == null) continue; // labels are for round holes only
+
+                // 1. NX Hole feature
+                if (c.UseHoleFeatures)
+                {
+                    foreach (int fid in ch.Hole.FeatureIds)
+                    {
+                        FeatureInfo f;
+                        if (!featById.TryGetValue(fid, out f) || f.ClassName != "HolePackage") continue;
+                        HoleFeatureData d = ParseHoleFeature(f);
+                        if (d.IsThreaded && d.ThreadSize.Length > 0)
+                        {
+                            var t = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                            t["THREAD"] = ShortThread(d.ThreadSize);
+                            t["THREADFULL"] = d.ThreadSize;
+                            ch.Label = Identity.Format(c.ThreadLabelFormat, t, warnings);
+                            ch.LabelSource = "hole feature " + f.Name + " (threaded " + d.ThreadSize + ")";
+                        }
+                        else if (d.IsCountersunk)
+                        {
+                            ch.Label = c.CountersinkLabel;
+                            ch.LabelSource = "hole feature " + f.Name + " (countersunk)";
+                        }
+                        if (ch.Label.Length > 0) break;
+                    }
+                }
+
+                // 2. Countersink found from the geometry (cone in the hole walls)
+                if (ch.Label.Length == 0 && ch.Hole.HasCone && c.CountersinkLabel.Length > 0)
+                {
+                    ch.Label = c.CountersinkLabel;
+                    ch.LabelSource = "countersink geometry";
+                }
+
+                // 3. Diameter lookup table (modelled bore diameter)
+                if (ch.Label.Length == 0)
+                {
+                    LabelRule best = null;
+                    double bestErr = double.MaxValue;
+                    foreach (var r in c.LabelTable)
+                    {
+                        double err = Math.Abs(ch.CutDiameter - r.Diameter);
+                        if (err <= r.Tolerance + 1e-9 && err < bestErr) { best = r; bestErr = err; }
+                    }
+                    if (best != null)
+                    {
+                        ch.Label = best.Label;
+                        ch.LabelSource = "table dia " + Fmt.N(best.Diameter, 3) + " +/- " + Fmt.N(best.Tolerance, 3);
+                    }
+                }
+
+                // Optional laser cut diameter for this label.
+                if (ch.Label.Length > 0)
+                {
+                    foreach (var r in c.LabelTable)
+                    {
+                        if (!string.Equals(r.Label, ch.Label, StringComparison.OrdinalIgnoreCase) || double.IsNaN(r.CutDiameter)) continue;
+                        ch.LabelSource += "; cut at dia " + Fmt.N(r.CutDiameter, 3) + " instead of " + Fmt.N(ch.CutDiameter, 3);
+                        ch.CutDiameter = r.CutDiameter;
+                        ch.Circle.Radius = r.CutDiameter / 2;
+                        break;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -2517,6 +3027,121 @@ namespace LaserDxf.Core
     }
 }
 
+// ----- core/Layout2.cs -----
+// 2D layout geometry for placing text: rectangles, clearances, point-in-polygon.
+namespace LaserDxf.Core
+{
+    using System;
+    using System.Collections.Generic;
+
+    public struct Rect2
+    {
+        public double MinX, MinY, MaxX, MaxY;
+
+        public Rect2(double minX, double minY, double maxX, double maxY)
+        {
+            MinX = minX; MinY = minY; MaxX = maxX; MaxY = maxY;
+        }
+
+        public static Rect2 FromCenter(Vec2 c, double w, double h)
+        {
+            return new Rect2(c.X - w / 2, c.Y - h / 2, c.X + w / 2, c.Y + h / 2);
+        }
+
+        public double Width { get { return MaxX - MinX; } }
+        public double Height { get { return MaxY - MinY; } }
+        public Vec2 Center { get { return new Vec2((MinX + MaxX) / 2, (MinY + MaxY) / 2); } }
+
+        public override string ToString()
+        {
+            return "[" + Fmt.N(MinX, 2) + ", " + Fmt.N(MinY, 2) + " .. " + Fmt.N(MaxX, 2) + ", " + Fmt.N(MaxY, 2) + "]";
+        }
+    }
+
+    public static class Layout2
+    {
+        /// <summary>Distance from a point to a rectangle (0 inside).</summary>
+        public static double PointRect(Vec2 p, Rect2 r)
+        {
+            double dx = Math.Max(Math.Max(r.MinX - p.X, 0), p.X - r.MaxX);
+            double dy = Math.Max(Math.Max(r.MinY - p.Y, 0), p.Y - r.MaxY);
+            return Math.Sqrt(dx * dx + dy * dy);
+        }
+
+        public static double RectRect(Rect2 a, Rect2 b)
+        {
+            double dx = Math.Max(Math.Max(a.MinX - b.MaxX, b.MinX - a.MaxX), 0);
+            double dy = Math.Max(Math.Max(a.MinY - b.MaxY, b.MinY - a.MaxY), 0);
+            return Math.Sqrt(dx * dx + dy * dy);
+        }
+
+        public static double PointSegment(Vec2 p, Vec2 a, Vec2 b)
+        {
+            Vec2 d = b - a;
+            double len2 = d.X * d.X + d.Y * d.Y;
+            double t = len2 < 1e-24 ? 0 : ((p.X - a.X) * d.X + (p.Y - a.Y) * d.Y) / len2;
+            t = Math.Max(0, Math.Min(1, t));
+            return p.DistanceTo(new Vec2(a.X + d.X * t, a.Y + d.Y * t));
+        }
+
+        static double Cross(Vec2 o, Vec2 a, Vec2 b)
+        {
+            return (a.X - o.X) * (b.Y - o.Y) - (a.Y - o.Y) * (b.X - o.X);
+        }
+
+        static bool SegmentsIntersect(Vec2 a, Vec2 b, Vec2 c, Vec2 d)
+        {
+            double d1 = Cross(c, d, a), d2 = Cross(c, d, b), d3 = Cross(a, b, c), d4 = Cross(a, b, d);
+            return ((d1 > 0) != (d2 > 0)) && ((d3 > 0) != (d4 > 0));
+        }
+
+        /// <summary>Distance from a segment to a rectangle (0 if they touch or cross).</summary>
+        public static double SegmentRect(Vec2 a, Vec2 b, Rect2 r)
+        {
+            if (PointRect(a, r) == 0 || PointRect(b, r) == 0) return 0;
+            var c = new[] { new Vec2(r.MinX, r.MinY), new Vec2(r.MaxX, r.MinY), new Vec2(r.MaxX, r.MaxY), new Vec2(r.MinX, r.MaxY) };
+            for (int i = 0; i < 4; i++)
+                if (SegmentsIntersect(a, b, c[i], c[(i + 1) % 4])) return 0;
+            double d = Math.Min(PointRect(a, r), PointRect(b, r));
+            for (int i = 0; i < 4; i++) d = Math.Min(d, PointSegment(c[i], a, b));
+            return d;
+        }
+
+        /// <summary>Distance from a closed polyline's edges to a rectangle.</summary>
+        public static double PolylineRect(List<Vec2> poly, Rect2 r)
+        {
+            double d = double.MaxValue;
+            for (int i = 0; i < poly.Count; i++)
+            {
+                Vec2 a = poly[i], b = poly[(i + 1) % poly.Count];
+                // quick reject: segment bounding box far away
+                double bx = Math.Max(Math.Max(r.MinX - Math.Max(a.X, b.X), Math.Min(a.X, b.X) - r.MaxX), 0);
+                double by = Math.Max(Math.Max(r.MinY - Math.Max(a.Y, b.Y), Math.Min(a.Y, b.Y) - r.MaxY), 0);
+                if (bx * bx + by * by >= d * d) continue;
+                d = Math.Min(d, SegmentRect(a, b, r));
+                if (d == 0) return 0;
+            }
+            return d;
+        }
+
+        public static bool PointInPolygon(Vec2 p, List<Vec2> poly)
+        {
+            bool inside = false;
+            for (int i = 0, j = poly.Count - 1; i < poly.Count; j = i++)
+            {
+                Vec2 a = poly[i], b = poly[j];
+                if ((a.Y > p.Y) != (b.Y > p.Y) && p.X < (b.X - a.X) * (p.Y - a.Y) / (b.Y - a.Y) + a.X) inside = !inside;
+            }
+            return inside;
+        }
+
+        public static bool RectInPolygon(Rect2 r, List<Vec2> poly)
+        {
+            return PointInPolygon(r.Center, poly) && PolylineRect(poly, r) > 0;
+        }
+    }
+}
+
 // ----- core/PartIdentity.cs -----
 // Part number / revision from Teamcenter attributes, and {TOKEN} templates
 // for the etch text and the DXF file name.
@@ -2537,6 +3162,8 @@ namespace LaserDxf.Core
         public string Material = "";
         public string Thickness = "";
         public List<string> Warnings = new List<string>();
+        /// <summary>True when the ID or revision attribute could not be found.</summary>
+        public bool AttributesMissing;
 
         public Dictionary<string, string> Tokens()
         {
@@ -2553,24 +3180,36 @@ namespace LaserDxf.Core
 
     public static class Identity
     {
-        /// <summary>Finds an attribute by category plus title-or-alias (case-insensitive).
-        /// An empty category in the config matches any category. Returns null if unset/empty/ignored.</summary>
-        public static string Find(List<AttributeEntry> attrs, AttrRef r)
+        /// <summary>Finds an attribute by title-or-alias (case-insensitive) in the configured category.
+        /// If it isn't in that category, any category is accepted and a note says where it was found.
+        /// Empty and ignored values count as missing.</summary>
+        public static string Find(List<AttributeEntry> attrs, AttrRef r, List<string> notes)
         {
             if (r == null || r.Title.Trim().Length == 0) return null;
-            foreach (var a in attrs)
+            bool anyCategory = r.Category.Trim().Length == 0;
+            for (int pass = 0; pass < 2; pass++)
             {
-                if (r.Category.Trim().Length > 0 && !Same(a.Category, r.Category)) continue;
-                if (!Same(a.Title, r.Title) && !Same(a.Alias, r.Title)) continue;
-                if (!a.IsSet) continue;
-                string v = (a.Value ?? "").Trim();
-                if (v.Length == 0) continue;
-                bool ignored = false;
-                foreach (string ig in r.IgnoreValues) if (Same(v, ig)) ignored = true;
-                if (ignored) continue;
-                return v;
+                if (pass == 1 && anyCategory) break;
+                foreach (var a in attrs)
+                {
+                    if (pass == 0 && !anyCategory && !Same(a.Category, r.Category)) continue;
+                    if (!Same(a.Title, r.Title) && !Same(a.Alias, r.Title)) continue;
+                    string v = (a.Value ?? "").Trim();
+                    if (v.Length == 0) continue;
+                    bool ignored = false;
+                    foreach (string ig in r.IgnoreValues) if (Same(v, ig)) ignored = true;
+                    if (ignored) continue;
+                    if (pass == 1 && notes != null)
+                        notes.Add("Attribute \"" + r.Title + "\" found in category \"" + a.Category + "\", not \"" + r.Category + "\" - update the config if that is right.");
+                    return v;
+                }
             }
             return null;
+        }
+
+        public static string Find(List<AttributeEntry> attrs, AttrRef r)
+        {
+            return Find(attrs, r, null);
         }
 
         static bool Same(string a, string b)
@@ -2604,27 +3243,33 @@ namespace LaserDxf.Core
         public static PartIdentity Resolve(BodyModel m, LaserConfig c)
         {
             var p = new PartIdentity();
-            string id = Find(m.Attributes, c.IdAttr);
+            string id = Find(m.Attributes, c.IdAttr, p.Warnings);
             if (id != null) p.IdSource = "attribute " + c.IdAttr;
             else
             {
-                id = Find(m.Attributes, c.FallbackIdAttr);
+                id = Find(m.Attributes, c.FallbackIdAttr, p.Warnings);
                 if (id != null)
                 {
                     p.IdSource = "fallback attribute " + c.FallbackIdAttr;
+                    p.AttributesMissing = true;
                     p.Warnings.Add("Attribute " + c.IdAttr + " not found - used " + c.FallbackIdAttr + ".");
                 }
                 else
                 {
                     id = StripRevision(m.PartName);
                     p.IdSource = "part name";
+                    p.AttributesMissing = true;
                     p.Warnings.Add("Neither " + c.IdAttr + " nor " + c.FallbackIdAttr + " found - used the part name \"" + id + "\".");
                 }
             }
             p.Id = id;
 
-            string rev = Find(m.Attributes, c.RevisionAttr);
-            if (rev == null) p.Warnings.Add("Attribute " + c.RevisionAttr + " not found - revision left out.");
+            string rev = Find(m.Attributes, c.RevisionAttr, p.Warnings);
+            if (rev == null)
+            {
+                p.Warnings.Add("Attribute " + c.RevisionAttr + " not found - revision left out.");
+                p.AttributesMissing = true;
+            }
             p.RevisionRaw = rev ?? "";
             p.Revision = rev == null ? "" : (c.RevisionAsLetter ? RevisionLetters(rev) : rev);
 
@@ -3358,11 +4003,11 @@ namespace LaserDxf.Core
         public static List<string> Attributes(BodyModel m)
         {
             var L = new List<string>();
-            L.Add("Part attributes: " + m.Attributes.Count + "   (category | title | alias = value  [type])");
+            L.Add("Part attributes as NX Open reports them: " + m.Attributes.Count + "   (category | title | alias = value  [type, flags])");
             foreach (var a in m.Attributes)
             {
-                L.Add("  " + Pad(a.Category, 34) + " | " + Pad(a.Title, 28) + " | " + Pad(a.Alias, 18) + " = " +
-                      (a.IsSet ? "\"" + a.Value + "\"" : "<unset>") + "  [" + a.Type + "]");
+                L.Add("  " + Pad(a.Category, 24) + " | " + Pad(a.Title, 26) + " | " + Pad(a.Alias, 14) + " = \"" + a.Value + "\"" +
+                      "  [" + a.Type + (a.Flags.Length > 0 ? ", " + a.Flags : "") + "]");
             }
             return L;
         }
@@ -3573,6 +4218,165 @@ namespace LaserDxf.Core
             Refine(eval, t0, p0, tm, pm, tol, depth - 1, pts);
             pts.Add(pm);
             Refine(eval, tm, pm, t1, p1, tol, depth - 1, pts);
+        }
+    }
+}
+
+// ----- core/StrokeFont.cs -----
+// Built-in single-stroke font for laser etching (vectors, not filled glyphs).
+// Glyphs are drawn on a grid where the cap height is 6 units; most glyphs are
+// 4 units wide. Each glyph is a list of polylines: "x,y x,y ...|x,y x,y ...".
+namespace LaserDxf.Core
+{
+    using System;
+    using System.Collections.Generic;
+    using System.Globalization;
+
+    public static class StrokeFont
+    {
+        const double CapUnits = 6.0;
+        const double SpacingUnits = 1.5;
+
+        sealed class Glyph
+        {
+            public double Width;
+            public List<List<Vec2>> Strokes = new List<List<Vec2>>();
+        }
+
+        static Dictionary<char, Glyph> glyphs;
+
+        static readonly string[] Defs =
+        {
+            "0|4|1,0 0,1 0,5 1,6 3,6 4,5 4,1 3,0 1,0|0.6,1 3.4,5",
+            "1|4|1,5 2,6 2,0|1,0 3,0",
+            "2|4|0,5 1,6 3,6 4,5 4,4 0,0 4,0",
+            "3|4|0,5 1,6 3,6 4,5 4,4 3,3 4,2 4,1 3,0 1,0 0,1|1.5,3 3,3",
+            "4|4|3,0 3,6 0,2 4,2",
+            "5|4|4,6 0,6 0,3.5 3,3.5 4,2.5 4,1 3,0 1,0 0,1",
+            "6|4|3.5,6 1,6 0,5 0,1 1,0 3,0 4,1 4,2.5 3,3.5 0,3.5",
+            "7|4|0,6 4,6 1.5,0",
+            "8|4|1,3 0,4 0,5 1,6 3,6 4,5 4,4 3,3 1,3 0,2 0,1 1,0 3,0 4,1 4,2 3,3",
+            "9|4|4,3 1,3 0,4 0,5 1,6 3,6 4,5 4,1 3,0 0.5,0",
+            "A|4|0,0 0,4 2,6 4,4 4,0|0,2.5 4,2.5",
+            "B|4|0,0 0,6 3,6 4,5 4,4 3,3 0,3|3,3 4,2 4,1 3,0 0,0",
+            "C|4|4,5 3,6 1,6 0,5 0,1 1,0 3,0 4,1",
+            "D|4|0,0 0,6 3,6 4,5 4,1 3,0 0,0",
+            "E|4|4,6 0,6 0,0 4,0|0,3 3,3",
+            "F|4|4,6 0,6 0,0|0,3 3,3",
+            "G|4|4,5 3,6 1,6 0,5 0,1 1,0 3,0 4,1 4,3 2,3",
+            "H|4|0,0 0,6|4,0 4,6|0,3 4,3",
+            "I|2|0,6 2,6|1,6 1,0|0,0 2,0",
+            "J|4|4,6 4,1 3,0 1,0 0,1",
+            "K|4|0,0 0,6|4,6 0,2|1.33,3.33 4,0",
+            "L|4|0,6 0,0 4,0",
+            "M|4|0,0 0,6 2,3 4,6 4,0",
+            "N|4|0,0 0,6 4,0 4,6",
+            "O|4|1,0 0,1 0,5 1,6 3,6 4,5 4,1 3,0 1,0",
+            "P|4|0,0 0,6 3,6 4,5 4,4 3,3 0,3",
+            "Q|4|1,0 0,1 0,5 1,6 3,6 4,5 4,1 3,0 1,0|2.5,1.5 4,0",
+            "R|4|0,0 0,6 3,6 4,5 4,4 3,3 0,3|2,3 4,0",
+            "S|4|4,5 3,6 1,6 0,5 0,4 1,3 3,3 4,2 4,1 3,0 1,0 0,1",
+            "T|4|0,6 4,6|2,6 2,0",
+            "U|4|0,6 0,1 1,0 3,0 4,1 4,6",
+            "V|4|0,6 2,0 4,6",
+            "W|4|0,6 1,0 2,4 3,0 4,6",
+            "X|4|0,0 4,6|0,6 4,0",
+            "Y|4|0,6 2,3 4,6|2,3 2,0",
+            "Z|4|0,6 4,6 0,0 4,0",
+            "-|3|0,3 3,3",
+            "_|4|0,0 4,0",
+            ".|1|0,0 1,0 1,1 0,1 0,0",
+            ",|1|1,1 0,-1",
+            ":|1|0,1 1,1 1,2 0,2 0,1|0,4 1,4 1,5 0,5 0,4",
+            "/|4|0,0 4,6",
+            "(|2|2,6 1,5 1,1 2,0",
+            ")|2|0,6 1,5 1,1 0,0",
+            "+|4|2,1 2,5|0,3 4,3",
+            "=|4|0,2 4,2|0,4 4,4",
+            "#|4|1,0 1,6|3,0 3,6|0,2 4,2|0,4 4,4",
+            "Ø|4|1,0 0,1 0,5 1,6 3,6 4,5 4,1 3,0 1,0|0,0 4,6",
+            "?|4|0,5 1,6 3,6 4,5 4,4 2,2.5 2,1.5|2,0.5 2,0",
+            " |3|",
+        };
+
+        static void Init()
+        {
+            if (glyphs != null) return;
+            var g = new Dictionary<char, Glyph>();
+            foreach (string def in Defs)
+            {
+                // "<char>|<width>|<strokes>" - the char itself may be '|' free; split from the left.
+                char ch = def[0];
+                string rest = def.Substring(2);
+                int bar = rest.IndexOf('|');
+                var glyph = new Glyph { Width = double.Parse(rest.Substring(0, bar), CultureInfo.InvariantCulture) };
+                foreach (string stroke in rest.Substring(bar + 1).Split('|'))
+                {
+                    var pts = new List<Vec2>();
+                    foreach (string xy in stroke.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        string[] p = xy.Split(',');
+                        pts.Add(new Vec2(double.Parse(p[0], CultureInfo.InvariantCulture), double.Parse(p[1], CultureInfo.InvariantCulture)));
+                    }
+                    if (pts.Count >= 2) glyph.Strokes.Add(pts);
+                }
+                g[ch] = glyph;
+            }
+            glyphs = g;
+        }
+
+        static Glyph Get(char c)
+        {
+            Init();
+            Glyph g;
+            if (glyphs.TryGetValue(char.ToUpperInvariant(c), out g)) return g;
+            return glyphs['?'];
+        }
+
+        /// <summary>Characters the font can't draw (they come out as '?').</summary>
+        public static string Unsupported(string text)
+        {
+            Init();
+            string bad = "";
+            foreach (char c in text)
+                if (!glyphs.ContainsKey(char.ToUpperInvariant(c)) && bad.IndexOf(c) < 0) bad += c;
+            return bad;
+        }
+
+        /// <summary>Width of the text at the given cap height.</summary>
+        public static double Measure(string text, double height)
+        {
+            if (string.IsNullOrEmpty(text)) return 0;
+            double units = 0;
+            foreach (char c in text) units += Get(c).Width + SpacingUnits;
+            units -= SpacingUnits;
+            return units * height / CapUnits;
+        }
+
+        /// <summary>Strokes for the text. origin = left end of the baseline; rotation in degrees CCW.</summary>
+        public static List<List<Vec2>> Render(string text, Vec2 origin, double height, double rotationDeg)
+        {
+            var result = new List<List<Vec2>>();
+            double s = height / CapUnits;
+            double r = rotationDeg * Math.PI / 180;
+            double cos = Math.Cos(r), sin = Math.Sin(r);
+            double x = 0;
+            foreach (char c in text)
+            {
+                Glyph g = Get(c);
+                foreach (var stroke in g.Strokes)
+                {
+                    var pts = new List<Vec2>(stroke.Count);
+                    foreach (var p in stroke)
+                    {
+                        double lx = (x + p.X) * s, ly = p.Y * s;
+                        pts.Add(new Vec2(origin.X + lx * cos - ly * sin, origin.Y + lx * sin + ly * cos));
+                    }
+                    result.Add(pts);
+                }
+                x += g.Width + SpacingUnits;
+            }
+            return result;
         }
     }
 }

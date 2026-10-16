@@ -131,11 +131,11 @@ namespace LaserDxf.Core
         public static List<string> Attributes(BodyModel m)
         {
             var L = new List<string>();
-            L.Add("Part attributes: " + m.Attributes.Count + "   (category | title | alias = value  [type])");
+            L.Add("Part attributes as NX Open reports them: " + m.Attributes.Count + "   (category | title | alias = value  [type, flags])");
             foreach (var a in m.Attributes)
             {
-                L.Add("  " + Pad(a.Category, 34) + " | " + Pad(a.Title, 28) + " | " + Pad(a.Alias, 18) + " = " +
-                      (a.IsSet ? "\"" + a.Value + "\"" : "<unset>") + "  [" + a.Type + "]");
+                L.Add("  " + Pad(a.Category, 24) + " | " + Pad(a.Title, 26) + " | " + Pad(a.Alias, 14) + " = \"" + a.Value + "\"" +
+                      "  [" + a.Type + (a.Flags.Length > 0 ? ", " + a.Flags : "") + "]");
             }
             return L;
         }

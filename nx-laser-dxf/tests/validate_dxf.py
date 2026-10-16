@@ -58,6 +58,9 @@ def check(folder, s):
         problems.append(f"{len(ents)} entities, expected {s['entities']}")
     n_circles = len(msp.query("CIRCLE"))
     n_arcs = len(msp.query("ARC"))
+    n_text = len(msp.query("TEXT"))
+    if n_text != s.get("texts", 0):
+        problems.append(f"{n_text} TEXT entities, expected {s.get('texts', 0)}")
     if n_circles != s["circles"]:
         problems.append(f"{n_circles} circles, expected {s['circles']}")
     if n_arcs != s["arcs"]:
@@ -71,12 +74,22 @@ def check(folder, s):
     if not (abs(ext.extmax.x - s["width"]) < 1e-3 and abs(ext.extmax.y - s["height"]) < 1e-3):
         problems.append(f"extents max {ext.extmax} != ({s['width']}, {s['height']})")
 
-    # contour closure
+    # layers: geometry on CUT, text on ETCH (as polylines or TEXT)
     pts = []
+    etch = 0
     for e in ents:
+        if e.dxf.layer == "ETCH":
+            etch += 1
+            if e.dxftype() not in ("LWPOLYLINE", "POLYLINE", "TEXT"):
+                problems.append(f"{e.dxftype()} on ETCH")
+            if e.dxf.color != 5:
+                problems.append(f"ETCH entity colour {e.dxf.color}")
+            continue
         if e.dxf.layer != "CUT":
             problems.append(f"{e.dxftype()} on layer {e.dxf.layer}")
         pts += endpoints(e)
+    if etch < s.get("minEtch", 0):
+        problems.append(f"only {etch} ETCH entities, expected at least {s['minEtch']}")
     for i, p in enumerate(pts):
         if sum(1 for j, q in enumerate(pts) if j != i and math.dist(p, q) < TOL) != 1:
             problems.append(f"open contour end at {p}")

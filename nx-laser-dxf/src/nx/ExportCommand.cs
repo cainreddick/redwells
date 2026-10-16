@@ -11,7 +11,7 @@ namespace LaserDxf.Nx
 
     public static class ExportCommand
     {
-        public const string Version = "0.2 (step 2: profile)";
+        public const string Version = "0.3 (steps 3-5: labels + part number)";
 
         public static void Run()
         {
@@ -35,6 +35,7 @@ namespace LaserDxf.Nx
             }
 
             var ex = new NxBodyExtractor(UFSession.GetUFSession(), log) { ChordTol = cfg.ChordTolerance };
+            ex.WantedAttributeTitles.AddRange(cfg.AttributeTitles());
             BodyModel m = ex.Extract(sel.Body, sel.Part);
             string note;
             int faceId = NxPlate.PlateFaceId(sel, ex, m, opt, log, out note);

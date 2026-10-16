@@ -31,6 +31,7 @@ namespace LaserDxf.Nx
 
             AnalysisOptions opt = cfg.ToAnalysisOptions();
             var ex = new NxBodyExtractor(UFSession.GetUFSession(), log) { ChordTol = cfg.ChordTolerance };
+            ex.WantedAttributeTitles.AddRange(cfg.AttributeTitles());
             BodyModel m = ex.Extract(sel.Body, part);
             string note;
             int faceId = NxPlate.PlateFaceId(sel, ex, m, opt, log, out note);
