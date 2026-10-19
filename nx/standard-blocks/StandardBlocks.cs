@@ -1275,6 +1275,91 @@ namespace StandardBlocks.Nx
             try { return obj.HasUserAttribute(title, NXObject.AttributeType.Any, -1); }
             catch (NXException) { return false; }
         }
+
+        // Like GetString, but also accepts other attribute types and titles
+        // differing in letter case or spaces. note says what differed (or null).
+        public static string GetLoose(NXObject obj, string title, out string note)
+        {
+            note = null;
+            string exact = GetString(obj, title);
+            if (exact != null) return exact;
+
+            NXObject.AttributeInformation[] infos;
+            try { infos = obj.GetUserAttributes(); }
+            catch (NXException) { return null; }
+
+            foreach (NXObject.AttributeInformation info in infos)
+            {
+                if (info.Title == null || !string.Equals(info.Title.Trim(), title, StringComparison.OrdinalIgnoreCase)) continue;
+                string value;
+                try { value = obj.GetUserAttributeAsString(info.Title, info.Type, -1); }
+                catch (NXException) { continue; }
+                List<string> diffs = new List<string>();
+                if (info.Title != title) diffs.Add("its title is written \"" + info.Title + "\"");
+                if (info.Type != NXObject.AttributeType.String) diffs.Add("it is a " + info.Type + " attribute, not String");
+                if (diffs.Count > 0) note = string.Join(" and ", diffs.ToArray());
+                return value;
+            }
+            return null;
+        }
+
+        // "TITLE (Type) = value; ..." for diagnostics.
+        public static string Describe(NXObject obj)
+        {
+            NXObject.AttributeInformation[] infos;
+            try { infos = obj.GetUserAttributes(); }
+            catch (NXException ex) { return "(could not read attributes: " + ex.Message + ")"; }
+            if (infos == null || infos.Length == 0) return "none";
+
+            List<string> parts = new List<string>();
+            foreach (NXObject.AttributeInformation info in infos)
+            {
+                string value;
+                try { value = obj.GetUserAttributeAsString(info.Title, info.Type, -1); }
+                catch (NXException) { value = "?"; }
+                parts.Add(Text.F("\"{0}\" ({1}) = \"{2}\"", info.Title, info.Type, value));
+            }
+            return string.Join("; ", parts.ToArray());
+        }
+    }
+
+    // Where a tool body's SB_HOLE_TYPE was found.
+    public sealed class HoleTypeLookup
+    {
+        public string Value;    // null if not found anywhere
+        public string Source;   // "body" or "feature Extrude(3)"
+        public string Note;     // what wasn't standard about it, or null
+
+        // Looks on the body, then on the feature(s) that made it.
+        public static HoleTypeLookup Find(Body body, string title)
+        {
+            HoleTypeLookup r = new HoleTypeLookup();
+            string note;
+            r.Value = NxAttr.GetLoose(body, title, out note);
+            if (r.Value != null)
+            {
+                r.Source = "body";
+                r.Note = note;
+                return r;
+            }
+            foreach (NXOpen.Features.Feature f in OwningFeatures(body))
+            {
+                r.Value = NxAttr.GetLoose(f, title, out note);
+                if (r.Value != null)
+                {
+                    r.Source = "feature " + f.GetFeatureName();
+                    r.Note = note;
+                    return r;
+                }
+            }
+            return r;
+        }
+
+        public static NXOpen.Features.Feature[] OwningFeatures(Body body)
+        {
+            try { return body.GetFeatures(); }
+            catch (NXException) { return new NXOpen.Features.Feature[0]; }
+        }
     }
 
     public static class NxNames
@@ -1459,19 +1544,25 @@ namespace StandardBlocks.Nx
 
             // Sort the block's bodies into tool bodies and the block's own bodies.
             List<Body> toolBodies = new List<Body>();
+            List<HoleTypeLookup> lookups = new List<HoleTypeLookup>();
             foreach (Body body in proto.Bodies)
             {
                 if (!body.IsSolidBody) continue;
-                bool hasType = NxAttr.GetString(body, cfg.HoleTypeAttribute) != null;
+                HoleTypeLookup lookup = HoleTypeLookup.Find(body, cfg.HoleTypeAttribute);
                 bool onLayer = body.Layer == cfg.ToolLayer;
-                if (hasType)
+                if (lookup.Value != null)
                 {
                     toolBodies.Add(body);
+                    lookups.Add(lookup);
                 }
                 else if (onLayer)
                 {
-                    b.Problems.Add(Text.F("body {0} is on layer {1} but has no {2} attribute, so it was ignored",
-                        NxNames.BodyName(body), cfg.ToolLayer, cfg.HoleTypeAttribute));
+                    List<string> seen = new List<string>();
+                    seen.Add("body attributes: " + NxAttr.Describe(body));
+                    foreach (NXOpen.Features.Feature f in HoleTypeLookup.OwningFeatures(body))
+                        seen.Add("feature " + f.GetFeatureName() + " attributes: " + NxAttr.Describe(f));
+                    b.Problems.Add(Text.F("body {0} is on layer {1} but has no {2} attribute on the body or its feature, so it was ignored. Found {3}",
+                        NxNames.BodyName(body), cfg.ToolLayer, cfg.HoleTypeAttribute, string.Join("; ", seen.ToArray())));
                 }
                 else
                 {
@@ -1484,20 +1575,23 @@ namespace StandardBlocks.Nx
             if (toolBodies.Count == 0)
                 b.Problems.Add(Text.F("the block has no tool bodies (solid bodies with a {0} attribute)", cfg.HoleTypeAttribute));
 
-            foreach (Body body in toolBodies) b.Tools.Add(ReadTool(ctx, comp, b, body, toolRs, modelRs));
+            for (int i = 0; i < toolBodies.Count; i++)
+                b.Tools.Add(ReadTool(ctx, comp, b, toolBodies[i], lookups[i], toolRs, modelRs));
 
             block = b;
             return true;
         }
 
-        private static ToolInfo ReadTool(NxContext ctx, Component comp, BlockInfo block, Body body,
+        private static ToolInfo ReadTool(NxContext ctx, Component comp, BlockInfo block, Body body, HoleTypeLookup lookup,
             Dictionary<Tag, bool> toolRs, Dictionary<Tag, bool> modelRs)
         {
             SbConfig cfg = ctx.Config;
             ToolInfo t = new ToolInfo();
             t.ProtoBody = body;
             t.Name = NxNames.BodyName(body);
-            t.HoleType = NxAttr.GetString(body, cfg.HoleTypeAttribute);
+            t.HoleType = lookup.Value;
+            if (lookup.Source != "body") t.Notes.Add(Text.F("{0} was read from {1}, not from the body", cfg.HoleTypeAttribute, lookup.Source));
+            if (lookup.Note != null) t.Notes.Add(Text.F("{0} found, but {1}", cfg.HoleTypeAttribute, lookup.Note));
             t.OnToolLayer = body.Layer == cfg.ToolLayer;
             t.InToolRefSet = toolRs.ContainsKey(body.Tag);
             t.InModelRefSet = modelRs.ContainsKey(body.Tag);

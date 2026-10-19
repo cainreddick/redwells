@@ -27,11 +27,19 @@ namespace NXOpen
     {
         public enum AttributeType { Invalid, Null, Boolean, Integer, Real, String, Time, Reference, Any }
 
+        public struct AttributeInformation
+        {
+            public string Title;
+            public AttributeType Type;
+        }
+
         public string Name { get { throw new NotImplementedException(); } }
         public string JournalIdentifier { get { throw new NotImplementedException(); } }
         public BasePart OwningPart { get { throw new NotImplementedException(); } }
         public bool HasUserAttribute(string title, AttributeType type, int index) { throw new NotImplementedException(); }
         public string GetStringUserAttribute(string title, int index) { throw new NotImplementedException(); }
+        public AttributeInformation[] GetUserAttributes() { throw new NotImplementedException(); }
+        public string GetUserAttributeAsString(string title, AttributeType type, int index) { throw new NotImplementedException(); }
     }
 
     public class DisplayableObject : NXObject
@@ -45,6 +53,7 @@ namespace NXOpen
     {
         public bool IsSolidBody { get { throw new NotImplementedException(); } }
         public Face[] GetFaces() { throw new NotImplementedException(); }
+        public NXOpen.Features.Feature[] GetFeatures() { throw new NotImplementedException(); }
     }
 
     public class BodyCollection : IEnumerable
@@ -161,6 +170,14 @@ namespace NXOpen.Assemblies
     public class ComponentAssembly
     {
         public Component RootComponent { get { throw new NotImplementedException(); } }
+    }
+}
+
+namespace NXOpen.Features
+{
+    public class Feature : NXObject
+    {
+        public string GetFeatureName() { throw new NotImplementedException(); }
     }
 }
 

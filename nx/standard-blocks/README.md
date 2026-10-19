@@ -32,7 +32,10 @@ No NX Open Author licence is needed. Everything is a plain, uncompiled journal.
   - modelled at the final **plate cut** diameter, with its axis normal to the plate face it serves;
   - running from 5 mm inside the block to 10 mm past the contact face (15 mm long);
   - a plain cylinder: one cylindrical face and two flat ends, no chamfers;
-  - String body attribute `SB_HOLE_TYPE` = a type from the hole table;
+  - String attribute `SB_HOLE_TYPE` = a type from the hole table, on the body.
+    If the body has none, the journal also accepts one on the feature that made
+    it. All bodies from that feature then share one type, and the diameter
+    check catches any that don't match;
   - on layer 250, and in reference sets `SB_TOOLS` and `MODEL`.
 
 Hole table (`holeTypes` in the config). The DXF export macro labels holes by
