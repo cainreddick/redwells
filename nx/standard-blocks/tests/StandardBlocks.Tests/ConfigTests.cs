@@ -69,7 +69,7 @@ public static class ConfigTests
         Assert.Equal("SB_TOOLS", cfg.ToolReferenceSet);
         Assert.Equal("MODEL", cfg.ModelReferenceSet);
         Assert.Equal("SB_BLOCK", cfg.BlockAttribute);
-        Assert.Equal("SB_HOLE_TYPE", cfg.HoleTypeAttribute);
+        Assert.Equal("SB_Hole_Type", cfg.HoleTypeAttribute);
         Assert.Equal(6.0, cfg.MaxPlateThickness);
         Assert.Equal(15.0, cfg.ExpectedToolLength);
         Assert.Equal("logs", cfg.LogFolder);

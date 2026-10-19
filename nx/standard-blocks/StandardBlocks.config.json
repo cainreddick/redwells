@@ -30,7 +30,7 @@
   "attributes": {
     "block": "SB_BLOCK",
     "blockValue": "true",
-    "holeType": "SB_HOLE_TYPE",
+    "holeType": "SB_Hole_Type",
     "partNumber": "DB_PART_NO",
     "partRevision": "DB_PART_REV"
   },

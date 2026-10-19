@@ -412,7 +412,7 @@ namespace StandardBlocks.Core
 
     public sealed class HoleType
     {
-        public string Name;       // value of SB_HOLE_TYPE, e.g. "R6"
+        public string Name;       // value of SB_Hole_Type, e.g. "R6"
         public string Purpose;    // free text for reports
         public double Diameter;   // plate cut diameter, mm
 
@@ -447,7 +447,7 @@ namespace StandardBlocks.Core
         // Attribute names
         public string BlockAttribute = "SB_BLOCK";
         public string BlockAttributeValue = "true";
-        public string HoleTypeAttribute = "SB_HOLE_TYPE";
+        public string HoleTypeAttribute = "SB_Hole_Type";
         public string PartNumberAttribute = "DB_PART_NO";
         public string PartRevisionAttribute = "DB_PART_REV";
 
@@ -571,7 +571,7 @@ namespace StandardBlocks.Core
         {
             object v;
             if (!top.TryGetValue("holeTypes", out v) || v == null)
-                throw new ConfigException("The config file has no \"holeTypes\" list. It must list every SB_HOLE_TYPE with its plate cut diameter.");
+                throw new ConfigException("The config file has no \"holeTypes\" list. It must list every SB_Hole_Type with its plate cut diameter.");
             List<object> list = v as List<object>;
             if (list == null || list.Count == 0)
                 throw new ConfigException("\"holeTypes\" must be a non-empty list: [ { \"type\": \"R6\", \"diameter\": 5.8 }, ... ].");
@@ -1323,7 +1323,7 @@ namespace StandardBlocks.Nx
         }
     }
 
-    // Where a tool body's SB_HOLE_TYPE was found.
+    // Where a tool body's SB_Hole_Type was found.
     public sealed class HoleTypeLookup
     {
         public string Value;    // null if not found anywhere
