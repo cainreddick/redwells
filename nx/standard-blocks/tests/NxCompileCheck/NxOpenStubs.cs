@@ -108,7 +108,6 @@ namespace NXOpen
         public ListingWindow ListingWindow { get { throw new NotImplementedException(); } }
         public PartCollection Parts { get { throw new NotImplementedException(); } }
         public string ExecutingJournal { get { throw new NotImplementedException(); } }
-        public void Execute(string filename, string className, string methodName, object[] parameters) { throw new NotImplementedException(); }
     }
 
     public struct Point3d

@@ -183,6 +183,43 @@ public static class HoleRulesTests
     }
 }
 
+public static class HoleRulesDiameterValueTests
+{
+    private static readonly SbConfig Cfg = TestData.Config();
+
+    // 001-4032-CAD2072 stores SB_Hole_Type as a Real diameter: 5.8, 5.5, 8.2.
+    public static void DiameterValueIsReadAsTheMatchingType()
+    {
+        var r = HoleRules.Check(Cfg, "5.8", 5.8);
+        Assert.Equal(HoleCheckStatus.Ok, r.Status);
+        Assert.Equal("R6", r.Expected.Name);
+        Assert.Contains("holds a diameter (5.8) instead of a type name, so it was read as R6", r.Message);
+
+        Assert.Equal("M8", HoleRules.Check(Cfg, "5.500000", 5.5).Expected.Name);
+        Assert.Equal("CLR8.2", HoleRules.Check(Cfg, "8,2", 8.2).Expected.Name);
+    }
+
+    public static void DiameterValueStillCheckedAgainstTheBody()
+    {
+        var r = HoleRules.Check(Cfg, "5.8", 5.5);
+        Assert.Equal(HoleCheckStatus.DiameterMismatch, r.Status);
+        Assert.Contains("is dia 5.500 but R6 needs dia 5.800", r.Message);
+    }
+
+    public static void DiameterNotInTable()
+    {
+        var r = HoleRules.Check(Cfg, "6.8", 6.8);
+        Assert.Equal(HoleCheckStatus.UnknownType, r.Status);
+        Assert.Contains("no hole type has that diameter", r.Message);
+    }
+
+    public static void DiameterSharedByTwoTypesIsAmbiguous()
+    {
+        var cfg = SbConfig.Parse("{ \"holeTypes\": [ { \"type\": \"A\", \"diameter\": 5 }, { \"type\": \"B\", \"diameter\": 5 } ] }");
+        Assert.Contains("more than one hole type", HoleRules.Check(cfg, "5", 5).Message);
+    }
+}
+
 public static class SummaryTests
 {
     private static readonly SbConfig Cfg = TestData.Config();
@@ -214,15 +251,24 @@ public static class CommandTests
     public static void BlankArgumentsMeanDefault()
     {
         // NX passes [""] when a journal is played directly.
-        Assert.Equal("inspect", Commands.FromArgs(new[] { "" }));
-        Assert.Equal("inspect", Commands.FromArgs(new[] { "  ", null }));
-        Assert.Equal("inspect", Commands.FromArgs(null));
-        Assert.Equal("inspect", Commands.FromArgs(Array.Empty<string>()));
+        Assert.Equal("inspect", Commands.Resolve(new[] { "" }, null));
+        Assert.Equal("inspect", Commands.Resolve(new[] { "  ", null }, null));
+        Assert.Equal("inspect", Commands.Resolve(null, null));
+        Assert.Equal("inspect", Commands.Resolve(Array.Empty<string>(), @"C:\nx_settings\StandardBlocks.cs"));
     }
 
-    public static void FirstNonBlankArgumentWins()
+    public static void JournalFileNameChoosesCommand()
     {
-        Assert.Equal("sync", Commands.FromArgs(new[] { "", " Sync " }));
+        Assert.Equal("inspect", Commands.Resolve(new[] { "" }, @"C:\nx_settings\SB_Inspect.cs"));
+        Assert.Equal("sync", Commands.Resolve(new[] { "" }, "C:/nx_settings/sb_sync.cs"));
+        Assert.Equal("addholes", Commands.Resolve(null, @"C:\nx_settings\SB_AddHoles.cs"));
+        Assert.True(Commands.FromJournalName(@"C:\nx_settings\SB_.cs") == null, "SB_ alone");
+        Assert.True(Commands.FromJournalName(@"C:\nx_settings\StandardBlocks.cs") == null, "main file");
+    }
+
+    public static void ArgumentBeatsFileName()
+    {
+        Assert.Equal("sync", Commands.Resolve(new[] { "", " Sync " }, @"C:\nx_settings\SB_Inspect.cs"));
     }
 
     public static void NormalizeTrimsAndLowercases()

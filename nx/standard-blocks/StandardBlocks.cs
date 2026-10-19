@@ -472,6 +472,16 @@ namespace StandardBlocks.Core
             return null;
         }
 
+        public List<HoleType> FindHoleTypesByDiameter(double diameter)
+        {
+            List<HoleType> result = new List<HoleType>();
+            foreach (HoleType h in HoleTypes)
+            {
+                if (Math.Abs(h.Diameter - diameter) <= DiameterTolerance + Geo.Eps) result.Add(h);
+            }
+            return result;
+        }
+
         public string HoleTypeNames()
         {
             List<string> names = new List<string>();
@@ -709,13 +719,38 @@ namespace StandardBlocks.Core
                 return r;
             }
 
-            HoleType ht = cfg.FindHoleType(holeType);
+            string value = holeType.Trim();
+            string note = null;
+            HoleType ht = cfg.FindHoleType(value);
             if (ht == null)
             {
-                r.Status = HoleCheckStatus.UnknownType;
-                r.Message = Text.F("{0} \"{1}\" is not in the hole table (known types: {2})",
-                    cfg.HoleTypeAttribute, holeType.Trim(), cfg.HoleTypeNames());
-                return r;
+                // Some blocks hold the cut diameter (e.g. 5.8) instead of the type name.
+                double dia;
+                if (!TryParseNumber(value, out dia))
+                {
+                    r.Status = HoleCheckStatus.UnknownType;
+                    r.Message = Text.F("{0} \"{1}\" is not in the hole table (known types: {2})",
+                        cfg.HoleTypeAttribute, value, cfg.HoleTypeNames());
+                    return r;
+                }
+
+                List<HoleType> matches = cfg.FindHoleTypesByDiameter(dia);
+                if (matches.Count != 1)
+                {
+                    r.Status = HoleCheckStatus.UnknownType;
+                    r.Message = Text.F(matches.Count == 0
+                            ? "{0} is {1}, which looks like a diameter, but no hole type has that diameter ({2})"
+                            : "{0} is {1}, which looks like a diameter, but more than one hole type has that diameter ({2})",
+                        cfg.HoleTypeAttribute, value, cfg.Describe());
+                    return r;
+                }
+                ht = matches[0];
+                note = Text.F("{0} holds a diameter ({1}) instead of a type name, so it was read as {2}. Better: a String attribute set to \"{2}\"",
+                    cfg.HoleTypeAttribute, value, ht.Name);
+            }
+            else if (!string.Equals(ht.Name, value, StringComparison.Ordinal))
+            {
+                note = Text.F("{0} is written \"{1}\"; the hole table spells it \"{2}\"", cfg.HoleTypeAttribute, value, ht.Name);
             }
 
             r.Expected = ht;
@@ -724,13 +759,21 @@ namespace StandardBlocks.Core
                 r.Status = HoleCheckStatus.DiameterMismatch;
                 r.Message = Text.F("is dia {0} but {1} needs dia {2} (tolerance {3})",
                     Text.Num3(measuredDiameter), ht.Name, Text.Num3(ht.Diameter), Text.Num(cfg.DiameterTolerance));
+                if (note != null) r.Message += ". " + note;
                 return r;
             }
 
             r.Status = HoleCheckStatus.Ok;
-            if (!string.Equals(ht.Name, holeType.Trim(), StringComparison.Ordinal))
-                r.Message = Text.F("{0} is written \"{1}\"; the hole table spells it \"{2}\"", cfg.HoleTypeAttribute, holeType.Trim(), ht.Name);
+            r.Message = note;
             return r;
+        }
+
+        // Accepts "5.8", "5.800000" and "5,8".
+        public static bool TryParseNumber(string s, out double value)
+        {
+            string t = (s ?? "").Trim();
+            if (t.IndexOf('.') < 0) t = t.Replace(',', '.');
+            return double.TryParse(t, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
         }
     }
 
@@ -1155,9 +1198,26 @@ namespace StandardBlocks.Core
     {
         public const string Default = "inspect";
 
+        // NX can't run one source journal from another (Session.Execute only
+        // takes compiled DLLs), so each ribbon button plays an identical copy
+        // of this file named after its command: SB_Inspect.cs runs "inspect",
+        // SB_Sync.cs runs "sync". Any other name gives null.
+        public static string FromJournalName(string journalPath)
+        {
+            if (string.IsNullOrEmpty(journalPath)) return null;
+            // Split by hand so \ and / both work wherever this runs.
+            string name = journalPath.Trim();
+            name = name.Substring(Math.Max(name.LastIndexOf('\\'), name.LastIndexOf('/')) + 1);
+            int dot = name.LastIndexOf('.');
+            if (dot > 0) name = name.Substring(0, dot);
+            if (!name.StartsWith("SB_", StringComparison.OrdinalIgnoreCase) || name.Length <= 3) return null;
+            return Normalize(name.Substring(3));
+        }
+
+        // Arguments win; then the journal's file name; then the default.
         // NX passes one empty argument when a journal is played directly, so
-        // blank means "use the default".
-        public static string FromArgs(string[] args)
+        // blank arguments are skipped.
+        public static string Resolve(string[] args, string journalPath)
         {
             if (args != null)
             {
@@ -1166,7 +1226,7 @@ namespace StandardBlocks.Core
                     if (a != null && a.Trim().Length > 0) return Normalize(a);
                 }
             }
-            return Default;
+            return FromJournalName(journalPath) ?? Default;
         }
 
         public static string Normalize(string command)
@@ -1771,7 +1831,10 @@ namespace StandardBlocks.Nx
             foreach (ToolInfo t in b.Tools)
             {
                 i++;
-                r.Line(Text.F("[{0}] {1}  {2}", i, t.HoleType ?? "(no type)", t.Name));
+                string type = t.HoleType ?? "(no type)";
+                if (t.Check != null && t.Check.Expected != null && t.Check.Expected.Name != t.HoleType)
+                    type = Text.F("{0} ({1} = {2})", t.Check.Expected.Name, ctx.Config.HoleTypeAttribute, t.HoleType);
+                r.Line(Text.F("[{0}] {1}  {2}", i, type, t.Name));
                 r.Indent();
                 if (t.BlockCyl != null)
                 {
@@ -1798,15 +1861,18 @@ namespace StandardBlocks.Nx
     }
 }
 
-// Journal entry point. Tools > Journal > Play runs Main; the SB_*.cs
-// launchers call Run(command) through Session.Execute.
+// Journal entry point. Tools > Journal > Play runs Main. Copies of this file
+// named SB_<command>.cs run that command (see Commands.FromJournalName).
 public class StandardBlocksJournal
 {
     public const string ConfigFileName = "StandardBlocks.config.json";
 
     public static void Main(string[] args)
     {
-        Run(StandardBlocks.Core.Commands.FromArgs(args));
+        string journal = null;
+        try { journal = NXOpen.Session.GetSession().ExecutingJournal; }
+        catch (Exception) { }
+        Run(StandardBlocks.Core.Commands.Resolve(args, journal));
     }
 
     public static void Run(string command)
