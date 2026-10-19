@@ -48,8 +48,7 @@ No NX Open Author licence is needed. Everything is a plain, uncompiled journal.
     check catches any that don't match;
   - on layer 250, and in reference sets `SB_TOOLS` and `MODEL`.
 
-Hole table (`holeTypes` in the config). The DXF export macro labels holes by
-these diameters, so keep the two in step:
+Hole table (`holeTypes` in the config):
 
 | SB_Hole_Type | Plate cut | Purpose |
 |---|---|---|
@@ -64,7 +63,7 @@ these diameters, so keep the two in step:
 - **Existing hole on the same axis: cut anyway and warn.** This happens with reused plates.
 - **Plate part used more than once** (twice in one jig, or reused in the mirrored jig): warn, because its holes apply to every copy.
 - **Blocks are replaced by deleting the old one and adding a new one.** Sync removes the holes and links of deleted blocks.
-- **Final sanity check:** Sync warns about any block that has no holes yet, or any of whose tool bodies has no hole. Run it once the jig is thought complete. The DXF macro should make the same check before exporting; how it does that is decided at step 6, because one source journal cannot call another.
+- **Final sanity check:** Sync warns about any block that has no holes yet, or any of whose tool bodies has no hole. Run it once the jig is thought complete.
 - The top assembly is normally checked out while working, so block components can carry an instance-ID attribute that Sync uses to find them.
 - Parts are in millimetres and loaded fully.
 - Feature names: `SB_<blockID>_<holeType>_LINK` for each WAVE link and `SB_<blockID>_<holeType>` for each subtract, with `_2`, `_3`… when two copies of one block cut the same plate. A dot in a hole type becomes `p` (`CLR8.2` → `CLR8p2`) so it can't be confused with a copy number.
@@ -112,40 +111,11 @@ If a block is deleted and a different one added in its place, Sync removes the
 old holes. It then reports the new block as having no holes, so run
 `SB_AddHoles` on it.
 
-#### For the DXF export journal
-
-Every Sync run, dry run included, writes `sync_status_<assembly>.json` to the
-log folder, for example `C:\nx_settings\logs\sync_status_0003984_rev_A.json`:
-
-```json
-{
-  "assembly": "0003984 rev A",
-  "time": "2026-10-19T15:30:00",
-  "dryRun": false,
-  "clean": true,
-  "removed": 1,
-  "rebuilt": 0,
-  "pending": 0,
-  "problems": []
-}
-```
-
-`clean` is true when nothing is left to change and there are no warnings.
-Before exporting, the DXF journal can read this file and check three things:
-
-- it exists;
-- `clean` is true;
-- `time` is later than the assembly's last change.
-
-If any check fails, it can ask you to run Sync first. NX can't run one
-source journal from another without the Author licence, so this file is how
-the two journals pass information.
-
 ### Testing step 6 in NX
 
-1. Copy `StandardBlocks.cs` and all `SB_*.cs` into `C:\nx_settings`. The header should say 0.6.1.
+1. Copy `StandardBlocks.cs` and all `SB_*.cs` into `C:\nx_settings`. The header should say 0.6.2.
 2. Play `SB_SyncDryRun.cs` on the test assembly as it is now. Expect no
-   changes, and a status file saying `clean`.
+   changes and no warnings.
 3. Delete block 2 (the copy) and play `SB_SyncDryRun.cs`. Expect "Would
    remove" for its two groups, in 0003987 and 0003986.
 4. Play `SB_Sync.cs` and answer Yes. Its holes should go, and block 1's should

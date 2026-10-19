@@ -53,7 +53,7 @@ public static class ConfigTests
 
     public static void ShippedConfigHasExactHoleTable()
     {
-        // The DXF export macro labels holes by diameter, so these must not drift.
+        // The plate cut diameters are a shop standard, so these must not drift.
         var cfg = SbConfig.Parse(ShippedConfigText());
         Assert.Equal(0, cfg.Warnings.Count, "warnings: " + string.Join("; ", cfg.Warnings));
         Assert.Equal(3, cfg.HoleTypes.Count);

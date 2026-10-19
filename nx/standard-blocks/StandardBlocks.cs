@@ -1488,62 +1488,6 @@ namespace StandardBlocks.Core
         }
     }
 
-    // Written by every Sync run to the log folder as sync_status_<assembly>.json,
-    // so the DXF export journal can check that Sync has run cleanly first.
-    public sealed class SyncStatus
-    {
-        public string Assembly;
-        public DateTime Time;
-        public bool DryRun;
-        public int Removed;        // groups removed this run
-        public int Rebuilt;        // groups rebuilt this run
-        public int Pending;        // changes a dry run found but didn't make
-        public List<string> Problems = new List<string>();   // warnings that need a person
-
-        // Nothing left to change and nothing to look at.
-        public bool Clean { get { return Pending == 0 && Problems.Count == 0; } }
-
-        public static string FileName(string assembly)
-        {
-            return "sync_status_" + FeatureNames.Sanitize(assembly) + ".json";
-        }
-
-        public string ToJson()
-        {
-            StringBuilder sb = new StringBuilder();
-            sb.Append("{\n");
-            sb.Append("  \"assembly\": ").Append(Quote(Assembly)).Append(",\n");
-            sb.Append("  \"time\": ").Append(Quote(Time.ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture))).Append(",\n");
-            sb.Append("  \"dryRun\": ").Append(DryRun ? "true" : "false").Append(",\n");
-            sb.Append("  \"clean\": ").Append(Clean ? "true" : "false").Append(",\n");
-            sb.Append("  \"removed\": ").Append(Removed.ToString(CultureInfo.InvariantCulture)).Append(",\n");
-            sb.Append("  \"rebuilt\": ").Append(Rebuilt.ToString(CultureInfo.InvariantCulture)).Append(",\n");
-            sb.Append("  \"pending\": ").Append(Pending.ToString(CultureInfo.InvariantCulture)).Append(",\n");
-            sb.Append("  \"problems\": [");
-            for (int i = 0; i < Problems.Count; i++)
-                sb.Append(i == 0 ? "\n    " : ",\n    ").Append(Quote(Problems[i]));
-            sb.Append(Problems.Count > 0 ? "\n  ]\n" : "]\n");
-            sb.Append("}\n");
-            return sb.ToString();
-        }
-
-        private static string Quote(string s)
-        {
-            StringBuilder sb = new StringBuilder("\"");
-            foreach (char c in s ?? "")
-            {
-                if (c == '"') sb.Append("\\\"");
-                else if (c == '\\') sb.Append("\\\\");
-                else if (c == '\n') sb.Append("\\n");
-                else if (c == '\r') sb.Append("\\r");
-                else if (c == '\t') sb.Append("\\t");
-                else if (c < ' ') sb.Append("\\u").Append(((int)c).ToString("x4", CultureInfo.InvariantCulture));
-                else sb.Append(c);
-            }
-            return sb.Append('"').ToString();
-        }
-    }
-
     // A part the macro would change, and whether it can.
     public sealed class PartStatus
     {
@@ -1764,7 +1708,6 @@ namespace StandardBlocks.Nx
         public SbConfig Config;
         public Report Report;
         public string ConfigPath;
-        public string LogFolder;   // resolved log folder; null if logging is off
     }
 
     public static class NxAttr
@@ -3335,21 +3278,13 @@ namespace StandardBlocks.Nx
             r.Line(dryRun ? "Command: Sync standard blocks, DRY RUN (reports only, changes nothing)" : "Command: Sync standard blocks");
             Part display = NxCommon.RequireAssembly(ctx);
             if (display == null) return;
-            string assemblyLabel = NxNames.PartLabel(cfg, display);
             string assemblyNumber = NxNames.PartNumber(cfg, display);
-
-            SyncStatus status = new SyncStatus();
-            status.Assembly = assemblyLabel;
-            status.Time = DateTime.Now;
-            status.DryRun = dryRun;
 
             AssemblyIndex index = AssemblyIndex.Build(ctx, display.ComponentAssembly.RootComponent);
             if (index.NotLoaded.Count > 0)
             {
-                string msg = Text.F("{0} not loaded, so Sync can't check them: {1}",
-                    Text.Count(index.NotLoaded.Count, "component is", "components are"), string.Join(", ", index.NotLoaded.ToArray()));
-                r.Warn(msg + ".");
-                status.Problems.Add(msg);
+                r.Warn(Text.F("{0} not loaded, so Sync can't check them: {1}.",
+                    Text.Count(index.NotLoaded.Count, "component is", "components are"), string.Join(", ", index.NotLoaded.ToArray())));
             }
 
             // Every standard block in the assembly.
@@ -3390,12 +3325,7 @@ namespace StandardBlocks.Nx
                 }
                 syncBlocks.Add(sb);
                 infoOf[sb] = b;
-                if (b.Skip != null)
-                {
-                    string msg = Text.F("{0} ({1}) was left alone: {2}", b.Label, b.Path, b.Skip);
-                    r.Warn(msg + ".");
-                    status.Problems.Add(msg);
-                }
+                if (b.Skip != null) r.Warn(Text.F("{0} ({1}) was left alone: {2}.", b.Label, b.Path, b.Skip));
             }
 
             List<SyncGroup> cores = new List<SyncGroup>();
@@ -3429,15 +3359,13 @@ namespace StandardBlocks.Nx
             r.Line(Text.F("In line with their blocks: {0}.", Text.Count(kept, "group", "groups")));
             r.Blank();
 
-            foreach (string w in SyncPlanner.Misaligned(decisions)) { r.Warn(w); status.Problems.Add(w); }
-            foreach (string w in SyncPlanner.WithoutHoles(syncBlocks, decisions)) { r.Warn(w + "."); status.Problems.Add(w); }
+            foreach (string w in SyncPlanner.Misaligned(decisions)) r.Warn(w);
+            foreach (string w in SyncPlanner.WithoutHoles(syncBlocks, decisions)) r.Warn(w + ".");
 
             int changes = toRemove.Count + toRebuild.Count;
             if (dryRun || changes == 0)
             {
-                status.Pending = dryRun ? changes : 0;
                 r.Line(dryRun ? "Dry run: nothing was changed." : "Nothing to change.");
-                WriteStatus(ctx, status);
                 return;
             }
 
@@ -3449,22 +3377,17 @@ namespace StandardBlocks.Nx
             if (problems.Count > 0)
             {
                 r.Error("Nothing was changed, because not every part can be changed. Fix the problems above and run Sync again.");
-                status.Pending = changes;
-                status.Problems.AddRange(problems);
-                WriteStatus(ctx, status);
                 return;
             }
 
-            List<string> plan = new List<string>();
-            if (toRemove.Count > 0) plan.Add("remove " + Text.Count(toRemove.Count, "group of holes", "groups of holes") + " left by deleted blocks");
-            if (toRebuild.Count > 0) plan.Add("rebuild " + Text.Count(toRebuild.Count, "group of holes", "groups of holes") + " for replaced blocks");
+            List<string> steps = new List<string>();
+            if (toRemove.Count > 0) steps.Add("remove " + Text.Count(toRemove.Count, "group of holes", "groups of holes") + " left by deleted blocks");
+            if (toRebuild.Count > 0) steps.Add("rebuild " + Text.Count(toRebuild.Count, "group of holes", "groups of holes") + " for replaced blocks");
             int answer = ctx.Ui.NXMessageBox.Show("Standard Blocks", NXMessageBox.DialogType.Question,
-                "Sync will " + string.Join(" and ", plan.ToArray()) + ".\n\nGo ahead?");
+                "Sync will " + string.Join(" and ", steps.ToArray()) + ".\n\nGo ahead?");
             if (answer != 1)
             {
                 r.Line("You chose not to: nothing was changed.");
-                status.Pending = changes;
-                WriteStatus(ctx, status);
                 return;
             }
 
@@ -3485,7 +3408,6 @@ namespace StandardBlocks.Nx
                     Delete(ctx, doomed, first.Core.PlateLabel);
                     r.Line(Text.F("Removed {0} from {1}.", Text.Count(doomed.Count, "feature", "features"), first.Core.PlateLabel));
                 }
-                status.Removed = toRemove.Count;
 
                 // Rebuild the replaced blocks' holes from scratch.
                 List<BlockInfo> rebuild = new List<BlockInfo>();
@@ -3502,17 +3424,12 @@ namespace StandardBlocks.Nx
                     foreach (BlockInfo b in rebuild) AddHolesCommand.EnsureInstanceId(b, attrs);
                     foreach (PlatePlan plan in det.Plans) HoleBuilder.AddToPlate(ctx, det, plan, attrs);
                 }
-                status.Rebuilt = toRebuild.Count;
                 r.Blank();
                 r.Line("Done. Edit > Undo \"Sync Standard Blocks\" puts everything back.");
             }
             catch (Exception ex)
             {
                 r.Error(ex.Message);
-                status.Problems.Add("Sync failed: " + ex.Message);
-                status.Pending = changes;
-                status.Removed = 0;
-                status.Rebuilt = 0;
                 try
                 {
                     ctx.Session.UndoToMark(mark, null);
@@ -3527,7 +3444,6 @@ namespace StandardBlocks.Nx
             {
                 HoleBuilder.RestoreWork(ctx, originalWork);
             }
-            WriteStatus(ctx, status);
         }
 
         private static List<SyncGroupNx> ReadGroups(NxContext ctx, AssemblyIndex index, SbAttrs attrs)
@@ -3614,23 +3530,6 @@ namespace StandardBlocks.Nx
                 throw new SbException(Text.F("Removing the old holes from {0} failed: {1}.", plateLabel, ex.Message));
             }
         }
-
-        // For the DXF export journal: did Sync last run cleanly for this assembly?
-        private static void WriteStatus(NxContext ctx, SyncStatus status)
-        {
-            string folder = ctx.LogFolder ?? Path.GetDirectoryName(ctx.ConfigPath);
-            try
-            {
-                Directory.CreateDirectory(folder);
-                string path = Path.Combine(folder, SyncStatus.FileName(status.Assembly));
-                File.WriteAllText(path, status.ToJson(), new UTF8Encoding(false));
-                ctx.Report.Line(Text.F("Sync status ({0}) written to {1}", status.Clean ? "clean" : "NOT clean", path));
-            }
-            catch (Exception ex)
-            {
-                ctx.Report.Warn("Could not write the sync status file: " + ex.Message + ".");
-            }
-        }
     }
 }
 
@@ -3641,7 +3540,7 @@ public class StandardBlocksJournal
     public const string ConfigFileName = "StandardBlocks.config.json";
 
     // Printed in the header so a run shows which build it is. Bump on every change.
-    public const string Version = "0.6.1 (step 6: sync)";
+    public const string Version = "0.6.2 (step 6: sync)";
 
     public static void Main(string[] args)
     {
@@ -3792,7 +3691,6 @@ public class StandardBlocksJournal
         string folder = ctx.Config.LogFolder;
         if (string.IsNullOrEmpty(folder)) return null;
         if (!Path.IsPathRooted(folder)) folder = Path.Combine(Path.GetDirectoryName(ctx.ConfigPath), folder);
-        ctx.LogFolder = folder;
         try
         {
             Directory.CreateDirectory(folder);
