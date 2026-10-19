@@ -45,6 +45,8 @@ namespace NXOpen
     public class DisplayableObject : NXObject
     {
         public int Layer { get { throw new NotImplementedException(); } set { } }
+        public void Highlight() { }
+        public void Unhighlight() { }
     }
 
     public class Face : DisplayableObject { }
@@ -163,6 +165,7 @@ namespace NXOpen.Assemblies
         public string ReferenceSet { get { throw new NotImplementedException(); } }
         public bool IsSuppressed { get { throw new NotImplementedException(); } }
         public NXObject FindOccurrence(NXObject proto) { throw new NotImplementedException(); }
+        public Component[] GetChildren() { throw new NotImplementedException(); }
         public void GetPosition(out Point3d position, out Matrix3x3 orientation) { throw new NotImplementedException(); }
     }
 
@@ -189,6 +192,9 @@ namespace NXOpen.UF
         { throw new NotImplementedException(); }
 
         public void AskBoundingBox(Tag obj, double[] boundingBox) { throw new NotImplementedException(); }
+
+        // results[i]: 1 = interference, 2 = none, 3 = touching
+        public void CheckInterference(Tag target, int numTools, Tag[] tools, int[] results) { throw new NotImplementedException(); }
     }
 
     public class UFSession

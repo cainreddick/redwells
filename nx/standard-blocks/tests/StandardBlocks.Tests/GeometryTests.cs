@@ -144,15 +144,14 @@ public static class PlateGeometryTests
 {
     private static List<PlanarFace> BoxFaces(Vec3 min, Vec3 max)
     {
-        double dx = max.X - min.X, dy = max.Y - min.Y, dz = max.Z - min.Z;
         return new List<PlanarFace>
         {
-            new PlanarFace(new Vec3(0, 0, 1), max, dx * dy),
-            new PlanarFace(new Vec3(0, 0, -1), min, dx * dy),
-            new PlanarFace(new Vec3(1, 0, 0), max, dy * dz),
-            new PlanarFace(new Vec3(-1, 0, 0), min, dy * dz),
-            new PlanarFace(new Vec3(0, 1, 0), max, dx * dz),
-            new PlanarFace(new Vec3(0, -1, 0), min, dx * dz),
+            new PlanarFace(new Vec3(0, 0, 1), max),
+            new PlanarFace(new Vec3(0, 0, -1), min),
+            new PlanarFace(new Vec3(1, 0, 0), max),
+            new PlanarFace(new Vec3(-1, 0, 0), min),
+            new PlanarFace(new Vec3(0, 1, 0), max),
+            new PlanarFace(new Vec3(0, -1, 0), min),
         };
     }
 
@@ -171,10 +170,47 @@ public static class PlateGeometryTests
         Assert.Near(3, f.Thickness);
     }
 
+    public static void SlotsAndTabsDontConfuseThickness()
+    {
+        // 200 x 100 x 6 plate with a 6.2 mm slot (faces at x = 50 and 56.2)
+        // and a 4 mm deep notch step (faces at y = 96).
+        var faces = BoxFaces(new Vec3(0, 0, 0), new Vec3(200, 100, 6));
+        faces.Add(new PlanarFace(new Vec3(1, 0, 0), new Vec3(50, 50, 3)));
+        faces.Add(new PlanarFace(new Vec3(-1, 0, 0), new Vec3(56.2, 50, 3)));
+        faces.Add(new PlanarFace(new Vec3(0, -1, 0), new Vec3(150, 96, 3)));
+        var f = PlateGeometry.FromPlanarFaces(faces, 0.5, out _);
+        Assert.True(Geo.AreParallel(f.Normal, new Vec3(0, 0, 1), 0.01), "normal is Z");
+        Assert.Near(6, f.Thickness);
+    }
+
+    public static void AngledProfileEdgesAreFine()
+    {
+        var faces = BoxFaces(new Vec3(0, 0, 0), new Vec3(200, 100, 5));
+        var d = new Vec3(1, 1, 0).Normalized();
+        faces.Add(new PlanarFace(d, new Vec3(190, 100, 2)));
+        var f = PlateGeometry.FromPlanarFaces(faces, 0.5, out _);
+        Assert.Near(5, f.Thickness);
+    }
+
     public static void SingleFaceIsNotAPlate()
     {
-        var f = PlateGeometry.FromPlanarFaces(new List<PlanarFace> { new PlanarFace(new Vec3(0, 0, 1), new Vec3(0, 0, 0), 10) }, 0.5, out string problem);
+        var f = PlateGeometry.FromPlanarFaces(new List<PlanarFace> { new PlanarFace(new Vec3(0, 0, 1), new Vec3(0, 0, 0)) }, 0.5, out string problem);
         Assert.True(f == null, "not a plate");
         Assert.Contains("not a flat plate", problem);
+    }
+
+    public static void BlocksAndBoltsAreNotPlateLike()
+    {
+        var cube = new Aabb(new Vec3(0, 0, 0), new Vec3(40, 30, 40));
+        var cubeFrame = PlateGeometry.FromPlanarFaces(BoxFaces(cube.Min, cube.Max), 0.5, out _);
+        Assert.False(PlateGeometry.IsPlateLike(cubeFrame, cube, 3), "40 x 30 x 40 block");
+
+        var plate = new Aabb(new Vec3(0, 0, 0), new Vec3(200, 100, 6));
+        var plateFrame = PlateGeometry.FromPlanarFaces(BoxFaces(plate.Min, plate.Max), 0.5, out _);
+        Assert.True(PlateGeometry.IsPlateLike(plateFrame, plate, 3), "200 x 100 x 6 plate");
+
+        var thickBase = new Aabb(new Vec3(0, 0, 0), new Vec3(300, 300, 10));
+        var thickFrame = PlateGeometry.FromPlanarFaces(BoxFaces(thickBase.Min, thickBase.Max), 0.5, out _);
+        Assert.True(PlateGeometry.IsPlateLike(thickFrame, thickBase, 3), "10 mm base is still a plate (rejected later as too thick)");
     }
 }

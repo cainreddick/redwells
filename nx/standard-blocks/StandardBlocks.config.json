@@ -16,7 +16,9 @@
   },
 
   "plates": {
-    "maxThickness": 6.0
+    "_comment": "A solid is only treated as a plate if it is at least minAspectRatio times wider than it is thick.",
+    "maxThickness": 6.0,
+    "minAspectRatio": 3
   },
 
   "toolBodies": {

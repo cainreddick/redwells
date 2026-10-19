@@ -10,7 +10,7 @@ if "%DEST%"=="" set "DEST=C:\nx_settings"
 if not exist "%DEST%" mkdir "%DEST%" || goto :fail
 
 copy /Y "%~dp0StandardBlocks.cs" "%DEST%\StandardBlocks.cs" >nul || goto :fail
-for %%C in (Inspect) do (
+for %%C in (Inspect Detect) do (
     copy /Y "%~dp0StandardBlocks.cs" "%DEST%\SB_%%C.cs" >nul || goto :fail
 )
 if not exist "%DEST%\StandardBlocks.config.json" copy "%~dp0StandardBlocks.config.json" "%DEST%\" >nul

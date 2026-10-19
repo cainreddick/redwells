@@ -436,6 +436,7 @@ namespace StandardBlocks.Core
 
         // Plates
         public double MaxPlateThickness = 6.0;
+        public double MinPlateAspectRatio = 3.0;   // plate width / thickness, at least
 
         // Tool bodies
         public int ToolLayer = 250;
@@ -524,8 +525,9 @@ namespace StandardBlocks.Core
             Dictionary<string, object> plates = r.Section(top, "", "plates");
             if (plates != null)
             {
-                r.CheckKeys(plates, "plates", "maxThickness");
+                r.CheckKeys(plates, "plates", "maxThickness", "minAspectRatio");
                 c.MaxPlateThickness = r.Number(plates, "plates", "maxThickness", c.MaxPlateThickness, 0.1, 100);
+                c.MinPlateAspectRatio = r.Number(plates, "plates", "minAspectRatio", c.MinPlateAspectRatio, 1, 100);
             }
 
             Dictionary<string, object> tools = r.Section(top, "", "toolBodies");
@@ -984,13 +986,11 @@ namespace StandardBlocks.Core
     {
         public Vec3 Normal;
         public Vec3 Point;
-        public double Area;
 
-        public PlanarFace(Vec3 normal, Vec3 point, double area)
+        public PlanarFace(Vec3 normal, Vec3 point)
         {
             Normal = normal;
             Point = point;
-            Area = area;
         }
     }
 
@@ -1007,43 +1007,74 @@ namespace StandardBlocks.Core
 
     public static class PlateGeometry
     {
-        // The largest flat face sets the plate normal. The faces parallel to it
-        // (top and bottom of a laser-cut plate) give the thickness range.
+        // Groups the flat faces by direction (a face and its opposite count as
+        // one direction). For each direction that has faces on both sides, the
+        // spread of the faces along it is the solid's size in that direction.
+        // For a flat plate the smallest spread is the thickness: top and bottom
+        // faces. Side faces, slots and tabs spread across the whole plate.
         public static PlateFrame FromPlanarFaces(IList<PlanarFace> faces, double angleTolDeg, out string problem)
         {
             problem = null;
-            if (faces == null || faces.Count == 0)
+            List<Vec3> dirs = new List<Vec3>();
+            List<double> lows = new List<double>();
+            List<double> highs = new List<double>();
+            List<bool> plus = new List<bool>();
+            List<bool> minus = new List<bool>();
+
+            if (faces != null)
             {
-                problem = "has no flat faces, so it is not a flat plate";
-                return null;
+                foreach (PlanarFace f in faces)
+                {
+                    if (f.Normal.IsZero) continue;
+                    int g = -1;
+                    for (int i = 0; i < dirs.Count; i++)
+                    {
+                        if (Geo.AreParallel(f.Normal, dirs[i], angleTolDeg)) { g = i; break; }
+                    }
+                    if (g < 0)
+                    {
+                        dirs.Add(f.Normal.Normalized());
+                        lows.Add(double.MaxValue);
+                        highs.Add(double.MinValue);
+                        plus.Add(false);
+                        minus.Add(false);
+                        g = dirs.Count - 1;
+                    }
+                    double o = f.Point.Dot(dirs[g]);
+                    if (o < lows[g]) lows[g] = o;
+                    if (o > highs[g]) highs[g] = o;
+                    if (f.Normal.Dot(dirs[g]) > 0) plus[g] = true;
+                    else minus[g] = true;
+                }
             }
 
-            PlanarFace biggest = faces[0];
-            foreach (PlanarFace f in faces) if (f.Area > biggest.Area) biggest = f;
-            Vec3 n = biggest.Normal.Normalized();
-
-            bool hasOpposite = false;
-            double low = double.MaxValue, high = double.MinValue;
-            foreach (PlanarFace f in faces)
+            int best = -1;
+            for (int i = 0; i < dirs.Count; i++)
             {
-                if (f.Normal.IsZero || !Geo.AreParallel(f.Normal, n, angleTolDeg)) continue;
-                double o = f.Point.Dot(n);
-                if (o < low) low = o;
-                if (o > high) high = o;
-                if (f.Normal.Dot(n) < 0) hasOpposite = true;
+                if (!plus[i] || !minus[i] || highs[i] - lows[i] <= Geo.Eps) continue;
+                if (best < 0 || highs[i] - lows[i] < highs[best] - lows[best]) best = i;
             }
-
-            if (!hasOpposite || high - low <= Geo.Eps)
+            if (best < 0)
             {
-                problem = "has no face opposite its largest flat face, so it is not a flat plate";
+                problem = "has no pair of opposite flat faces, so it is not a flat plate";
                 return null;
             }
 
             PlateFrame frame = new PlateFrame();
-            frame.Normal = n;
-            frame.Low = low;
-            frame.High = high;
+            frame.Normal = dirs[best];
+            frame.Low = lows[best];
+            frame.High = highs[best];
             return frame;
+        }
+
+        // A plate is much wider than it is thick. Keeps blocks, bolts and
+        // dowels from being treated as plates. box is the solid's bounding box.
+        public static bool IsPlateLike(PlateFrame frame, Aabb box, double minAspectRatio)
+        {
+            if (frame == null || box == null) return false;
+            Vec3 size = box.Max - box.Min;
+            double largest = Math.Max(size.X, Math.Max(size.Y, size.Z));
+            return largest >= minAspectRatio * frame.Thickness - Geo.Eps;
         }
     }
 
@@ -1132,6 +1163,116 @@ namespace StandardBlocks.Core
                 }
             }
             return hits;
+        }
+    }
+
+    // One tool body and what it found.
+    public sealed class ToolEvaluation
+    {
+        public string BlockLabel;   // "001-4032-CAD2072 rev A"
+        public string ToolName;     // "EXTRUDE(3)"
+        public string HoleType;     // "R6"
+        public ToolCylinder Tool;
+        public List<ToolHit> Hits = new List<ToolHit>();
+
+        public ToolHit Selected
+        {
+            get
+            {
+                foreach (ToolHit h in Hits) if (h.Status == HitStatus.Selected) return h;
+                return null;
+            }
+        }
+
+        public string Describe()
+        {
+            return Text.F("{0}, tool body {1} ({2})", BlockLabel, ToolName, HoleType);
+        }
+    }
+
+    // The holes planned for one plate.
+    public sealed class PlatePlan
+    {
+        public PlateModel Plate;
+        public List<ToolEvaluation> Tools = new List<ToolEvaluation>();
+
+        public List<string> HoleTypes()
+        {
+            List<string> types = new List<string>();
+            foreach (ToolEvaluation t in Tools) types.Add(t.HoleType);
+            return types;
+        }
+
+        public string Summary(SbConfig cfg)
+        {
+            return Plate.Label + ": " + Core.Summary.HoleCounts(HoleTypes(), cfg);
+        }
+    }
+
+    public static class Planner
+    {
+        // Selected holes grouped by plate, plates in order of first appearance.
+        public static List<PlatePlan> ByPlate(IList<ToolEvaluation> evals)
+        {
+            List<PlatePlan> plans = new List<PlatePlan>();
+            foreach (ToolEvaluation e in evals)
+            {
+                ToolHit sel = e.Selected;
+                if (sel == null) continue;
+                PlatePlan plan = null;
+                foreach (PlatePlan p in plans) if (p.Plate.Id == sel.Plate.Id) plan = p;
+                if (plan == null)
+                {
+                    plan = new PlatePlan();
+                    plan.Plate = sel.Plate;
+                    plans.Add(plan);
+                }
+                plan.Tools.Add(e);
+            }
+            return plans;
+        }
+
+        // One plain-English problem per tool body, or null if all is well.
+        public static string Problem(ToolEvaluation e, SbConfig cfg)
+        {
+            ToolHit sel = e.Selected;
+            if (sel != null)
+            {
+                if (sel.FullyThrough) return null;
+                return Text.F("{0} doesn't pass fully through {1} ({2} mm thick), so the hole would not go all the way through",
+                    e.Describe(), sel.Plate.Label, Text.Num(sel.Plate.Frame.Thickness));
+            }
+
+            List<string> ambiguous = new List<string>();
+            ToolHit thick = null;
+            foreach (ToolHit h in e.Hits)
+            {
+                if (h.Status == HitStatus.AmbiguousDirection) ambiguous.Add(h.Plate.Label);
+                if (h.Status == HitStatus.TooThick && thick == null) thick = h;
+            }
+            if (ambiguous.Count > 0)
+                return Text.F("{0} passes through {1} and it can't tell which plate is against the block, so no hole is planned. Check that one end of the tool body is inside the block",
+                    e.Describe(), string.Join(" and ", ambiguous.ToArray()));
+            if (thick != null)
+                return Text.F("{0} only reaches {1}, which is {2} mm thick (the maximum is {3}), so no hole is planned",
+                    e.Describe(), thick.Plate.Label, Text.Num(thick.Plate.Frame.Thickness), Text.Num(cfg.MaxPlateThickness));
+            return Text.F("{0} doesn't pass through any plate, so it will make no hole. Is the block against its plate?", e.Describe());
+        }
+
+        // Short reason for one candidate plate, for detail listings.
+        public static string Describe(ToolHit h)
+        {
+            switch (h.Status)
+            {
+                case HitStatus.Selected:
+                    return Text.F("HOLE, {0} mm from the block's inside end{1}", Text.Num(h.Distance), h.FullyThrough ? "" : ", NOT fully through");
+                case HitStatus.NotParallel: return "not cut: the tool body isn't square to this plate";
+                case HitStatus.NoIntersection: return "not cut: the tool body doesn't touch it";
+                case HitStatus.TooThick: return Text.F("not cut: {0} mm thick", Text.Num(h.Plate.Frame.Thickness));
+                case HitStatus.BehindAnotherPlate: return "not cut: behind the plate nearer the block";
+                case HitStatus.AmbiguousDirection: return "not cut: can't tell which plate is first";
+                default: return h.Status.ToString();
+            }
         }
     }
 
@@ -1710,6 +1851,12 @@ namespace StandardBlocks.Nx
             return t;
         }
 
+        public static bool IsBlock(SbConfig cfg, Part part)
+        {
+            string flag = NxAttr.GetString(part, cfg.BlockAttribute);
+            return flag != null && string.Equals(flag.Trim(), cfg.BlockAttributeValue, StringComparison.OrdinalIgnoreCase);
+        }
+
         public static Part PrototypeOf(Component comp)
         {
             object p = comp.Prototype;
@@ -1764,6 +1911,53 @@ namespace StandardBlocks.Nx
         }
     }
 
+    public static class NxCommon
+    {
+        // The displayed part, if it is an assembly; otherwise reports an error and returns null.
+        public static Part RequireAssembly(NxContext ctx)
+        {
+            Report r = ctx.Report;
+            Part display = ctx.Session.Parts.Display;
+            if (display == null)
+            {
+                r.Error("No part is displayed. Open the jig assembly first.");
+                return null;
+            }
+            if (display.ComponentAssembly == null || display.ComponentAssembly.RootComponent == null)
+            {
+                r.Error(Text.F("The displayed part {0} is not an assembly. Open the jig assembly first.", NxNames.PartLabel(ctx.Config, display)));
+                return null;
+            }
+            r.Line("Assembly: " + NxNames.PartLabel(ctx.Config, display));
+            if (display.PartUnits != BasePart.Units.Millimeters) r.Warn("The assembly is not in millimetres.");
+            r.Blank();
+            return display;
+        }
+
+        // Asks for block components and reads them. Null if cancelled.
+        public static List<BlockInfo> SelectBlocks(NxContext ctx)
+        {
+            Report r = ctx.Report;
+            List<Component> picked = NxSelect.Components(ctx, "Select standard block components, then OK");
+            if (picked == null || picked.Count == 0)
+            {
+                r.Line("Cancelled: nothing was selected.");
+                return null;
+            }
+
+            List<BlockInfo> blocks = new List<BlockInfo>();
+            foreach (Component comp in picked)
+            {
+                BlockInfo block;
+                string reason;
+                if (BlockReader.TryRead(ctx, comp, out block, out reason)) blocks.Add(block);
+                else r.Warn(Text.F("Skipped {0}: {1}.", NxNames.ComponentPath(comp), reason));
+            }
+            if (blocks.Count < picked.Count) r.Blank();
+            return blocks;
+        }
+    }
+
     // Step 1: select blocks and list their tool bodies (read-only).
     public static class InspectCommand
     {
@@ -1771,47 +1965,12 @@ namespace StandardBlocks.Nx
         {
             Report r = ctx.Report;
             r.Line("Command: Inspect standard blocks (read-only, changes nothing)");
+            if (NxCommon.RequireAssembly(ctx) == null) return;
 
-            Part display = ctx.Session.Parts.Display;
-            if (display == null)
-            {
-                r.Error("No part is displayed. Open the jig assembly first.");
-                return;
-            }
-            if (display.ComponentAssembly == null || display.ComponentAssembly.RootComponent == null)
-            {
-                r.Error(Text.F("The displayed part {0} is not an assembly. Open the jig assembly first.", NxNames.PartLabel(ctx.Config, display)));
-                return;
-            }
-            r.Line("Assembly: " + NxNames.PartLabel(ctx.Config, display));
-            if (display.PartUnits != BasePart.Units.Millimeters) r.Warn("The assembly is not in millimetres.");
-            r.Blank();
-
-            List<Component> picked = NxSelect.Components(ctx, "Select standard block components, then OK");
-            if (picked == null || picked.Count == 0)
-            {
-                r.Line("Cancelled: nothing was selected.");
-                return;
-            }
-
-            int read = 0, skipped = 0;
-            foreach (Component comp in picked)
-            {
-                BlockInfo block;
-                string reason;
-                if (!BlockReader.TryRead(ctx, comp, out block, out reason))
-                {
-                    skipped++;
-                    r.Warn(Text.F("Skipped {0}: {1}.", NxNames.ComponentPath(comp), reason));
-                    r.Blank();
-                    continue;
-                }
-                read++;
-                PrintBlock(ctx, block, read);
-            }
-
-            r.Line(Text.F("Done: {0} read, {1} skipped.",
-                Text.Count(read, "standard block", "standard blocks"), skipped));
+            List<BlockInfo> blocks = NxCommon.SelectBlocks(ctx);
+            if (blocks == null) return;
+            for (int i = 0; i < blocks.Count; i++) PrintBlock(ctx, blocks[i], i + 1);
+            r.Line(Text.F("Done: {0} read.", Text.Count(blocks.Count, "standard block", "standard blocks")));
         }
 
         private static void PrintBlock(NxContext ctx, BlockInfo b, int number)
@@ -1857,6 +2016,279 @@ namespace StandardBlocks.Nx
             }
             r.Outdent();
             r.Blank();
+        }
+    }
+
+    // A solid body in the assembly that isn't part of a standard block.
+    public sealed class SolidRef
+    {
+        public Component Component;
+        public Part Part;
+        public Body Body;   // occurrence: assembly coordinates
+        public Aabb Box;
+    }
+
+    public sealed class AssemblyIndex
+    {
+        public List<SolidRef> Solids = new List<SolidRef>();
+        public Dictionary<Tag, int> PartUses = new Dictionary<Tag, int>();
+        public List<string> NotLoaded = new List<string>();
+
+        public static AssemblyIndex Build(NxContext ctx, Component root)
+        {
+            AssemblyIndex index = new AssemblyIndex();
+            index.Walk(ctx, root);
+            return index;
+        }
+
+        public int UsesOf(Part part)
+        {
+            int n;
+            PartUses.TryGetValue(part.Tag, out n);
+            return n;
+        }
+
+        private void Walk(NxContext ctx, Component parent)
+        {
+            SbConfig cfg = ctx.Config;
+            foreach (Component c in parent.GetChildren())
+            {
+                if (c.IsSuppressed) continue;
+                Part p = BlockReader.PrototypeOf(c);
+                if (p == null)
+                {
+                    NotLoaded.Add(NxNames.ComponentPath(c));
+                    continue;
+                }
+                if (!p.IsFullyLoaded)
+                {
+                    try { p.LoadThisPartFully().Dispose(); }
+                    catch (NXException)
+                    {
+                        NotLoaded.Add(NxNames.ComponentPath(c));
+                        continue;
+                    }
+                }
+                PartUses[p.Tag] = UsesOf(p) + 1;
+
+                if (!BlockReader.IsBlock(cfg, p))
+                {
+                    foreach (Body b in p.Bodies)
+                    {
+                        if (!b.IsSolidBody || b.Layer == cfg.ToolLayer) continue;
+                        Body occ = c.FindOccurrence(b) as Body;
+                        if (occ == null) continue;   // not in the component's reference set
+                        SolidRef s = new SolidRef();
+                        s.Component = c;
+                        s.Part = p;
+                        s.Body = occ;
+                        s.Box = NxGeom.Box(ctx.Uf, occ);
+                        Solids.Add(s);
+                    }
+                }
+                Walk(ctx, c);
+            }
+        }
+    }
+
+    // A solid near a block, read as a plate if it is one.
+    public sealed class PlateInfo
+    {
+        public SolidRef Solid;
+        public PlateModel Model;          // null if it isn't a plate
+        public string NotPlateReason;
+        public List<FaceSample> Cylinders = new List<FaceSample>();   // existing holes etc.
+    }
+
+    public static class PlateReader
+    {
+        public static PlateInfo Read(NxContext ctx, SolidRef s, int uses)
+        {
+            SbConfig cfg = ctx.Config;
+            PlateInfo info = new PlateInfo();
+            info.Solid = s;
+
+            List<PlanarFace> planar = new List<PlanarFace>();
+            foreach (FaceSample f in NxGeom.SampleAll(ctx.Uf, s.Body.GetFaces()))
+            {
+                if (f.Kind == FaceKind.Plane) planar.Add(new PlanarFace(f.Direction, f.Point));
+                else if (f.Kind == FaceKind.Cylinder) info.Cylinders.Add(f);
+            }
+
+            string problem;
+            PlateFrame frame = PlateGeometry.FromPlanarFaces(planar, cfg.AngleToleranceDeg, out problem);
+            if (frame == null)
+            {
+                info.NotPlateReason = problem;
+                return info;
+            }
+            if (!PlateGeometry.IsPlateLike(frame, s.Box, cfg.MinPlateAspectRatio))
+            {
+                info.NotPlateReason = Text.F("is {0} mm thick and not much wider, so it isn't a plate", Text.Num(frame.Thickness));
+                return info;
+            }
+
+            PlateModel m = new PlateModel();
+            m.Id = s.Body.Tag.ToString();
+            m.Frame = frame;
+            m.Box = s.Box;
+            m.Label = NxNames.PartLabel(cfg, s.Part);
+            if (uses > 1) m.Label += " [" + NxNames.ComponentPath(s.Component) + "]";
+            info.Model = m;
+            return info;
+        }
+
+        // True if the tool body overlaps the plate body (touching doesn't count).
+        public static bool Interferes(UFSession uf, Body plate, Body tool)
+        {
+            int[] results = new int[1];
+            uf.Modl.CheckInterference(plate.Tag, 1, new Tag[] { tool.Tag }, results);
+            return results[0] == 1;
+        }
+    }
+
+    // Step 2: find the plates each block's tool bodies would cut (read-only).
+    public static class DetectCommand
+    {
+        public static void Run(NxContext ctx)
+        {
+            Report r = ctx.Report;
+            SbConfig cfg = ctx.Config;
+            r.Line("Command: Detect target plates (read-only, changes nothing)");
+            Part display = NxCommon.RequireAssembly(ctx);
+            if (display == null) return;
+
+            List<BlockInfo> blocks = NxCommon.SelectBlocks(ctx);
+            if (blocks == null || blocks.Count == 0) return;
+
+            AssemblyIndex index = AssemblyIndex.Build(ctx, display.ComponentAssembly.RootComponent);
+            r.Line(Text.F("Assembly scanned: {0} outside standard blocks.", Text.Count(index.Solids.Count, "solid body", "solid bodies")));
+            if (index.NotLoaded.Count > 0)
+                r.Warn(Text.F("{0} not loaded, so any plates in them were not checked: {1}.",
+                    Text.Count(index.NotLoaded.Count, "component is", "components are"), string.Join(", ", index.NotLoaded.ToArray())));
+            r.Blank();
+
+            Dictionary<Tag, PlateInfo> cache = new Dictionary<Tag, PlateInfo>();
+            Dictionary<string, PlateInfo> byId = new Dictionary<string, PlateInfo>();
+            List<ToolEvaluation> evals = new List<ToolEvaluation>();
+
+            for (int bi = 0; bi < blocks.Count; bi++)
+            {
+                BlockInfo b = blocks[bi];
+                r.Line(Text.F("Block {0}: {1}  ({2})", bi + 1, b.Label, b.Path));
+                r.Indent();
+                foreach (string p in b.Problems) r.Warn(Text.F("{0}: {1}.", b.Label, p));
+
+                List<ToolInfo> tools = new List<ToolInfo>();
+                foreach (ToolInfo t in b.Tools)
+                {
+                    if (t.Usable) tools.Add(t);
+                    else r.Warn(Text.F("{0}, tool body {1} ({2}) can't be used: {3}.", b.Label, t.Name, t.HoleType ?? "no type",
+                        t.Problems.Count > 0 ? t.Problems[0] : "its geometry could not be read"));
+                }
+                if (tools.Count == 0)
+                {
+                    r.Outdent();
+                    r.Blank();
+                    continue;
+                }
+
+                // Broad phase: solids whose boxes overlap the tool bodies' box.
+                Aabb toolBox = null;
+                foreach (ToolInfo t in tools) toolBox = NxGeom.Box(ctx.Uf, t.OccBody).Union(toolBox);
+                List<PlateModel> plates = new List<PlateModel>();
+                List<string> ignored = new List<string>();
+                foreach (SolidRef s in index.Solids)
+                {
+                    if (!Detection.BoxesOverlap(toolBox, s.Box, cfg.BoundingBoxTolerance)) continue;
+                    PlateInfo info;
+                    if (!cache.TryGetValue(s.Body.Tag, out info))
+                    {
+                        info = PlateReader.Read(ctx, s, index.UsesOf(s.Part));
+                        cache[s.Body.Tag] = info;
+                        if (info.Model != null) byId[info.Model.Id] = info;
+                    }
+                    if (info.Model != null) plates.Add(info.Model);
+                    else ignored.Add(NxNames.PartLabel(cfg, s.Part) + " " + info.NotPlateReason);
+                }
+
+                r.Line(Text.F("Near the block: {0}; {1} ignored.", Text.Count(plates.Count, "plate", "plates"),
+                    Text.Count(ignored.Count, "other solid", "other solids")));
+                r.Indent();
+                foreach (PlateModel m in plates)
+                    r.Line(Text.F("{0}: {1} mm thick, normal {2}", m.Label, Text.Num(m.Frame.Thickness), m.Frame.Normal));
+                foreach (string g in ignored) r.Line("Ignored: " + g);
+                r.Outdent();
+
+                // Narrow phase, one tool body at a time.
+                for (int ti = 0; ti < tools.Count; ti++)
+                {
+                    ToolInfo t = tools[ti];
+                    Body toolBody = t.OccBody;
+                    ToolEvaluation e = new ToolEvaluation();
+                    e.BlockLabel = b.Label;
+                    e.ToolName = t.Name;
+                    e.HoleType = t.Check.Expected.Name;
+                    e.Tool = t.AssyCyl;
+                    e.Hits = Detection.EvaluateTool(t.AssyCyl, plates,
+                        delegate(PlateModel m) { return PlateReader.Interferes(ctx.Uf, byId[m.Id].Solid.Body, toolBody); }, cfg);
+                    evals.Add(e);
+
+                    ToolHit sel = e.Selected;
+                    r.Line(Text.F("[{0}] {1}  {2}  ->  {3}", ti + 1, e.HoleType, t.Name, sel != null ? sel.Plate.Label : "no hole"));
+                    r.Indent();
+                    foreach (ToolHit h in e.Hits) r.Line(h.Plate.Label + ": " + Planner.Describe(h));
+                    string problem = Planner.Problem(e, cfg);
+                    if (problem != null) r.Warn(problem + ".");
+                    if (sel != null)
+                    {
+                        PlateInfo pi = byId[sel.Plate.Id];
+                        int k = ExistingHoles.FindCoaxial(t.AssyCyl, pi.Cylinders, cfg.DistanceTolerance, cfg.AngleToleranceDeg);
+                        if (k >= 0)
+                            r.Warn(Text.F("{0} already has a dia {1} hole where {2} goes. It will be cut anyway.",
+                                sel.Plate.Label, Text.Num3(2 * pi.Cylinders[k].Radius), e.Describe()));
+                    }
+                    r.Outdent();
+                }
+                r.Outdent();
+                r.Blank();
+            }
+
+            List<PlatePlan> plans = Planner.ByPlate(evals);
+            r.Line("Plates to cut:");
+            r.Indent();
+            if (plans.Count == 0) r.Line("none");
+            foreach (PlatePlan plan in plans) r.Line(plan.Summary(cfg));
+            r.Outdent();
+            foreach (PlatePlan plan in plans)
+            {
+                Part part = byId[plan.Plate.Id].Solid.Part;
+                int uses = index.UsesOf(part);
+                if (uses > 1)
+                    r.Warn(Text.F("{0} is used {1} times in this assembly. Holes are cut into the part, so every copy will get them.",
+                        NxNames.PartLabel(cfg, part), uses));
+            }
+            r.Blank();
+
+            if (plans.Count > 0) Highlight(ctx, plans, byId);
+        }
+
+        // Shows the plates that would be cut until the user presses OK.
+        private static void Highlight(NxContext ctx, List<PlatePlan> plans, Dictionary<string, PlateInfo> byId)
+        {
+            List<Body> bodies = new List<Body>();
+            foreach (PlatePlan plan in plans) bodies.Add(byId[plan.Plate.Id].Solid.Body);
+            foreach (Body b in bodies) b.Highlight();
+            try
+            {
+                ctx.Ui.NXMessageBox.Show("Standard Blocks", NXMessageBox.DialogType.Information,
+                    Text.F("{0} highlighted. Details are in the Listing window.\n\nOK to clear the highlight.",
+                        Text.Count(bodies.Count, "plate to cut is", "plates to cut are")));
+            }
+            finally
+            {
+                foreach (Body b in bodies) b.Unhighlight();
+            }
         }
     }
 }
@@ -1931,8 +2363,11 @@ public class StandardBlocksJournal
                 case "inspect":
                     StandardBlocks.Nx.InspectCommand.Run(ctx);
                     break;
+                case "detect":
+                    StandardBlocks.Nx.DetectCommand.Run(ctx);
+                    break;
                 default:
-                    report.Error("Unknown command \"" + command + "\". Available: inspect.");
+                    report.Error("Unknown command \"" + command + "\". Available: inspect, detect.");
                     break;
             }
         }

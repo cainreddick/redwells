@@ -167,3 +167,74 @@ public static class ExistingHoleTests
         Assert.Equal(-1, ExistingHoles.FindCoaxial(tool, faces, 0.01, 0.5));
     }
 }
+
+public static class PlannerTests
+{
+    private static readonly SbConfig Cfg = TestData.Config();
+
+    private static ToolEvaluation Eval(string name, string type, ToolCylinder tool, params PlateModel[] plates) => new ToolEvaluation
+    {
+        BlockLabel = "001-4032-CAD2072 rev A",
+        ToolName = name,
+        HoleType = type,
+        Tool = tool,
+        Hits = TestData.Evaluate(tool, plates),
+    };
+
+    public static void GroupsHolesByPlate()
+    {
+        var basePlate = TestData.BasePlate();
+        var upright = TestData.UprightPlate();
+        var evals = new List<ToolEvaluation>
+        {
+            Eval("EXTRUDE(3)", "R6", TestData.VerticalR6(), basePlate, upright),
+            Eval("EXTRUDE(4)", "M8", TestData.HorizontalM8a(), basePlate, upright),
+            Eval("EXTRUDE(3)1", "CLR8.2", TestData.VerticalClr(), basePlate, upright),
+            Eval("EXTRUDE(4)1", "M8", TestData.HorizontalM8b(), basePlate, upright),
+        };
+
+        var plans = Planner.ByPlate(evals);
+        Assert.Equal(2, plans.Count);
+        Assert.Equal("BASE-001 rev A: 2 holes (1x R6, 1x CLR8.2)", plans[0].Summary(Cfg));
+        Assert.Equal("UPRIGHT-002 rev A: 2 holes (2x M8)", plans[1].Summary(Cfg));
+        Assert.True(evals.All(e => Planner.Problem(e, Cfg) == null), "no problems");
+    }
+
+    public static void ToolThatReachesNoPlateIsReported()
+    {
+        var far = TestData.Plate("FAR-006 rev A", new Vec3(0, 0, 1), new Aabb(new Vec3(200, 200, -6), new Vec3(300, 300, 0)));
+        var e = Eval("EXTRUDE(3)", "R6", TestData.VerticalR6(), far);
+        Assert.Equal(0, Planner.ByPlate(new[] { e }).Count);
+        Assert.Contains("001-4032-CAD2072 rev A, tool body EXTRUDE(3) (R6) doesn't pass through any plate", Planner.Problem(e, Cfg));
+    }
+
+    public static void ThickPlateIsReported()
+    {
+        var thick = TestData.Plate("THICK-004 rev A", new Vec3(0, 0, 1), new Aabb(new Vec3(-100, -100, -10), new Vec3(100, 100, 0)));
+        Assert.Contains("only reaches THICK-004 rev A, which is 10 mm thick (the maximum is 6)",
+            Planner.Problem(Eval("EXTRUDE(3)", "R6", TestData.VerticalR6(), thick), Cfg));
+    }
+
+    public static void BlindHoleIsReported()
+    {
+        var shortTool = TestData.Tool(new Vec3(10, 15, 5), new Vec3(10, 15, -4), 5.8);
+        Assert.Contains("doesn't pass fully through BASE-001 rev A (6 mm thick)",
+            Planner.Problem(Eval("EXTRUDE(3)", "R6", shortTool, TestData.BasePlate()), Cfg));
+    }
+
+    public static void AmbiguousDirectionIsReported()
+    {
+        var spacer = TestData.Plate("SPACER-003 rev A", new Vec3(0, 0, 1), new Aabb(new Vec3(-100, -100, -12), new Vec3(100, 100, -6)));
+        var tool = TestData.VerticalR6().Copy();
+        tool.DirectionKnown = false;
+        Assert.Contains("passes through BASE-001 rev A and SPACER-003 rev A and it can't tell",
+            Planner.Problem(Eval("EXTRUDE(3)", "R6", tool, TestData.BasePlate(), spacer), Cfg));
+    }
+
+    public static void DescribesEachCandidate()
+    {
+        var hits = TestData.Evaluate(TestData.VerticalR6(), TestData.BasePlate(), TestData.UprightPlate());
+        Assert.Equal("HOLE, 5 mm from the block's inside end", Planner.Describe(hits[0]));
+        Assert.Contains("isn't square", Planner.Describe(hits[1]));
+    }
+}

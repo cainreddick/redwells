@@ -73,28 +73,42 @@ these diameters, so keep the two in step:
 
 | Step | Command | Changes the model? | Status |
 |---|---|---|---|
-| 1 | Select blocks and list their tool bodies, hole types and axes | No | **Ready to test** |
-| 2 | Auto-detect target plates and print the per-plate summary | No | Pure logic written and tested; NX side next |
+| 1 | `SB_Inspect.cs`: select blocks and list their tool bodies, hole types and axes | No | Done |
+| 2 | `SB_Detect.cs`: find the target plates, print the per-plate summary, highlight them | No | **Ready to test** |
 | 3 | Teamcenter writable / checked-out pre-check | No | |
 | 4 | WAVE link and subtract on one plate; moving the block updates the holes | Yes | |
-| 5 | Multiple plates and blocks, undo as one step | Yes | |
-| 6 | Sync command (with dry run, callable from the DXF macro) | Yes | |
+| 5 | Multiple plates and blocks, plate deselection, undo as one step | Yes | |
+| 6 | Sync command (with dry run) | Yes | |
 
-### Testing step 1 in NX
+Step 1 confirmed in NX: NX reports tool body geometry in assembly
+coordinates, so detection works directly on the assembly occurrences.
 
-1. Open a jig assembly that contains 001-4032-CAD2072. For a useful position
-   check, move **and rotate** at least one block away from the assembly origin.
-2. **Tools > Journal > Play**, choose `StandardBlocks.cs`, **Run**.
-3. Select one or more block components and press OK. Include one component
-   that isn't a block, such as a plate, to see it rejected.
-4. Copy the whole Listing window and paste it back, along with any compile error.
-5. Then play `SB_Inspect.cs`, the copy made by `deploy.bat`. It should give the
-   same result, which shows the file-name choice of command works.
+### Testing step 2 in NX
 
-For each tool body, step 1 prints the diameter check, length, layer and
-reference set membership, plus the axis in block and in assembly coordinates.
-The "assembly position check" line tells us whether NX reports the assembly
-data the way the later steps assume.
+1. Run `deploy.bat`. It replaces the old `SB_Inspect.cs` and adds `SB_Detect.cs`.
+2. Open the jig assembly and play `SB_Detect.cs`. Select one or more blocks and press OK.
+3. The plates that would be cut are highlighted until you press OK on the message.
+4. Paste back the Listing window.
+
+How step 2 finds plates:
+
+- **Broad phase:** solids in other components whose bounding boxes overlap the
+  tool bodies' box, within `tolerances.boundingBox`. Standard blocks are never
+  candidates.
+- **Is it a plate?** Its flat faces are grouped by direction. The direction
+  with the smallest spread is the thickness, so slots and tabs don't confuse
+  it. It must be at least `plates.minAspectRatio` times wider than it is
+  thick. Anything else is ignored without a warning.
+- **Narrow phase, per tool body:** the axis must be square to the plate, the
+  tool body must actually overlap the plate (NX interference check; touching
+  doesn't count), and the plate must be no thicker than `plates.maxThickness`.
+  If several plates qualify, only the one nearest the block is cut.
+- **Warnings:**
+  - a tool body that cuts nothing;
+  - a hole that wouldn't go fully through;
+  - a plate that is too thick;
+  - an existing hole on the same axis;
+  - a plate part used more than once in the assembly.
 
 ## Running the tests (optional, needs the .NET 8 SDK)
 
