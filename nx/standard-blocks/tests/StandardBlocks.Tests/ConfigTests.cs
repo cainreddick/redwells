@@ -263,6 +263,7 @@ public static class CommandTests
         Assert.Equal("inspect", Commands.Resolve(new[] { "" }, @"C:\nx_settings\SB_Inspect.cs"));
         Assert.Equal("sync", Commands.Resolve(new[] { "" }, "C:/nx_settings/sb_sync.cs"));
         Assert.Equal("addholes", Commands.Resolve(null, @"C:\nx_settings\SB_AddHoles.cs"));
+        Assert.Equal("addholesmanual", Commands.Resolve(null, @"C:\nx_settings\SB_AddHolesManual.cs"));
         Assert.True(Commands.FromJournalName(@"C:\nx_settings\SB_.cs") == null, "SB_ alone");
         Assert.True(Commands.FromJournalName(@"C:\nx_settings\StandardBlocks.cs") == null, "main file");
     }
@@ -298,7 +299,7 @@ public static class JournalCopyTests
     public static void EveryCommandHasACopy()
     {
         string dir = Path.Combine(AppContext.BaseDirectory, "journals");
-        foreach (string command in new[] { "Inspect", "Detect", "AddHoles" })
+        foreach (string command in new[] { "Inspect", "Detect", "AddHoles", "AddHolesManual" })
             Assert.True(File.Exists(Path.Combine(dir, "SB_" + command + ".cs")), "SB_" + command + ".cs exists");
     }
 }

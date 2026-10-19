@@ -51,7 +51,10 @@ namespace NXOpen
         public void Unhighlight() { }
     }
 
-    public class Face : DisplayableObject { }
+    public class Face : DisplayableObject
+    {
+        public Body GetBody() { throw new NotImplementedException(); }
+    }
 
     public class Body : DisplayableObject
     {
@@ -297,5 +300,7 @@ namespace NXOpen.UF
     {
         public const int UF_component_type = 63;
         public const int UF_component_subtype = 1;
+        public const int UF_solid_type = 70;
+        public const int UF_UI_SEL_FEATURE_ANY_FACE = 20;
     }
 }

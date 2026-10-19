@@ -1961,6 +1961,31 @@ namespace StandardBlocks.Nx
 
     public static class NxSelect
     {
+        // Lets the user pick faces anywhere in the assembly. Null if cancelled.
+        public static List<Face> Faces(NxContext ctx, string prompt)
+        {
+            Selection.MaskTriple[] mask = new Selection.MaskTriple[1];
+            mask[0].Type = UFConstants.UF_solid_type;
+            mask[0].Subtype = 0;
+            mask[0].SolidBodySubtype = UFConstants.UF_UI_SEL_FEATURE_ANY_FACE;
+
+            TaggedObject[] picked;
+            Selection.Response resp = ctx.Ui.SelectionManager.SelectTaggedObjects(
+                prompt, "Standard Blocks",
+                Selection.SelectionScope.AnyInAssembly,
+                Selection.SelectionAction.ClearAndEnableSpecific,
+                false, false, mask, out picked);
+            if (resp != Selection.Response.Ok || picked == null) return null;
+
+            List<Face> result = new List<Face>();
+            foreach (TaggedObject t in picked)
+            {
+                Face f = t as Face;
+                if (f != null) result.Add(f);
+            }
+            return result;
+        }
+
         // Lets the user pick one or more components. Null if cancelled.
         public static List<Component> Components(NxContext ctx, string prompt)
         {
@@ -2180,7 +2205,8 @@ namespace StandardBlocks.Nx
 
     public static class PlateReader
     {
-        public static PlateInfo Read(NxContext ctx, SolidRef s, int uses)
+        // requirePlateLike = false when the user picked the plate by hand.
+        public static PlateInfo Read(NxContext ctx, SolidRef s, int uses, bool requirePlateLike)
         {
             SbConfig cfg = ctx.Config;
             PlateInfo info = new PlateInfo();
@@ -2200,7 +2226,7 @@ namespace StandardBlocks.Nx
                 info.NotPlateReason = problem;
                 return info;
             }
-            if (!PlateGeometry.IsPlateLike(frame, s.Box, cfg.MinPlateAspectRatio))
+            if (requirePlateLike && !PlateGeometry.IsPlateLike(frame, s.Box, cfg.MinPlateAspectRatio))
             {
                 info.NotPlateReason = Text.F("is {0} mm thick and not much wider, so it isn't a plate", Text.Num(frame.Thickness));
                 return info;
@@ -2292,16 +2318,28 @@ namespace StandardBlocks.Nx
     // Step 2: find the plates each block's tool bodies would cut, and list them.
     public static class Detector
     {
-        public static DetectionResult Run(NxContext ctx, Part display, List<BlockInfo> blocks)
+        // onlyBodies: plate bodies the user picked by hand (manual mode), or null
+        // to consider every solid near each block.
+        public static DetectionResult Run(NxContext ctx, Part display, List<BlockInfo> blocks, Dictionary<Tag, bool> onlyBodies)
         {
             Report r = ctx.Report;
             SbConfig cfg = ctx.Config;
+            SbAttrs attrs = new SbAttrs(cfg.FeaturePrefix);
             DetectionResult result = new DetectionResult();
             result.Assembly = display;
 
             AssemblyIndex index = AssemblyIndex.Build(ctx, display.ComponentAssembly.RootComponent);
             result.Index = index;
             r.Line(Text.F("Assembly scanned: {0} outside standard blocks.", Text.Count(index.Solids.Count, "solid body", "solid bodies")));
+            if (onlyBodies != null)
+            {
+                int found = 0;
+                foreach (SolidRef s in index.Solids) if (onlyBodies.ContainsKey(s.Body.Tag)) found++;
+                r.Line(Text.F("Manual mode: only the {0} you picked are considered.", Text.Count(found, "plate", "plates")));
+                if (found < onlyBodies.Count)
+                    r.Warn(Text.F("{0} you picked can't take holes (part of a standard block, or not a solid in a loaded component).",
+                        Text.Count(onlyBodies.Count - found, "body", "bodies")));
+            }
             if (index.NotLoaded.Count > 0)
                 r.Warn(Text.F("{0} not loaded, so any plates in them were not checked: {1}.",
                     Text.Count(index.NotLoaded.Count, "component is", "components are"), string.Join(", ", index.NotLoaded.ToArray())));
@@ -2339,11 +2377,12 @@ namespace StandardBlocks.Nx
                 List<string> ignored = new List<string>();
                 foreach (SolidRef s in index.Solids)
                 {
+                    if (onlyBodies != null && !onlyBodies.ContainsKey(s.Body.Tag)) continue;
                     if (!Detection.BoxesOverlap(toolBox, s.Box, cfg.BoundingBoxTolerance)) continue;
                     PlateInfo info;
                     if (!cache.TryGetValue(s.Body.Tag, out info))
                     {
-                        info = PlateReader.Read(ctx, s, index.UsesOf(s.Part));
+                        info = PlateReader.Read(ctx, s, index.UsesOf(s.Part), onlyBodies == null);
                         cache[s.Body.Tag] = info;
                         if (info.Model != null) byId[info.Model.Id] = info;
                     }
@@ -2381,7 +2420,12 @@ namespace StandardBlocks.Nx
                     foreach (ToolHit h in e.Hits) r.Line(h.Plate.Label + ": " + Planner.Describe(h));
                     string problem = Planner.Problem(e, cfg);
                     if (problem != null) r.Warn(problem + ".");
-                    if (sel != null)
+                    string instance = NxAttr.GetString(b.Component, attrs.InstanceId);
+                    if (sel != null && instance != null && HoleBuilder.HasFeaturesFrom(byId[sel.Plate.Id].Solid.Part, attrs, instance))
+                    {
+                        r.Line("Already done: this copy of the block has cut its holes in " + sel.Plate.Label + ".");
+                    }
+                    else if (sel != null)
                     {
                         PlateInfo pi = byId[sel.Plate.Id];
                         int k = ExistingHoles.FindCoaxial(t.AssyCyl, pi.Cylinders, cfg.DistanceTolerance, cfg.AngleToleranceDeg);
@@ -2401,12 +2445,17 @@ namespace StandardBlocks.Nx
             if (result.Plans.Count == 0) r.Line("none");
             foreach (PlatePlan plan in result.Plans) r.Line(plan.Summary(cfg));
             r.Outdent();
+            string assemblyLabel = NxNames.PartLabel(cfg, display);
             foreach (Part part in result.PlateParts())
             {
                 int uses = index.UsesOf(part);
                 if (uses > 1)
                     r.Warn(Text.F("{0} is used {1} times in this assembly. Holes are cut into the part, so every copy will get them.",
                         NxNames.PartLabel(cfg, part), uses));
+                List<string> others = HoleBuilder.OtherAssemblies(part, attrs, assemblyLabel);
+                if (others.Count > 0)
+                    r.Warn(Text.F("{0} already has standard block holes linked from {1} (a mirrored jig?). It is the same part, so holes from both jigs end up in it.",
+                        NxNames.PartLabel(cfg, part), string.Join(" and ", others.ToArray())));
             }
             r.Blank();
             return result;
@@ -2424,7 +2473,7 @@ namespace StandardBlocks.Nx
             List<BlockInfo> blocks = NxCommon.SelectBlocks(ctx);
             if (blocks == null || blocks.Count == 0) return;
 
-            DetectionResult det = Detector.Run(ctx, display, blocks);
+            DetectionResult det = Detector.Run(ctx, display, blocks, null);
             if (det.Plans.Count == 0) return;
             NxTeamcenter.Report(ctx, display, det.PlateParts());
             Highlight(ctx, det);
@@ -2491,17 +2540,35 @@ namespace StandardBlocks.Nx
     // Step 4: WAVE link the tool bodies into each plate and subtract them.
     public static class AddHolesCommand
     {
-        public static void Run(NxContext ctx)
+        // manual: the user picks the plates instead of automatic detection.
+        public static void Run(NxContext ctx, bool manual)
         {
             Report r = ctx.Report;
             SbConfig cfg = ctx.Config;
-            r.Line("Command: Add standard block holes");
+            r.Line(manual ? "Command: Add standard block holes, picking the plates by hand" : "Command: Add standard block holes");
             Part display = NxCommon.RequireAssembly(ctx);
             if (display == null) return;
             List<BlockInfo> blocks = NxCommon.SelectBlocks(ctx);
             if (blocks == null || blocks.Count == 0) return;
 
-            DetectionResult det = Detector.Run(ctx, display, blocks);
+            Dictionary<Tag, bool> onlyBodies = null;
+            if (manual)
+            {
+                List<Face> faces = NxSelect.Faces(ctx, "Select a face on each plate to cut, then OK");
+                if (faces == null || faces.Count == 0)
+                {
+                    r.Line("Cancelled: no plates were picked.");
+                    return;
+                }
+                onlyBodies = new Dictionary<Tag, bool>();
+                foreach (Face f in faces)
+                {
+                    Body body = f.GetBody();
+                    if (body != null) onlyBodies[body.Tag] = true;
+                }
+            }
+
+            DetectionResult det = Detector.Run(ctx, display, blocks, onlyBodies);
             if (det.Plans.Count == 0)
             {
                 r.Line("Nothing to add.");
@@ -2590,13 +2657,43 @@ namespace StandardBlocks.Nx
             }
         }
 
-        // One Yes/No per plate, with the plate highlighted.
+        // With several plates: one question for all of them (all highlighted).
+        // No, or a single plate: one Yes/No per plate, with that plate highlighted.
         private static List<PlatePlan> Confirm(NxContext ctx, DetectionResult det, List<PlatePlan> plans)
         {
             Report r = ctx.Report;
             List<PlatePlan> chosen = new List<PlatePlan>();
             r.Line("Your choices:");
             r.Indent();
+
+            if (plans.Count > 1)
+            {
+                List<string> lines = new List<string>();
+                foreach (PlatePlan plan in plans) lines.Add(plan.Summary(ctx.Config));
+                List<Body> bodies = new List<Body>();
+                foreach (PlatePlan plan in plans) bodies.Add(det.Plates[plan.Plate.Id].Solid.Body);
+                foreach (Body b in bodies) b.Highlight();
+                int all;
+                try
+                {
+                    all = ctx.Ui.NXMessageBox.Show("Standard Blocks", NXMessageBox.DialogType.Question,
+                        Text.F("Add holes to these {0} highlighted plates?\n\n{1}\n\nYes: add them all.\nNo: choose plate by plate.",
+                            plans.Count, string.Join("\n", lines.ToArray())));
+                }
+                finally
+                {
+                    foreach (Body b in bodies) b.Unhighlight();
+                }
+                if (all == 1)
+                {
+                    foreach (PlatePlan plan in plans) r.Line(plan.Summary(ctx.Config) + ": add");
+                    r.Outdent();
+                    r.Blank();
+                    return new List<PlatePlan>(plans);
+                }
+                r.Line("Choosing plate by plate:");
+            }
+
             foreach (PlatePlan plan in plans)
             {
                 Body body = det.Plates[plan.Plate.Id].Solid.Body;
@@ -2654,6 +2751,18 @@ namespace StandardBlocks.Nx
                 if (NxAttr.GetString(f, attrs.SourceInstance) == instanceId) return true;
             }
             return false;
+        }
+
+        // Assemblies other than this one whose blocks have holes in this plate.
+        public static List<string> OtherAssemblies(Part plate, SbAttrs attrs, string thisAssembly)
+        {
+            List<string> others = new List<string>();
+            foreach (NXOpen.Features.Feature f in plate.Features)
+            {
+                string a = NxAttr.GetString(f, attrs.Assembly);
+                if (!string.IsNullOrEmpty(a) && a != thisAssembly && !others.Contains(a)) others.Add(a);
+            }
+            return others;
         }
 
         // Instance IDs of copies of blockPart that already cut this plate, in feature order.
@@ -2837,7 +2946,7 @@ public class StandardBlocksJournal
     public const string ConfigFileName = "StandardBlocks.config.json";
 
     // Printed in the header so a run shows which build it is. Bump on every change.
-    public const string Version = "0.4.2 (step 4: add holes)";
+    public const string Version = "0.5.0 (step 5: several plates and blocks)";
 
     public static void Main(string[] args)
     {
@@ -2910,10 +3019,13 @@ public class StandardBlocksJournal
                     StandardBlocks.Nx.DetectCommand.Run(ctx);
                     break;
                 case "addholes":
-                    StandardBlocks.Nx.AddHolesCommand.Run(ctx);
+                    StandardBlocks.Nx.AddHolesCommand.Run(ctx, false);
+                    break;
+                case "addholesmanual":
+                    StandardBlocks.Nx.AddHolesCommand.Run(ctx, true);
                     break;
                 default:
-                    report.Error("Unknown command \"" + command + "\". Available: inspect, detect, addholes.");
+                    report.Error("Unknown command \"" + command + "\". Available: inspect, detect, addholes, addholesmanual.");
                     break;
             }
         }

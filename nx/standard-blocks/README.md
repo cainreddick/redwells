@@ -14,7 +14,7 @@ link the block's tool bodies (not fixed at timestamp), then subtract them.
 |---|---|
 | `StandardBlocks.cs` | The journal. All the code is in this one file. |
 | `StandardBlocks.config.json` | Settings: hole table, tolerances, layer, reference sets, attribute names, max plate thickness, log folder. |
-| `SB_Inspect.cs`, `SB_Detect.cs`, `SB_AddHoles.cs` | Exact copies of `StandardBlocks.cs`, one per command (see below). |
+| `SB_Inspect.cs`, `SB_Detect.cs`, `SB_AddHoles.cs`, `SB_AddHolesManual.cs` | Exact copies of `StandardBlocks.cs`, one per command (see below). |
 | `tests/` | Unit tests for the pure logic, and a compile check for the whole journal. Not needed in NX. |
 
 To install or update, copy `StandardBlocks.cs`, `StandardBlocks.config.json`
@@ -76,12 +76,33 @@ these diameters, so keep the two in step:
 | 1 | `SB_Inspect.cs`: select blocks and list their tool bodies, hole types and axes | No | Done |
 | 2 | `SB_Detect.cs`: find the target plates, print the per-plate summary, highlight them | No | Done |
 | 3 | `SB_Detect.cs` also checks that the plates and top assembly are writable | No | Writable case confirmed; read-only case still to test |
-| 4 | `SB_AddHoles.cs`: WAVE link and subtract; moving the block updates the holes | **Yes** | **Ready to test** |
-| 5 | Multiple plates and blocks, plate deselection, undo as one step | Yes | |
+| 4 | `SB_AddHoles.cs`: WAVE link and subtract; moving the block updates the holes | **Yes** | Done: holes cut and follow the block |
+| 5 | Several plates and blocks in one run, one confirmation with plate-by-plate fallback, `SB_AddHolesManual.cs` | **Yes** | **Ready to test** |
 | 6 | Sync command (with dry run) | Yes | |
 
 Step 1 confirmed in NX: NX reports tool body geometry in assembly
 coordinates, so detection works directly on the assembly occurrences.
+
+### Testing step 5 in NX (changes the model)
+
+1. Copy `StandardBlocks.cs` and all `SB_*.cs` into `C:\nx_settings`. The header should say 0.5.0.
+2. **Several blocks, several plates.** In an assembly with two or more blocks
+   that have no holes yet, play `SB_AddHoles.cs` and select all the blocks.
+   One question lists every plate, with all of them highlighted:
+   - **Yes** adds them all;
+   - **No** asks plate by plate.
+
+   Then **Edit > Undo** once and check that everything from the run goes.
+3. **Re-run.** Play `SB_AddHoles.cs` again on a block that already has its
+   holes. The detection should say "Already done" for those plates, and nothing
+   should be added twice.
+4. **Manual mode.** Play `SB_AddHolesManual.cs`, select a block, then click one
+   face on each plate it should cut. Only those plates are considered. The
+   usual square-to-plate, overlap and thickness rules still apply, but the
+   plate shape test is skipped.
+
+Detection also warns when a plate already carries holes linked from a
+different assembly (for example the mirrored jig), because it is the same part.
 
 ### Testing step 4 in NX (changes the model)
 
