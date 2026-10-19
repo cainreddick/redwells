@@ -2837,7 +2837,7 @@ public class StandardBlocksJournal
     public const string ConfigFileName = "StandardBlocks.config.json";
 
     // Printed in the header so a run shows which build it is. Bump on every change.
-    public const string Version = "0.4.1 (step 4: add holes)";
+    public const string Version = "0.4.2 (step 4: add holes)";
 
     public static void Main(string[] args)
     {
@@ -2871,10 +2871,13 @@ public class StandardBlocksJournal
             ctx.Ui = NXOpen.UI.GetUI();
             ctx.Report = report;
 
-            ctx.ConfigPath = FindConfig(session);
+            List<string> tried = new List<string>();
+            ctx.ConfigPath = FindConfig(session, tried);
             if (ctx.ConfigPath == null)
             {
-                report.Error("Can't find " + ConfigFileName + ". Put it in the same folder as StandardBlocks.cs, or set the SB_CONFIG environment variable to its full path.");
+                report.Error("Can't find " + ConfigFileName + ". Looked in: " + string.Join("; ", tried.ToArray())
+                    + ". Put it in the same folder as the journal, or set the SB_CONFIG environment variable to its full path."
+                    + " Play the journal with Tools > Journal > Play rather than the Journal Editor's Run button.");
                 return;
             }
             report.Line("Config: " + ctx.ConfigPath);
@@ -2936,18 +2939,38 @@ public class StandardBlocksJournal
     }
 
     // SB_CONFIG overrides; otherwise the config sits next to the running journal.
-    private static string FindConfig(NXOpen.Session session)
+    // Used when NX can't say where the journal is, e.g. when it is started
+    // from the Journal Editor's Run button.
+    public const string DefaultFolder = @"C:\nx_settings";
+
+    // SB_CONFIG wins; then next to the running journal; then DefaultFolder.
+    // tried lists every place looked at, for the error message.
+    private static string FindConfig(NXOpen.Session session, List<string> tried)
     {
         string env = Environment.GetEnvironmentVariable("SB_CONFIG");
-        if (!string.IsNullOrEmpty(env)) return File.Exists(env) ? env : null;
+        if (!string.IsNullOrEmpty(env))
+        {
+            tried.Add(env + " (from SB_CONFIG)");
+            return File.Exists(env) ? env : null;
+        }
 
         string journal = null;
         try { journal = session.ExecutingJournal; }
         catch (Exception) { }
-        if (string.IsNullOrEmpty(journal)) return null;
+        if (!string.IsNullOrEmpty(journal) && Path.IsPathRooted(journal))
+        {
+            string next = Path.Combine(Path.GetDirectoryName(journal), ConfigFileName);
+            tried.Add(next);
+            if (File.Exists(next)) return next;
+        }
+        else
+        {
+            tried.Add("next to the journal (NX didn't say where it is: \"" + (journal ?? "") + "\")");
+        }
 
-        string path = Path.Combine(Path.GetDirectoryName(journal), ConfigFileName);
-        return File.Exists(path) ? path : null;
+        string fallback = Path.Combine(DefaultFolder, ConfigFileName);
+        tried.Add(fallback);
+        return File.Exists(fallback) ? fallback : null;
     }
 
     private static string OpenLog(StandardBlocks.Nx.NxContext ctx, string command, out StreamWriter log)
