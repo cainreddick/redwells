@@ -2791,10 +2791,9 @@ namespace StandardBlocks.Nx
                 extract.HideOriginal = false;
                 extract.InheritDisplayProperties = false;
 
-                ScCollector collector = work.ScCollectors.CreateCollector();
+                // The builder owns this collector (read-only property): fill it in place.
                 SelectionIntentRule[] rules = new SelectionIntentRule[] { work.ScRuleFactory.CreateRuleBodyDumb(new Body[] { toolOccurrence }, true) };
-                collector.ReplaceRules(rules, false);
-                extract.ExtractBodyCollector = collector;
+                extract.ExtractBodyCollector.ReplaceRules(rules, false);
 
                 return (NXOpen.Features.Feature)builder.Commit();
             }
@@ -2838,7 +2837,7 @@ public class StandardBlocksJournal
     public const string ConfigFileName = "StandardBlocks.config.json";
 
     // Printed in the header so a run shows which build it is. Bump on every change.
-    public const string Version = "0.4.0 (step 4: add holes)";
+    public const string Version = "0.4.1 (step 4: add holes)";
 
     public static void Main(string[] args)
     {

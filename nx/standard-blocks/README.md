@@ -88,7 +88,7 @@ coordinates, so detection works directly on the assembly occurrences.
 Try it on a test copy of a jig first. If anything goes wrong part-way, the
 journal undoes everything it did in that run.
 
-1. Copy `StandardBlocks.cs` and all `SB_*.cs` into `C:\nx_settings`. The header should say 0.4.0.
+1. Copy `StandardBlocks.cs` and all `SB_*.cs` into `C:\nx_settings`. The header should say 0.4.1.
 2. Check out the assembly and the plates, then play `SB_AddHoles.cs` and select the block.
 3. It shows the same detection and Teamcenter check as `SB_Detect.cs`, then
    asks Yes/No for each plate, with that plate highlighted. Say **Yes** to one

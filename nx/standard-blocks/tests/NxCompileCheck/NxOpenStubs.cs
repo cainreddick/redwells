@@ -254,7 +254,7 @@ namespace NXOpen.Features
         public bool FixAtCurrentTimestamp { get; set; }
         public bool HideOriginal { get; set; }
         public bool InheritDisplayProperties { get; set; }
-        public ScCollector ExtractBodyCollector { get; set; }
+        public ScCollector ExtractBodyCollector { get { throw new NotImplementedException(); } }   // read-only in NX 2414
     }
 
     public class WaveLinkBuilder : Builder
