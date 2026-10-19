@@ -39,6 +39,8 @@ namespace NXOpen
         public bool HasUserAttribute(string title, AttributeType type, int index) { throw new NotImplementedException(); }
         public string GetStringUserAttribute(string title, int index) { throw new NotImplementedException(); }
         public AttributeInformation[] GetUserAttributes() { throw new NotImplementedException(); }
+        public void SetUserAttribute(string title, int index, string value, Update.Option option) { throw new NotImplementedException(); }
+        public void SetName(string name) { throw new NotImplementedException(); }
         public string GetUserAttributeAsString(string title, AttributeType type, int index) { throw new NotImplementedException(); }
     }
 
@@ -87,12 +89,21 @@ namespace NXOpen
 
     public class Part : BasePart
     {
+        public NXOpen.Features.FeatureCollection Features { get { throw new NotImplementedException(); } }
+        public NXOpen.Features.BaseFeatureCollection BaseFeatures { get { throw new NotImplementedException(); } }
+        public ScCollectorCollection ScCollectors { get { throw new NotImplementedException(); } }
+        public ScRuleFactory ScRuleFactory { get { throw new NotImplementedException(); } }
         public BodyCollection Bodies { get { throw new NotImplementedException(); } }
         public ReferenceSet[] GetAllReferenceSets() { throw new NotImplementedException(); }
     }
 
     public class PartCollection
     {
+        public enum RefsetOption { Entire, Current }
+        public enum WorkComponentOption { Given, Visible }
+        public NXOpen.Assemblies.Component WorkComponent { get { throw new NotImplementedException(); } }
+        public void SetWorkComponent(NXOpen.Assemblies.Component component, RefsetOption refsetOption,
+            WorkComponentOption visibilityOption, out PartLoadStatus loadStatus) { throw new NotImplementedException(); }
         public Part Display { get { throw new NotImplementedException(); } }
         public Part Work { get { throw new NotImplementedException(); } }
     }
@@ -106,11 +117,44 @@ namespace NXOpen
     public class Session
     {
         public enum LibraryUnloadOption { AtTermination, Immediately, Explicitly }
+        public enum MarkVisibility { Invisible, Visible, AnyVisibility }
+        public struct UndoMarkId { public int Value; }
+        public UndoMarkId SetUndoMark(MarkVisibility visibility, string name) { throw new NotImplementedException(); }
+        public void UndoToMark(UndoMarkId markId, string markName) { throw new NotImplementedException(); }
 
         public static Session GetSession() { throw new NotImplementedException(); }
         public ListingWindow ListingWindow { get { throw new NotImplementedException(); } }
         public PartCollection Parts { get { throw new NotImplementedException(); } }
         public string ExecutingJournal { get { throw new NotImplementedException(); } }
+    }
+
+    public static class Update
+    {
+        public enum Option { Now, Later }
+    }
+
+    public class Builder
+    {
+        public NXObject Commit() { throw new NotImplementedException(); }
+        public void Destroy() { }
+    }
+
+    public class SelectionIntentRule { }
+    public class BodyDumbRule : SelectionIntentRule { }
+
+    public class ScCollector : NXObject
+    {
+        public void ReplaceRules(SelectionIntentRule[] rules, bool createRulesWoUpdate) { throw new NotImplementedException(); }
+    }
+
+    public class ScCollectorCollection
+    {
+        public ScCollector CreateCollector() { throw new NotImplementedException(); }
+    }
+
+    public class ScRuleFactory
+    {
+        public BodyDumbRule CreateRuleBodyDumb(Body[] bodies, bool includeSheetBodies) { throw new NotImplementedException(); }
     }
 
     public struct Point3d
@@ -180,7 +224,52 @@ namespace NXOpen.Features
 {
     public class Feature : NXObject
     {
+        public enum BooleanType { Create, Unite, Subtract, Intersect }
         public string GetFeatureName() { throw new NotImplementedException(); }
+    }
+
+    public class BodyFeature : Feature
+    {
+        public Body[] GetBodies() { throw new NotImplementedException(); }
+    }
+
+    public class FeatureCollection : System.Collections.IEnumerable
+    {
+        public System.Collections.IEnumerator GetEnumerator() { throw new NotImplementedException(); }
+        public BooleanBuilder CreateBooleanBuilderUsingCollector(BooleanFeature boolean) { throw new NotImplementedException(); }
+    }
+
+    public class BaseFeatureCollection
+    {
+        public WaveLinkBuilder CreateWaveLinkBuilder(Feature feature) { throw new NotImplementedException(); }
+    }
+
+    public class BooleanFeature : BodyFeature { }
+
+    public class ExtractFaceBuilder : Builder
+    {
+        public enum ParentPartType { WorkPart, OtherPart }
+        public ParentPartType ParentPart { get; set; }
+        public bool Associative { get; set; }
+        public bool FixAtCurrentTimestamp { get; set; }
+        public bool HideOriginal { get; set; }
+        public bool InheritDisplayProperties { get; set; }
+        public ScCollector ExtractBodyCollector { get; set; }
+    }
+
+    public class WaveLinkBuilder : Builder
+    {
+        public enum Types { CurveLink, PointLink, DatumLink, FaceLink, RegionLink, BodyLink }
+        public Types Type { get; set; }
+        public ExtractFaceBuilder ExtractFaceBuilder { get { throw new NotImplementedException(); } }
+    }
+
+    public class BooleanBuilder : Builder
+    {
+        public Feature.BooleanType Operation { get; set; }
+        public bool RetainTool { get; set; }
+        public ScCollector TargetBodyCollector { get; set; }
+        public ScCollector ToolBodyCollector { get; set; }
     }
 }
 

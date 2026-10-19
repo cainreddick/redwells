@@ -1276,6 +1276,40 @@ namespace StandardBlocks.Core
         }
     }
 
+    // Feature names: SB_<block>_<type> for a subtract and SB_<block>_<type>_LINK
+    // for its WAVE links, with _2, _3... for further copies of the same block
+    // cutting the same plate.
+    public static class FeatureNames
+    {
+        // Letters, digits and underscores only: "001-4032-CAD2072" -> "001_4032_CAD2072".
+        public static string Sanitize(string s)
+        {
+            StringBuilder sb = new StringBuilder();
+            foreach (char c in (s ?? "").Trim())
+                sb.Append((c < 128 && char.IsLetterOrDigit(c)) || c == '_' ? c : '_');
+            return sb.ToString();
+        }
+
+        public static string Subtract(string prefix, string blockId, string holeType, int copy)
+        {
+            string name = prefix + Sanitize(blockId) + "_" + Sanitize(holeType);
+            return copy > 1 ? name + "_" + copy.ToString(CultureInfo.InvariantCulture) : name;
+        }
+
+        public static string Link(string prefix, string blockId, string holeType, int copy)
+        {
+            return Subtract(prefix, blockId, holeType, copy) + "_LINK";
+        }
+
+        // 1 for the first copy of a block on a plate, 2 for the next, and so on.
+        // existingInstances: instance IDs of this block part already on the plate.
+        public static int CopyNumber(IList<string> existingInstances, string instance)
+        {
+            int i = existingInstances.IndexOf(instance);
+            return i >= 0 ? i + 1 : existingInstances.Count + 1;
+        }
+    }
+
     // A part the macro would change, and whether it can.
     public sealed class PartStatus
     {
@@ -1505,6 +1539,11 @@ namespace StandardBlocks.Nx
             {
                 return null;
             }
+        }
+
+        public static void Set(NXObject obj, string title, string value)
+        {
+            obj.SetUserAttribute(title, -1, value ?? "", Update.Option.Now);
         }
 
         // True if the object has an attribute with this title of any type.
@@ -2061,7 +2100,8 @@ namespace StandardBlocks.Nx
     {
         public Component Component;
         public Part Part;
-        public Body Body;   // occurrence: assembly coordinates
+        public Body ProtoBody;   // the same body in the plate part
+        public Body Body;        // occurrence: assembly coordinates
         public Aabb Box;
     }
 
@@ -2118,6 +2158,7 @@ namespace StandardBlocks.Nx
                         SolidRef s = new SolidRef();
                         s.Component = c;
                         s.Part = p;
+                        s.ProtoBody = b;
                         s.Body = occ;
                         s.Box = NxGeom.Box(ctx.Uf, occ);
                         Solids.Add(s);
@@ -2226,21 +2267,40 @@ namespace StandardBlocks.Nx
         }
     }
 
-    // Step 2: find the plates each block's tool bodies would cut (read-only).
-    public static class DetectCommand
+    // What detection found, for the commands that act on it.
+    public sealed class DetectionResult
     {
-        public static void Run(NxContext ctx)
+        public Part Assembly;
+        public AssemblyIndex Index;
+        public List<PlatePlan> Plans = new List<PlatePlan>();
+        public Dictionary<string, PlateInfo> Plates = new Dictionary<string, PlateInfo>();   // by PlateModel.Id
+        public Dictionary<ToolEvaluation, ToolInfo> Tools = new Dictionary<ToolEvaluation, ToolInfo>();
+        public Dictionary<ToolEvaluation, BlockInfo> Blocks = new Dictionary<ToolEvaluation, BlockInfo>();
+
+        public List<Part> PlateParts()
+        {
+            List<Part> parts = new List<Part>();
+            foreach (PlatePlan plan in Plans)
+            {
+                Part part = Plates[plan.Plate.Id].Solid.Part;
+                if (!parts.Contains(part)) parts.Add(part);
+            }
+            return parts;
+        }
+    }
+
+    // Step 2: find the plates each block's tool bodies would cut, and list them.
+    public static class Detector
+    {
+        public static DetectionResult Run(NxContext ctx, Part display, List<BlockInfo> blocks)
         {
             Report r = ctx.Report;
             SbConfig cfg = ctx.Config;
-            r.Line("Command: Detect target plates (read-only, changes nothing)");
-            Part display = NxCommon.RequireAssembly(ctx);
-            if (display == null) return;
-
-            List<BlockInfo> blocks = NxCommon.SelectBlocks(ctx);
-            if (blocks == null || blocks.Count == 0) return;
+            DetectionResult result = new DetectionResult();
+            result.Assembly = display;
 
             AssemblyIndex index = AssemblyIndex.Build(ctx, display.ComponentAssembly.RootComponent);
+            result.Index = index;
             r.Line(Text.F("Assembly scanned: {0} outside standard blocks.", Text.Count(index.Solids.Count, "solid body", "solid bodies")));
             if (index.NotLoaded.Count > 0)
                 r.Warn(Text.F("{0} not loaded, so any plates in them were not checked: {1}.",
@@ -2248,7 +2308,7 @@ namespace StandardBlocks.Nx
             r.Blank();
 
             Dictionary<Tag, PlateInfo> cache = new Dictionary<Tag, PlateInfo>();
-            Dictionary<string, PlateInfo> byId = new Dictionary<string, PlateInfo>();
+            Dictionary<string, PlateInfo> byId = result.Plates;
             List<ToolEvaluation> evals = new List<ToolEvaluation>();
 
             for (int bi = 0; bi < blocks.Count; bi++)
@@ -2312,6 +2372,8 @@ namespace StandardBlocks.Nx
                     e.Hits = Detection.EvaluateTool(t.AssyCyl, plates,
                         delegate(PlateModel m) { return PlateReader.Interferes(ctx.Uf, byId[m.Id].Solid.Body, toolBody); }, cfg);
                     evals.Add(e);
+                    result.Tools[e] = t;
+                    result.Blocks[e] = b;
 
                     ToolHit sel = e.Selected;
                     r.Line(Text.F("[{0}] {1}  {2}  ->  {3}", ti + 1, e.HoleType, t.Name, sel != null ? sel.Plate.Label : "no hole"));
@@ -2333,40 +2395,46 @@ namespace StandardBlocks.Nx
                 r.Blank();
             }
 
-            List<PlatePlan> plans = Planner.ByPlate(evals);
+            result.Plans = Planner.ByPlate(evals);
             r.Line("Plates to cut:");
             r.Indent();
-            if (plans.Count == 0) r.Line("none");
-            foreach (PlatePlan plan in plans) r.Line(plan.Summary(cfg));
+            if (result.Plans.Count == 0) r.Line("none");
+            foreach (PlatePlan plan in result.Plans) r.Line(plan.Summary(cfg));
             r.Outdent();
-            foreach (PlatePlan plan in plans)
+            foreach (Part part in result.PlateParts())
             {
-                Part part = byId[plan.Plate.Id].Solid.Part;
                 int uses = index.UsesOf(part);
                 if (uses > 1)
                     r.Warn(Text.F("{0} is used {1} times in this assembly. Holes are cut into the part, so every copy will get them.",
                         NxNames.PartLabel(cfg, part), uses));
             }
             r.Blank();
+            return result;
+        }
+    }
 
-            if (plans.Count > 0)
-            {
-                List<Part> plateParts = new List<Part>();
-                foreach (PlatePlan plan in plans)
-                {
-                    Part part = byId[plan.Plate.Id].Solid.Part;
-                    if (!plateParts.Contains(part)) plateParts.Add(part);
-                }
-                NxTeamcenter.Report(ctx, display, plateParts);
-                Highlight(ctx, plans, byId);
-            }
+    // Read-only: detection, the Teamcenter check, then highlight the plates.
+    public static class DetectCommand
+    {
+        public static void Run(NxContext ctx)
+        {
+            ctx.Report.Line("Command: Detect target plates (read-only, changes nothing)");
+            Part display = NxCommon.RequireAssembly(ctx);
+            if (display == null) return;
+            List<BlockInfo> blocks = NxCommon.SelectBlocks(ctx);
+            if (blocks == null || blocks.Count == 0) return;
+
+            DetectionResult det = Detector.Run(ctx, display, blocks);
+            if (det.Plans.Count == 0) return;
+            NxTeamcenter.Report(ctx, display, det.PlateParts());
+            Highlight(ctx, det);
         }
 
         // Shows the plates that would be cut until the user presses OK.
-        private static void Highlight(NxContext ctx, List<PlatePlan> plans, Dictionary<string, PlateInfo> byId)
+        private static void Highlight(NxContext ctx, DetectionResult det)
         {
             List<Body> bodies = new List<Body>();
-            foreach (PlatePlan plan in plans) bodies.Add(byId[plan.Plate.Id].Solid.Body);
+            foreach (PlatePlan plan in det.Plans) bodies.Add(det.Plates[plan.Plate.Id].Solid.Body);
             foreach (Body b in bodies) b.Highlight();
             try
             {
@@ -2380,6 +2448,387 @@ namespace StandardBlocks.Nx
             }
         }
     }
+
+    // A failure while changing the model, already worded for the user.
+    public sealed class SbException : Exception
+    {
+        public SbException(string message) : base(message) { }
+    }
+
+    // Attribute titles written by the macro (prefix from features.prefix).
+    public sealed class SbAttrs
+    {
+        public readonly string InstanceId;     // on the block component
+        public readonly string Role;           // LINK or SUBTRACT
+        public readonly string Group;          // ties a block's links to their subtract on one plate
+        public readonly string SourcePart;
+        public readonly string SourceRev;
+        public readonly string SourceInstance;
+        public readonly string SourcePath;
+        public readonly string SourceBody;
+        public readonly string HoleType;
+        public readonly string HoleDiameter;
+        public readonly string Assembly;
+        public readonly string Version;
+
+        public SbAttrs(string prefix)
+        {
+            InstanceId = prefix + "INSTANCE_ID";
+            Role = prefix + "ROLE";
+            Group = prefix + "GROUP";
+            SourcePart = prefix + "SOURCE_PART";
+            SourceRev = prefix + "SOURCE_REV";
+            SourceInstance = prefix + "SOURCE_INSTANCE";
+            SourcePath = prefix + "SOURCE_PATH";
+            SourceBody = prefix + "SOURCE_BODY";
+            HoleType = prefix + "HOLE_TYPE";
+            HoleDiameter = prefix + "HOLE_DIA";
+            Assembly = prefix + "ASSEMBLY";
+            Version = prefix + "VERSION";
+        }
+    }
+
+    // Step 4: WAVE link the tool bodies into each plate and subtract them.
+    public static class AddHolesCommand
+    {
+        public static void Run(NxContext ctx)
+        {
+            Report r = ctx.Report;
+            SbConfig cfg = ctx.Config;
+            r.Line("Command: Add standard block holes");
+            Part display = NxCommon.RequireAssembly(ctx);
+            if (display == null) return;
+            List<BlockInfo> blocks = NxCommon.SelectBlocks(ctx);
+            if (blocks == null || blocks.Count == 0) return;
+
+            DetectionResult det = Detector.Run(ctx, display, blocks);
+            if (det.Plans.Count == 0)
+            {
+                r.Line("Nothing to add.");
+                return;
+            }
+
+            // Leave out plates this block copy has already cut.
+            SbAttrs attrs = new SbAttrs(cfg.FeaturePrefix);
+            List<PlatePlan> plans = new List<PlatePlan>();
+            foreach (PlatePlan plan in det.Plans)
+            {
+                PlatePlan todo = new PlatePlan();
+                todo.Plate = plan.Plate;
+                Part platePart = det.Plates[plan.Plate.Id].Solid.Part;
+                foreach (ToolEvaluation e in plan.Tools)
+                {
+                    string id = NxAttr.GetString(det.Blocks[e].Component, attrs.InstanceId);
+                    if (id != null && HoleBuilder.HasFeaturesFrom(platePart, attrs, id))
+                        r.Line(Text.F("Skipped: {0} already has holes from this copy of {1}.", plan.Plate.Label, e.BlockLabel));
+                    else todo.Tools.Add(e);
+                }
+                if (todo.Tools.Count > 0) plans.Add(todo);
+            }
+            if (plans.Count == 0)
+            {
+                r.Line("Nothing to add: every plate already has its holes.");
+                return;
+            }
+
+            List<string> problems = NxTeamcenter.Report(ctx, display, det.PlateParts());
+            if (problems.Count > 0)
+            {
+                r.Error("Nothing was changed, because not every part can be changed. Fix the problems above and run it again.");
+                return;
+            }
+
+            List<PlatePlan> chosen = Confirm(ctx, det, plans);
+            if (chosen.Count == 0)
+            {
+                r.Line("Nothing chosen: nothing was changed.");
+                return;
+            }
+
+            Session.UndoMarkId mark = ctx.Session.SetUndoMark(Session.MarkVisibility.Visible, "Add Standard Block Holes");
+            Component originalWork = ctx.Session.Parts.WorkComponent;
+            bool ok = false;
+            try
+            {
+                foreach (BlockInfo b in BlocksIn(det, chosen)) EnsureInstanceId(b, attrs);
+                foreach (PlatePlan plan in chosen) HoleBuilder.AddToPlate(ctx, det, plan, attrs);
+                ok = true;
+            }
+            catch (Exception ex)
+            {
+                r.Error(ex.Message);
+                try
+                {
+                    ctx.Session.UndoToMark(mark, null);
+                    r.Line("Everything this run did has been undone. Nothing was changed.");
+                }
+                catch (Exception undoEx)
+                {
+                    r.Error("Undoing it also failed (" + undoEx.Message + "). Use Edit > Undo to go back to \"Add Standard Block Holes\".");
+                }
+            }
+            finally
+            {
+                try
+                {
+                    PartLoadStatus status;
+                    ctx.Session.Parts.SetWorkComponent(originalWork, PartCollection.RefsetOption.Current,
+                        PartCollection.WorkComponentOption.Visible, out status);
+                    status.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    r.Warn("Could not restore the work part: " + ex.Message + ".");
+                }
+            }
+
+            if (ok)
+            {
+                r.Blank();
+                r.Line("Done. Edit > Undo \"Add Standard Block Holes\" removes everything this run added.");
+                r.Line("To check the holes follow the block: move the block, then update (Tools > Update > Interpart Update if they don't follow straight away).");
+            }
+        }
+
+        // One Yes/No per plate, with the plate highlighted.
+        private static List<PlatePlan> Confirm(NxContext ctx, DetectionResult det, List<PlatePlan> plans)
+        {
+            Report r = ctx.Report;
+            List<PlatePlan> chosen = new List<PlatePlan>();
+            r.Line("Your choices:");
+            r.Indent();
+            foreach (PlatePlan plan in plans)
+            {
+                Body body = det.Plates[plan.Plate.Id].Solid.Body;
+                body.Highlight();
+                int answer;
+                try
+                {
+                    answer = ctx.Ui.NXMessageBox.Show("Standard Blocks", NXMessageBox.DialogType.Question,
+                        Text.F("Add {0} to the highlighted plate?\n\n{1}", Summary.HoleCounts(plan.HoleTypes(), ctx.Config), plan.Plate.Label));
+                }
+                finally
+                {
+                    body.Unhighlight();
+                }
+                bool yes = answer == 1;
+                r.Line(Text.F("{0}: {1} (answer {2})", plan.Summary(ctx.Config), yes ? "add" : "skip", answer));
+                if (yes) chosen.Add(plan);
+            }
+            r.Outdent();
+            r.Blank();
+            return chosen;
+        }
+
+        private static List<BlockInfo> BlocksIn(DetectionResult det, List<PlatePlan> plans)
+        {
+            List<BlockInfo> blocks = new List<BlockInfo>();
+            foreach (PlatePlan plan in plans)
+                foreach (ToolEvaluation e in plan.Tools)
+                    if (!blocks.Contains(det.Blocks[e])) blocks.Add(det.Blocks[e]);
+            return blocks;
+        }
+
+        // Gives the block component a permanent ID so Sync can find its holes.
+        private static void EnsureInstanceId(BlockInfo b, SbAttrs attrs)
+        {
+            if (NxAttr.GetString(b.Component, attrs.InstanceId) != null) return;
+            try
+            {
+                b.Component.SetUserAttribute(attrs.InstanceId, -1, Guid.NewGuid().ToString("N"), Update.Option.Now);
+            }
+            catch (NXException ex)
+            {
+                throw new SbException(Text.F("Couldn't give {0} its {1} attribute ({2}). The assembly that holds it must be writable.",
+                    b.Path, attrs.InstanceId, ex.Message));
+            }
+        }
+    }
+
+    public static class HoleBuilder
+    {
+        public static bool HasFeaturesFrom(Part plate, SbAttrs attrs, string instanceId)
+        {
+            foreach (NXOpen.Features.Feature f in plate.Features)
+            {
+                if (NxAttr.GetString(f, attrs.SourceInstance) == instanceId) return true;
+            }
+            return false;
+        }
+
+        // Instance IDs of copies of blockPart that already cut this plate, in feature order.
+        private static List<string> CopiesOf(Part plate, SbAttrs attrs, string blockPart)
+        {
+            List<string> ids = new List<string>();
+            foreach (NXOpen.Features.Feature f in plate.Features)
+            {
+                if (NxAttr.GetString(f, attrs.SourcePart) != blockPart) continue;
+                string id = NxAttr.GetString(f, attrs.SourceInstance);
+                if (id != null && !ids.Contains(id)) ids.Add(id);
+            }
+            return ids;
+        }
+
+        public static void AddToPlate(NxContext ctx, DetectionResult det, PlatePlan plan, SbAttrs attrs)
+        {
+            Report r = ctx.Report;
+            SbConfig cfg = ctx.Config;
+            PlateInfo plate = det.Plates[plan.Plate.Id];
+            string plateLabel = plan.Plate.Label;
+            string assemblyLabel = NxNames.PartLabel(cfg, det.Assembly);
+
+            PartLoadStatus status;
+            try
+            {
+                ctx.Session.Parts.SetWorkComponent(plate.Solid.Component, PartCollection.RefsetOption.Current,
+                    PartCollection.WorkComponentOption.Visible, out status);
+                status.Dispose();
+            }
+            catch (NXException ex)
+            {
+                throw new SbException(Text.F("Couldn't make {0} the work part: {1}.", plateLabel, ex.Message));
+            }
+            Part work = ctx.Session.Parts.Work;
+
+            r.Line("Adding to " + plateLabel + ":");
+            r.Indent();
+
+            // One group per block copy and hole type: its links, then one subtract.
+            List<string> keys = new List<string>();
+            Dictionary<string, List<ToolEvaluation>> groups = new Dictionary<string, List<ToolEvaluation>>();
+            foreach (ToolEvaluation e in plan.Tools)
+            {
+                string key = NxAttr.GetString(det.Blocks[e].Component, attrs.InstanceId) + "|" + e.HoleType;
+                if (!groups.ContainsKey(key))
+                {
+                    keys.Add(key);
+                    groups[key] = new List<ToolEvaluation>();
+                }
+                groups[key].Add(e);
+            }
+
+            foreach (string key in keys)
+            {
+                List<ToolEvaluation> group = groups[key];
+                BlockInfo block = det.Blocks[group[0]];
+                string blockPart = NxAttr.GetString(block.Prototype, cfg.PartNumberAttribute) ?? block.Prototype.Leaf;
+                string blockRev = NxAttr.GetString(block.Prototype, cfg.PartRevisionAttribute) ?? "";
+                string instance = NxAttr.GetString(block.Component, attrs.InstanceId);
+                string holeType = group[0].HoleType;
+                string groupId = Guid.NewGuid().ToString("N");
+
+                List<string> copies = CopiesOf(work, attrs, blockPart);
+                int copy = FeatureNames.CopyNumber(copies, instance);
+                string subtractName = FeatureNames.Subtract(cfg.FeaturePrefix, blockPart, holeType, copy);
+                string linkName = FeatureNames.Link(cfg.FeaturePrefix, blockPart, holeType, copy);
+
+                List<NXOpen.Features.Feature> made = new List<NXOpen.Features.Feature>();
+                List<Body> linkedBodies = new List<Body>();
+                foreach (ToolEvaluation e in group)
+                {
+                    ToolInfo tool = det.Tools[e];
+                    NXOpen.Features.Feature link;
+                    try
+                    {
+                        link = CreateLink(work, tool.OccBody);
+                        foreach (Body lb in ((NXOpen.Features.BodyFeature)link).GetBodies()) linkedBodies.Add(lb);
+                    }
+                    catch (NXException ex)
+                    {
+                        throw new SbException(Text.F("Creating the WAVE link for {0} in {1} failed: {2}.", e.Describe(), plateLabel, ex.Message));
+                    }
+                    link.SetName(linkName);
+                    SetCommon(link, attrs, "LINK", groupId, blockPart, blockRev, instance, block.Path, holeType, tool, assemblyLabel);
+                    NxAttr.Set(link, attrs.SourceBody, tool.ProtoBody.JournalIdentifier);
+                    made.Add(link);
+                }
+                if (linkedBodies.Count == 0)
+                    throw new SbException(Text.F("The WAVE links for {0} {1} in {2} produced no bodies.", block.Label, holeType, plateLabel));
+
+                NXOpen.Features.Feature subtract;
+                try
+                {
+                    subtract = CreateSubtract(work, plate.Solid.ProtoBody, linkedBodies);
+                }
+                catch (NXException ex)
+                {
+                    throw new SbException(Text.F("Subtracting the {0} holes of {1} from {2} failed: {3}.", holeType, block.Label, plateLabel, ex.Message));
+                }
+                subtract.SetName(subtractName);
+                SetCommon(subtract, attrs, "SUBTRACT", groupId, blockPart, blockRev, instance, block.Path, holeType, det.Tools[group[0]], assemblyLabel);
+
+                r.Line(Text.F("{0}: {1} + subtract {2}", Text.Count(group.Count, "link", "links"), linkName, subtractName));
+            }
+            r.Outdent();
+        }
+
+        private static void SetCommon(NXOpen.Features.Feature f, SbAttrs a, string role, string groupId, string blockPart, string blockRev,
+            string instance, string path, string holeType, ToolInfo tool, string assemblyLabel)
+        {
+            NxAttr.Set(f, a.Role, role);
+            NxAttr.Set(f, a.Group, groupId);
+            NxAttr.Set(f, a.SourcePart, blockPart);
+            NxAttr.Set(f, a.SourceRev, blockRev);
+            NxAttr.Set(f, a.SourceInstance, instance);
+            NxAttr.Set(f, a.SourcePath, path);
+            NxAttr.Set(f, a.HoleType, holeType);
+            NxAttr.Set(f, a.HoleDiameter, Text.Num(tool.Check.Expected.Diameter));
+            NxAttr.Set(f, a.Assembly, assemblyLabel);
+            NxAttr.Set(f, a.Version, StandardBlocksJournal.Version);
+        }
+
+        // WAVE Geometry Linker, body link, associative, not fixed at timestamp.
+        private static NXOpen.Features.Feature CreateLink(Part work, Body toolOccurrence)
+        {
+            NXOpen.Features.WaveLinkBuilder builder = work.BaseFeatures.CreateWaveLinkBuilder(null);
+            try
+            {
+                builder.Type = NXOpen.Features.WaveLinkBuilder.Types.BodyLink;
+                NXOpen.Features.ExtractFaceBuilder extract = builder.ExtractFaceBuilder;
+                extract.ParentPart = NXOpen.Features.ExtractFaceBuilder.ParentPartType.OtherPart;
+                extract.Associative = true;
+                extract.FixAtCurrentTimestamp = false;
+                extract.HideOriginal = false;
+                extract.InheritDisplayProperties = false;
+
+                ScCollector collector = work.ScCollectors.CreateCollector();
+                SelectionIntentRule[] rules = new SelectionIntentRule[] { work.ScRuleFactory.CreateRuleBodyDumb(new Body[] { toolOccurrence }, true) };
+                collector.ReplaceRules(rules, false);
+                extract.ExtractBodyCollector = collector;
+
+                return (NXOpen.Features.Feature)builder.Commit();
+            }
+            finally
+            {
+                builder.Destroy();
+            }
+        }
+
+        // Subtract, consuming the linked bodies.
+        private static NXOpen.Features.Feature CreateSubtract(Part work, Body plate, List<Body> tools)
+        {
+            NXOpen.Features.BooleanBuilder builder = work.Features.CreateBooleanBuilderUsingCollector(null);
+            try
+            {
+                builder.Operation = NXOpen.Features.Feature.BooleanType.Subtract;
+                builder.RetainTool = false;
+
+                ScCollector target = work.ScCollectors.CreateCollector();
+                target.ReplaceRules(new SelectionIntentRule[] { work.ScRuleFactory.CreateRuleBodyDumb(new Body[] { plate }, true) }, false);
+                builder.TargetBodyCollector = target;
+
+                ScCollector tool = work.ScCollectors.CreateCollector();
+                tool.ReplaceRules(new SelectionIntentRule[] { work.ScRuleFactory.CreateRuleBodyDumb(tools.ToArray(), true) }, false);
+                builder.ToolBodyCollector = tool;
+
+                return (NXOpen.Features.Feature)builder.Commit();
+            }
+            finally
+            {
+                builder.Destroy();
+            }
+        }
+    }
 }
 
 // Journal entry point. Tools > Journal > Play runs Main. Copies of this file
@@ -2389,7 +2838,7 @@ public class StandardBlocksJournal
     public const string ConfigFileName = "StandardBlocks.config.json";
 
     // Printed in the header so a run shows which build it is. Bump on every change.
-    public const string Version = "0.3.1 (step 3: Teamcenter check)";
+    public const string Version = "0.4.0 (step 4: add holes)";
 
     public static void Main(string[] args)
     {
@@ -2458,8 +2907,11 @@ public class StandardBlocksJournal
                 case "detect":
                     StandardBlocks.Nx.DetectCommand.Run(ctx);
                     break;
+                case "addholes":
+                    StandardBlocks.Nx.AddHolesCommand.Run(ctx);
+                    break;
                 default:
-                    report.Error("Unknown command \"" + command + "\". Available: inspect, detect.");
+                    report.Error("Unknown command \"" + command + "\". Available: inspect, detect, addholes.");
                     break;
             }
         }

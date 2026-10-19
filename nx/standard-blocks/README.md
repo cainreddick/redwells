@@ -14,7 +14,7 @@ link the block's tool bodies (not fixed at timestamp), then subtract them.
 |---|---|
 | `StandardBlocks.cs` | The journal. All the code is in this one file. |
 | `StandardBlocks.config.json` | Settings: hole table, tolerances, layer, reference sets, attribute names, max plate thickness, log folder. |
-| `SB_Inspect.cs`, `SB_Detect.cs` | Exact copies of `StandardBlocks.cs`, one per command (see below). |
+| `SB_Inspect.cs`, `SB_Detect.cs`, `SB_AddHoles.cs` | Exact copies of `StandardBlocks.cs`, one per command (see below). |
 | `tests/` | Unit tests for the pure logic, and a compile check for the whole journal. Not needed in NX. |
 
 To install or update, copy `StandardBlocks.cs`, `StandardBlocks.config.json`
@@ -75,13 +75,40 @@ these diameters, so keep the two in step:
 |---|---|---|---|
 | 1 | `SB_Inspect.cs`: select blocks and list their tool bodies, hole types and axes | No | Done |
 | 2 | `SB_Detect.cs`: find the target plates, print the per-plate summary, highlight them | No | Done |
-| 3 | `SB_Detect.cs` also checks that the plates and top assembly are writable | No | **Ready to test** |
-| 4 | WAVE link and subtract on one plate; moving the block updates the holes | Yes | |
+| 3 | `SB_Detect.cs` also checks that the plates and top assembly are writable | No | Writable case confirmed; read-only case still to test |
+| 4 | `SB_AddHoles.cs`: WAVE link and subtract; moving the block updates the holes | **Yes** | **Ready to test** |
 | 5 | Multiple plates and blocks, plate deselection, undo as one step | Yes | |
 | 6 | Sync command (with dry run) | Yes | |
 
 Step 1 confirmed in NX: NX reports tool body geometry in assembly
 coordinates, so detection works directly on the assembly occurrences.
+
+### Testing step 4 in NX (changes the model)
+
+Try it on a test copy of a jig first. If anything goes wrong part-way, the
+journal undoes everything it did in that run.
+
+1. Copy `StandardBlocks.cs` and all `SB_*.cs` into `C:\nx_settings`. The header should say 0.4.0.
+2. Check out the assembly and the plates, then play `SB_AddHoles.cs` and select the block.
+3. It shows the same detection and Teamcenter check as `SB_Detect.cs`, then
+   asks Yes/No for each plate, with that plate highlighted. Say **Yes** to one
+   plate and **No** to the other.
+4. Check the plate in the Part Navigator. Each tool body should have a linked
+   body named `SB_<block>_<type>_LINK`, and each hole type a subtract named
+   `SB_<block>_<type>`. Their attributes record the block they came from.
+5. Move the block and update. The holes should follow.
+6. **Edit > Undo** "Add Standard Block Holes" should remove all of it in one step.
+
+What gets written:
+
+- **On each feature:** `SB_ROLE` (LINK or SUBTRACT), `SB_GROUP`, `SB_SOURCE_PART`,
+  `SB_SOURCE_REV`, `SB_SOURCE_INSTANCE`, `SB_SOURCE_PATH`, `SB_SOURCE_BODY` (links
+  only), `SB_HOLE_TYPE`, `SB_HOLE_DIA`, `SB_ASSEMBLY` and `SB_VERSION`.
+- **On the block component:** `SB_INSTANCE_ID`, a permanent ID used to match
+  the features back to that copy of the block. It is stored in the assembly
+  that holds the block, so that assembly must be writable.
+
+Running it again on the same block skips plates that already have its holes.
 
 ### Testing step 3 in NX
 

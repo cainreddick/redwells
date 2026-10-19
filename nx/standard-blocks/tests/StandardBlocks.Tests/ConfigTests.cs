@@ -298,7 +298,7 @@ public static class JournalCopyTests
     public static void EveryCommandHasACopy()
     {
         string dir = Path.Combine(AppContext.BaseDirectory, "journals");
-        foreach (string command in new[] { "Inspect", "Detect" })
+        foreach (string command in new[] { "Inspect", "Detect", "AddHoles" })
             Assert.True(File.Exists(Path.Combine(dir, "SB_" + command + ".cs")), "SB_" + command + ".cs exists");
     }
 }
@@ -327,5 +327,35 @@ public static class WriteCheckTests
         Assert.Contains("0003985 rev A (plate) is read-only. Check it out in Teamcenter", problems[0]);
         Assert.Contains("0003986 rev A (plate) is only partly loaded", problems[1]);
         Assert.Contains("0003987 rev A (plate): NX couldn't say", problems[2]);
+    }
+}
+
+public static class FeatureNameTests
+{
+    public static void NamesFollowTheAgreedPattern()
+    {
+        Assert.Equal("SB_001_4032_CAD2072_R6", FeatureNames.Subtract("SB_", "001-4032-CAD2072", "R6", 1));
+        Assert.Equal("SB_001_4032_CAD2072_R6_LINK", FeatureNames.Link("SB_", "001-4032-CAD2072", "R6", 1));
+        Assert.Equal("SB_001_4032_CAD2072_CLR8_2", FeatureNames.Subtract("SB_", "001-4032-CAD2072", "CLR8.2", 1));
+    }
+
+    public static void SecondCopyOfABlockGetsASuffix()
+    {
+        Assert.Equal("SB_001_4032_CAD2072_M8_2", FeatureNames.Subtract("SB_", "001-4032-CAD2072", "M8", 2));
+        Assert.Equal("SB_001_4032_CAD2072_M8_2_LINK", FeatureNames.Link("SB_", "001-4032-CAD2072", "M8", 2));
+    }
+
+    public static void CopyNumberFollowsExistingInstances()
+    {
+        var existing = new List<string> { "aaa", "bbb" };
+        Assert.Equal(1, FeatureNames.CopyNumber(new List<string>(), "aaa"), "first copy on the plate");
+        Assert.Equal(2, FeatureNames.CopyNumber(existing, "bbb"), "already there as the 2nd");
+        Assert.Equal(3, FeatureNames.CopyNumber(existing, "ccc"), "new third copy");
+    }
+
+    public static void SanitizeKeepsOnlySafeCharacters()
+    {
+        Assert.Equal("A_B_C_9", FeatureNames.Sanitize(" A-B.C 9 "));
+        Assert.Equal("_", FeatureNames.Sanitize("Ø"));
     }
 }
