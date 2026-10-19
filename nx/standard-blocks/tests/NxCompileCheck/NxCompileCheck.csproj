@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <!-- Compiles the full journal (NX half included) and the launchers against
-       NxOpenStubs.cs, with C# 5 syntax enforced. Building is the test; nothing runs. -->
+  <!-- Compiles the full journal (NX half included) against NxOpenStubs.cs,
+       with C# 5 syntax enforced. Building is the test; nothing runs. The
+       SB_*.cs files are identical copies, checked by the unit tests. -->
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <OutputType>Library</OutputType>
@@ -13,6 +14,5 @@
   <ItemGroup>
     <Compile Include="NxOpenStubs.cs" />
     <Compile Include="../../StandardBlocks.cs" />
-    <Compile Include="../../SB_*.cs" />
   </ItemGroup>
 </Project>

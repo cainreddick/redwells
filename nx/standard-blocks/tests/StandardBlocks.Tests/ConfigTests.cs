@@ -279,3 +279,26 @@ public static class CommandTests
         Assert.Equal("inspect", Commands.Normalize(null));
     }
 }
+
+public static class JournalCopyTests
+{
+    // Each SB_<command>.cs must be an exact copy of StandardBlocks.cs: the
+    // journal picks its command from its file name. If this fails, copy
+    // StandardBlocks.cs over the SB_ file named in the message.
+    public static void CommandCopiesMatchTheMainJournal()
+    {
+        string dir = Path.Combine(AppContext.BaseDirectory, "journals");
+        byte[] main = File.ReadAllBytes(Path.Combine(dir, "StandardBlocks.cs"));
+        string[] copies = Directory.GetFiles(dir, "SB_*.cs");
+        Assert.True(copies.Length >= 2, "SB_Inspect.cs and SB_Detect.cs exist");
+        foreach (string copy in copies)
+            Assert.True(File.ReadAllBytes(copy).AsSpan().SequenceEqual(main), Path.GetFileName(copy) + " is identical to StandardBlocks.cs");
+    }
+
+    public static void EveryCommandHasACopy()
+    {
+        string dir = Path.Combine(AppContext.BaseDirectory, "journals");
+        foreach (string command in new[] { "Inspect", "Detect" })
+            Assert.True(File.Exists(Path.Combine(dir, "SB_" + command + ".cs")), "SB_" + command + ".cs exists");
+    }
+}

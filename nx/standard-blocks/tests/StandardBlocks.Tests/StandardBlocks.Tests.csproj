@@ -13,5 +13,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="../../StandardBlocks.config.json" Link="StandardBlocks.config.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../StandardBlocks.cs" Link="journals/StandardBlocks.cs" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../SB_*.cs" Link="journals/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

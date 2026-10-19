@@ -14,20 +14,20 @@ link the block's tool bodies (not fixed at timestamp), then subtract them.
 |---|---|
 | `StandardBlocks.cs` | The journal. All the code is in this one file. |
 | `StandardBlocks.config.json` | Settings: hole table, tolerances, layer, reference sets, attribute names, max plate thickness, log folder. |
-| `deploy.bat` | Copies the journal into your NX folder (default `C:\nx_settings`), once as `StandardBlocks.cs` and once per command as `SB_<command>.cs`. |
+| `SB_Inspect.cs`, `SB_Detect.cs` | Exact copies of `StandardBlocks.cs`, one per command (see below). |
 | `tests/` | Unit tests for the pure logic, and a compile check for the whole journal. Not needed in NX. |
 
-Run `deploy.bat` (or `deploy.bat D:\other\folder`) to install. It puts the
-journal and config in one folder; the journal finds its config next to itself.
-The config is only copied when the folder doesn't have one, so your edits
-survive updates.
+To install or update, copy `StandardBlocks.cs`, `StandardBlocks.config.json`
+and all the `SB_*.cs` files into one folder (`C:\nx_settings`). The journal
+finds its config next to itself. When updating, keep your own config if you
+have edited it; any new setting you don't have falls back to its default.
 
 **One file, several commands.** NX can't run one source journal from another:
 `Session.Execute` only takes compiled DLLs, which need an Author licence. So
 the journal reads its command from its own file name. `SB_Inspect.cs` runs
 "inspect", and later `SB_AddHoles.cs` and `SB_Sync.cs` will run theirs. These
-are identical copies of `StandardBlocks.cs`; `deploy.bat` makes them so they
-never drift apart. Point each ribbon button at its `SB_` copy. Playing
+are committed as identical copies of `StandardBlocks.cs`, and a unit test fails
+if any of them differs, so they can't drift apart. Point each ribbon button at its `SB_` copy. Playing
 `StandardBlocks.cs` itself runs "inspect". To keep the config somewhere else, set the
 environment variable `SB_CONFIG` to its full path. Log files go to `logs\`
 next to the config unless `log.folder` says otherwise.
@@ -85,7 +85,8 @@ coordinates, so detection works directly on the assembly occurrences.
 
 ### Testing step 2 in NX
 
-1. Run `deploy.bat`. It replaces the old `SB_Inspect.cs` and adds `SB_Detect.cs`.
+1. Copy the latest `StandardBlocks.cs`, `SB_Inspect.cs` and `SB_Detect.cs` into
+   `C:\nx_settings`. This replaces the old `SB_Inspect.cs`.
 2. Open the jig assembly and play `SB_Detect.cs`. Select one or more blocks and press OK.
 3. The plates that would be cut are highlighted until you press OK on the message.
 4. Paste back the Listing window.
