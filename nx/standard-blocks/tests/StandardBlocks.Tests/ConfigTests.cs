@@ -208,3 +208,27 @@ public static class SummaryTests
         Assert.Equal("2 holes (2x R6)", Summary.HoleCounts(new[] { "R6", "r6" }, Cfg));
     }
 }
+
+public static class CommandTests
+{
+    public static void BlankArgumentsMeanDefault()
+    {
+        // NX passes [""] when a journal is played directly.
+        Assert.Equal("inspect", Commands.FromArgs(new[] { "" }));
+        Assert.Equal("inspect", Commands.FromArgs(new[] { "  ", null }));
+        Assert.Equal("inspect", Commands.FromArgs(null));
+        Assert.Equal("inspect", Commands.FromArgs(Array.Empty<string>()));
+    }
+
+    public static void FirstNonBlankArgumentWins()
+    {
+        Assert.Equal("sync", Commands.FromArgs(new[] { "", " Sync " }));
+    }
+
+    public static void NormalizeTrimsAndLowercases()
+    {
+        Assert.Equal("inspect", Commands.Normalize(" INSPECT "));
+        Assert.Equal("inspect", Commands.Normalize(""));
+        Assert.Equal("inspect", Commands.Normalize(null));
+    }
+}

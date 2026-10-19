@@ -1149,6 +1149,34 @@ namespace StandardBlocks.Core
     }
 
     // ------------------------------------------------------------------
+    // Command names
+    // ------------------------------------------------------------------
+    public static class Commands
+    {
+        public const string Default = "inspect";
+
+        // NX passes one empty argument when a journal is played directly, so
+        // blank means "use the default".
+        public static string FromArgs(string[] args)
+        {
+            if (args != null)
+            {
+                foreach (string a in args)
+                {
+                    if (a != null && a.Trim().Length > 0) return Normalize(a);
+                }
+            }
+            return Default;
+        }
+
+        public static string Normalize(string command)
+        {
+            string c = (command ?? "").Trim().ToLowerInvariant();
+            return c.Length == 0 ? Default : c;
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Report: one stream of lines to the Listing window and the log file.
     // ------------------------------------------------------------------
     public sealed class Report
@@ -1684,11 +1712,12 @@ public class StandardBlocksJournal
 
     public static void Main(string[] args)
     {
-        Run(args != null && args.Length > 0 ? args[0] : "inspect");
+        Run(StandardBlocks.Core.Commands.FromArgs(args));
     }
 
     public static void Run(string command)
     {
+        command = StandardBlocks.Core.Commands.Normalize(command);
         NXOpen.Session session = NXOpen.Session.GetSession();
         NXOpen.ListingWindow lw = session.ListingWindow;
         lw.Open();
@@ -1737,7 +1766,7 @@ public class StandardBlocksJournal
             }
             report.Blank();
 
-            switch ((command ?? "").Trim().ToLowerInvariant())
+            switch (command)
             {
                 case "inspect":
                     StandardBlocks.Nx.InspectCommand.Run(ctx);
