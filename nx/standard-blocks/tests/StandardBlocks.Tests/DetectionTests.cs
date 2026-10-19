@@ -139,3 +139,31 @@ public static class DetectionTests
         Assert.False(Detection.BoxesOverlap(block, gap, 0.2), "0.5 gap outside 0.2 tolerance");
     }
 }
+
+public static class ExistingHoleTests
+{
+    private static FaceSample Cyl(Vec3 p, Vec3 d, double r) => new FaceSample(FaceKind.Cylinder, p, d, r);
+
+    public static void FindsCoaxialHoleOfAnySize()
+    {
+        var tool = TestData.VerticalR6(); // axis x = 10, y = 15
+        var faces = new List<FaceSample>
+        {
+            new FaceSample(FaceKind.Plane, new Vec3(0, 0, 0), new Vec3(0, 0, 1), 0),
+            Cyl(new Vec3(50, 50, -3), new Vec3(0, 0, 1), 3),     // another hole elsewhere
+            Cyl(new Vec3(10, 15, -6), new Vec3(0, 0, -1), 3.25), // dia 6.5 on the same axis
+        };
+        Assert.Equal(2, ExistingHoles.FindCoaxial(tool, faces, 0.01, 0.5));
+    }
+
+    public static void IgnoresOffsetOrTiltedHoles()
+    {
+        var tool = TestData.VerticalR6();
+        var faces = new List<FaceSample>
+        {
+            Cyl(new Vec3(10.5, 15, -3), new Vec3(0, 0, 1), 2.9), // 0.5 mm off the axis
+            Cyl(new Vec3(10, 15, -3), new Vec3(1, 0, 0), 2.9),   // through the axis, but horizontal
+        };
+        Assert.Equal(-1, ExistingHoles.FindCoaxial(tool, faces, 0.01, 0.5));
+    }
+}

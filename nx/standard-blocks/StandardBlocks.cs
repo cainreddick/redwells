@@ -1092,6 +1092,27 @@ namespace StandardBlocks.Core
         }
     }
 
+    public static class ExistingHoles
+    {
+        // Index of the first cylindrical face that is coaxial with the tool
+        // body, or -1. Used to warn (and still cut) when a plate already has a
+        // hole where a block wants one, e.g. a reused plate. The caller must
+        // leave out faces made by our own SB_ features.
+        public static int FindCoaxial(ToolCylinder tool, IList<FaceSample> plateFaces, double distTol, double angleTolDeg)
+        {
+            Vec3 dir = tool.Direction;
+            for (int i = 0; i < plateFaces.Count; i++)
+            {
+                FaceSample f = plateFaces[i];
+                if (f.Kind != FaceKind.Cylinder || f.Direction.IsZero) continue;
+                if (!Geo.AreParallel(f.Direction, dir, angleTolDeg)) continue;
+                if (Geo.DistanceToLine(f.Point, tool.Start, dir) > distTol + Geo.Eps) continue;
+                return i;
+            }
+            return -1;
+        }
+    }
+
     // ------------------------------------------------------------------
     // Summaries
     // ------------------------------------------------------------------

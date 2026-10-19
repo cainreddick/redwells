@@ -44,6 +44,18 @@ these diameters, so keep the two in step:
 | M8 | dia 5.5 | M8 tapped hole: laser pilot, then drilled and tapped |
 | CLR8.2 | dia 8.2 | 8.2 mm clearance hole |
 
+## Agreed behaviour
+
+- **Only the first plate is cut.** If a tool body passes through stacked plates, only the plate touching the block gets the hole.
+- **Only the block and the plates it bolts to matter.** Any other solid a tool body touches is ignored without comment: bolts, dowels, clamps, other blocks, anything that isn't a flat plate. A flat plate over 6 mm thick is reported as skipped.
+- **Existing hole on the same axis: cut anyway and warn.** This happens with reused plates.
+- **Plate part used more than once** (twice in one jig, or reused in the mirrored jig): warn, because its holes apply to every copy.
+- **Blocks are replaced by deleting the old one and adding a new one.** Sync removes the holes and links of deleted blocks.
+- **Final sanity check:** Sync warns about any block that has no holes yet, or any of whose tool bodies has no hole. Run it once the jig is thought complete; the DXF macro runs it before exporting.
+- The top assembly is normally checked out while working, so block components can carry an instance-ID attribute that Sync uses to find them.
+- Parts are in millimetres and loaded fully.
+- Feature names: `SB_<blockID>_<holeType>_LINK` for each WAVE link and `SB_<blockID>_<holeType>` for each subtract, with `_2`, `_3`… when two copies of one block cut the same plate.
+
 ## Build steps
 
 | Step | Command | Changes the model? | Status |
