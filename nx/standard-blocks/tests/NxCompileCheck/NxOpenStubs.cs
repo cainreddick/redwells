@@ -80,6 +80,7 @@ namespace NXOpen
         public Units PartUnits { get { throw new NotImplementedException(); } }
         public string Leaf { get { throw new NotImplementedException(); } }
         public bool IsFullyLoaded { get { throw new NotImplementedException(); } }
+        public bool IsReadOnly { get { throw new NotImplementedException(); } }
         public PartLoadStatus LoadThisPartFully() { throw new NotImplementedException(); }
         public NXOpen.Assemblies.ComponentAssembly ComponentAssembly { get { throw new NotImplementedException(); } }
     }

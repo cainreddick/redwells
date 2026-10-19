@@ -74,14 +74,24 @@ these diameters, so keep the two in step:
 | Step | Command | Changes the model? | Status |
 |---|---|---|---|
 | 1 | `SB_Inspect.cs`: select blocks and list their tool bodies, hole types and axes | No | Done |
-| 2 | `SB_Detect.cs`: find the target plates, print the per-plate summary, highlight them | No | **Ready to test** |
-| 3 | Teamcenter writable / checked-out pre-check | No | |
+| 2 | `SB_Detect.cs`: find the target plates, print the per-plate summary, highlight them | No | Done |
+| 3 | `SB_Detect.cs` also checks that the plates and top assembly are writable | No | **Ready to test** |
 | 4 | WAVE link and subtract on one plate; moving the block updates the holes | Yes | |
 | 5 | Multiple plates and blocks, plate deselection, undo as one step | Yes | |
 | 6 | Sync command (with dry run) | Yes | |
 
 Step 1 confirmed in NX: NX reports tool body geometry in assembly
 coordinates, so detection works directly on the assembly occurrences.
+
+### Testing step 3 in NX
+
+Run `SB_Detect.cs` twice and paste back the "Teamcenter check" part each time:
+
+1. with both plates and the assembly checked out;
+2. with one plate **not** checked out, or checked out by someone else.
+
+It reads NX's own read-only flag for each part. The test shows whether that
+flag matches Teamcenter checkout on your setup.
 
 ### Testing step 2 in NX
 

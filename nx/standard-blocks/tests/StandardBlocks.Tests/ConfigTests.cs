@@ -302,3 +302,30 @@ public static class JournalCopyTests
             Assert.True(File.Exists(Path.Combine(dir, "SB_" + command + ".cs")), "SB_" + command + ".cs exists");
     }
 }
+
+public static class WriteCheckTests
+{
+    private static PartStatus Part(string label, string role, bool fully = true, bool readOnly = false, string error = null) =>
+        new PartStatus { Label = label, Role = role, FullyLoaded = fully, ReadOnly = readOnly, Error = error };
+
+    public static void AllWritableMeansNoProblems()
+    {
+        Assert.Equal(0, WriteCheck.Problems(new[] { Part("0003984 rev A", "top assembly"), Part("0003985 rev A", "plate") }).Count);
+        Assert.Equal("writable", Part("x", "plate").Describe());
+    }
+
+    public static void EachBadPartIsNamed()
+    {
+        var problems = WriteCheck.Problems(new[]
+        {
+            Part("0003984 rev A", "top assembly"),
+            Part("0003985 rev A", "plate", readOnly: true),
+            Part("0003986 rev A", "plate", fully: false),
+            Part("0003987 rev A", "plate", error: "no access"),
+        });
+        Assert.Equal(3, problems.Count);
+        Assert.Contains("0003985 rev A (plate) is read-only. Check it out in Teamcenter", problems[0]);
+        Assert.Contains("0003986 rev A (plate) is only partly loaded", problems[1]);
+        Assert.Contains("0003987 rev A (plate): NX couldn't say", problems[2]);
+    }
+}

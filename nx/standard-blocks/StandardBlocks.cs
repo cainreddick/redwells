@@ -1276,6 +1276,43 @@ namespace StandardBlocks.Core
         }
     }
 
+    // A part the macro would change, and whether it can.
+    public sealed class PartStatus
+    {
+        public string Label;        // "0003985 rev A"
+        public string Role;         // "plate", "top assembly"
+        public bool FullyLoaded;
+        public bool ReadOnly;
+        public string Error;        // NX couldn't say; null normally
+
+        public string Describe()
+        {
+            if (Error != null) return "UNKNOWN (" + Error + ")";
+            if (ReadOnly) return "READ-ONLY";
+            if (!FullyLoaded) return "writable, but only partly loaded";
+            return "writable";
+        }
+    }
+
+    public static class WriteCheck
+    {
+        // Plain-English problems that must stop the macro before it changes anything.
+        public static List<string> Problems(IList<PartStatus> parts)
+        {
+            List<string> problems = new List<string>();
+            foreach (PartStatus p in parts)
+            {
+                if (p.Error != null)
+                    problems.Add(Text.F("{0} ({1}): NX couldn't say whether it is writable ({2})", p.Label, p.Role, p.Error));
+                else if (p.ReadOnly)
+                    problems.Add(Text.F("{0} ({1}) is read-only. Check it out in Teamcenter, or get write access, and try again", p.Label, p.Role));
+                else if (!p.FullyLoaded)
+                    problems.Add(Text.F("{0} ({1}) is only partly loaded. Load it fully and try again", p.Label, p.Role));
+            }
+            return problems;
+        }
+    }
+
     public static class ExistingHoles
     {
         // Index of the first cylindrical face that is coaxial with the tool
@@ -2147,6 +2184,48 @@ namespace StandardBlocks.Nx
         }
     }
 
+    // Step 3: can every part the macro would change actually be changed?
+    public static class NxTeamcenter
+    {
+        public static PartStatus Status(SbConfig cfg, Part part, string role)
+        {
+            PartStatus s = new PartStatus();
+            s.Label = NxNames.PartLabel(cfg, part);
+            s.Role = role;
+            try
+            {
+                s.FullyLoaded = part.IsFullyLoaded;
+                s.ReadOnly = part.IsReadOnly;
+            }
+            catch (NXException ex)
+            {
+                s.Error = ex.Message;
+            }
+            return s;
+        }
+
+        // Lists each part's state and returns the problems (empty = all writable).
+        public static List<string> Report(NxContext ctx, Part assembly, IList<Part> plates)
+        {
+            Report r = ctx.Report;
+            List<PartStatus> parts = new List<PartStatus>();
+            parts.Add(Status(ctx.Config, assembly, "top assembly"));
+            foreach (Part p in plates) parts.Add(Status(ctx.Config, p, "plate"));
+
+            r.Line("Teamcenter check: parts that adding holes would change");
+            r.Indent();
+            foreach (PartStatus s in parts) r.Line(Text.F("{0} ({1}): {2}", s.Label, s.Role, s.Describe()));
+            r.Outdent();
+
+            List<string> problems = WriteCheck.Problems(parts);
+            foreach (string p in problems) r.Warn(p + ".");
+            if (problems.Count == 0) r.Line("All writable: adding holes would be allowed.");
+            else r.Line("Adding holes would stop here, before changing anything.");
+            r.Blank();
+            return problems;
+        }
+    }
+
     // Step 2: find the plates each block's tool bodies would cut (read-only).
     public static class DetectCommand
     {
@@ -2270,7 +2349,17 @@ namespace StandardBlocks.Nx
             }
             r.Blank();
 
-            if (plans.Count > 0) Highlight(ctx, plans, byId);
+            if (plans.Count > 0)
+            {
+                List<Part> plateParts = new List<Part>();
+                foreach (PlatePlan plan in plans)
+                {
+                    Part part = byId[plan.Plate.Id].Solid.Part;
+                    if (!plateParts.Contains(part)) plateParts.Add(part);
+                }
+                NxTeamcenter.Report(ctx, display, plateParts);
+                Highlight(ctx, plans, byId);
+            }
         }
 
         // Shows the plates that would be cut until the user presses OK.
