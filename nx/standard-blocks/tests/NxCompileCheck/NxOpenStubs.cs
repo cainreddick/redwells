@@ -128,12 +128,16 @@ namespace NXOpen
         public static Session GetSession() { throw new NotImplementedException(); }
         public ListingWindow ListingWindow { get { throw new NotImplementedException(); } }
         public PartCollection Parts { get { throw new NotImplementedException(); } }
+        public Update UpdateManager { get { throw new NotImplementedException(); } }
         public string ExecutingJournal { get { throw new NotImplementedException(); } }
     }
 
-    public static class Update
+    public class Update
     {
         public enum Option { Now, Later }
+        public void ClearErrorList() { }
+        public void AddObjectsToDeleteList(TaggedObject[] objects) { throw new NotImplementedException(); }
+        public int DoUpdate(Session.UndoMarkId markId) { throw new NotImplementedException(); }
     }
 
     public class Builder

@@ -1338,6 +1338,212 @@ namespace StandardBlocks.Core
         }
     }
 
+    // ------------------------------------------------------------------
+    // Sync: decide what to do with the SB_ holes already in the plates
+    // ------------------------------------------------------------------
+
+    // One block's holes of one type in one plate: a subtract and its links.
+    public sealed class SyncGroup
+    {
+        public string Id;              // SB_GROUP
+        public string PlateLabel;
+        public string Instance;        // SB_SOURCE_INSTANCE
+        public string SourcePart;      // SB_SOURCE_PART
+        public string HoleType;
+        public string Assembly;        // SB_ASSEMBLY
+        public List<string> LinkBodies = new List<string>();        // SB_SOURCE_BODY of each link
+        public List<string> BodiesWithoutHole = new List<string>(); // filled in by NX for blocks still present
+
+        public string Describe()
+        {
+            return Text.F("{0} holes of {1} in {2}", HoleType, SourcePart, PlateLabel);
+        }
+    }
+
+    // A block component in the assembly.
+    public sealed class SyncBlock
+    {
+        public string Instance;        // null if it has none of its own
+        public string Label;           // "001-4032-CAD2072 rev A"
+        public string Path;
+        public string PartNumber;
+        public List<string> ToolBodies = new List<string>();   // journal identifiers of usable tool bodies
+        public List<string> ToolTypes = new List<string>();    // hole type of each, same order
+    }
+
+    public enum SyncAction { Keep, RemoveDeleted, Rebuild, LeaveOtherAssembly }
+
+    public sealed class SyncDecision
+    {
+        public SyncGroup Group;
+        public SyncAction Action;
+        public SyncBlock Block;        // the block now holding the group's ID, if any
+        public string Reason;
+    }
+
+    public static class SyncPlanner
+    {
+        // True if a group's SB_ASSEMBLY ("0003984 rev A") belongs to the assembly
+        // with this part number, whatever its revision.
+        public static bool SameAssembly(string stored, string assemblyNumber)
+        {
+            if (string.IsNullOrEmpty(stored)) return true;
+            string s = stored.Trim();
+            return string.Equals(s, assemblyNumber, StringComparison.OrdinalIgnoreCase)
+                || s.StartsWith(assemblyNumber + " rev ", StringComparison.OrdinalIgnoreCase);
+        }
+
+        // assemblyNumber: the open assembly's part number, without revision.
+        public static List<SyncDecision> Plan(IList<SyncGroup> groups, IList<SyncBlock> blocks, string assemblyNumber)
+        {
+            Dictionary<string, SyncBlock> byInstance = new Dictionary<string, SyncBlock>();
+            foreach (SyncBlock b in blocks) if (b.Instance != null) byInstance[b.Instance] = b;
+
+            List<SyncDecision> result = new List<SyncDecision>();
+            foreach (SyncGroup g in groups)
+            {
+                SyncDecision d = new SyncDecision();
+                d.Group = g;
+                SyncBlock b;
+                byInstance.TryGetValue(g.Instance ?? "", out b);
+                d.Block = b;
+
+                if (!SameAssembly(g.Assembly, assemblyNumber))
+                {
+                    d.Action = SyncAction.LeaveOtherAssembly;
+                    d.Reason = "made by a block in " + g.Assembly + ", so it is left alone";
+                }
+                else if (b == null)
+                {
+                    d.Action = SyncAction.RemoveDeleted;
+                    d.Reason = "its block is no longer in the assembly";
+                }
+                else if (!string.Equals(b.PartNumber, g.SourcePart, StringComparison.OrdinalIgnoreCase))
+                {
+                    d.Action = SyncAction.Rebuild;
+                    d.Reason = Text.F("its block was replaced by {0}", b.Label);
+                }
+                else
+                {
+                    string missing = null;
+                    foreach (string body in g.LinkBodies) if (!b.ToolBodies.Contains(body)) missing = body;
+                    if (missing != null)
+                    {
+                        d.Action = SyncAction.Rebuild;
+                        d.Reason = Text.F("{0} no longer has tool body {1}", b.Label, missing);
+                    }
+                    else d.Action = SyncAction.Keep;
+                }
+                result.Add(d);
+            }
+            return result;
+        }
+
+        // Plain-English warnings for kept groups whose holes no longer line up
+        // with their tool bodies (block moved off the plate, or a failed subtract).
+        public static List<string> Misaligned(IList<SyncDecision> decisions)
+        {
+            List<string> warnings = new List<string>();
+            foreach (SyncDecision d in decisions)
+            {
+                if (d.Action != SyncAction.Keep || d.Group.BodiesWithoutHole.Count == 0) continue;
+                warnings.Add(Text.F("{0} ({1}): tool {2} {3} no longer in a hole in {4}. Has the block moved off the plate?",
+                    d.Block.Label, d.Block.Path,
+                    d.Group.BodiesWithoutHole.Count == 1 ? "body" : "bodies",
+                    string.Join(", ", d.Group.BodiesWithoutHole.ToArray()) + (d.Group.BodiesWithoutHole.Count == 1 ? " is" : " are"),
+                    d.Group.PlateLabel));
+            }
+            return warnings;
+        }
+
+        // The final sanity check: blocks, and tool bodies, with no hole yet.
+        // Groups being removed or rebuilt don't count as holes.
+        public static List<string> WithoutHoles(IList<SyncBlock> blocks, IList<SyncDecision> decisions)
+        {
+            Dictionary<string, bool> linked = new Dictionary<string, bool>();
+            foreach (SyncDecision d in decisions)
+            {
+                if (d.Action != SyncAction.Keep) continue;
+                foreach (string body in d.Group.LinkBodies) linked[d.Group.Instance + "|" + body] = true;
+            }
+
+            List<string> warnings = new List<string>();
+            foreach (SyncBlock b in blocks)
+            {
+                List<string> missing = new List<string>();
+                for (int i = 0; i < b.ToolBodies.Count; i++)
+                {
+                    if (b.Instance == null || !linked.ContainsKey(b.Instance + "|" + b.ToolBodies[i]))
+                        missing.Add(b.ToolBodies[i] + " (" + b.ToolTypes[i] + ")");
+                }
+                if (missing.Count == 0) continue;
+                if (missing.Count == b.ToolBodies.Count)
+                    warnings.Add(Text.F("{0} ({1}) has no holes yet. Run SB_AddHoles on it", b.Label, b.Path));
+                else
+                    warnings.Add(Text.F("{0} ({1}): {2} {3} no hole: {4}", b.Label, b.Path,
+                        Text.Count(missing.Count, "tool body", "tool bodies"), missing.Count == 1 ? "has" : "have",
+                        string.Join(", ", missing.ToArray())));
+            }
+            return warnings;
+        }
+    }
+
+    // Written by every Sync run to the log folder as sync_status_<assembly>.json,
+    // so the DXF export journal can check that Sync has run cleanly first.
+    public sealed class SyncStatus
+    {
+        public string Assembly;
+        public DateTime Time;
+        public bool DryRun;
+        public int Removed;        // groups removed this run
+        public int Rebuilt;        // groups rebuilt this run
+        public int Pending;        // changes a dry run found but didn't make
+        public List<string> Problems = new List<string>();   // warnings that need a person
+
+        // Nothing left to change and nothing to look at.
+        public bool Clean { get { return Pending == 0 && Problems.Count == 0; } }
+
+        public static string FileName(string assembly)
+        {
+            return "sync_status_" + FeatureNames.Sanitize(assembly) + ".json";
+        }
+
+        public string ToJson()
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.Append("{\n");
+            sb.Append("  \"assembly\": ").Append(Quote(Assembly)).Append(",\n");
+            sb.Append("  \"time\": ").Append(Quote(Time.ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture))).Append(",\n");
+            sb.Append("  \"dryRun\": ").Append(DryRun ? "true" : "false").Append(",\n");
+            sb.Append("  \"clean\": ").Append(Clean ? "true" : "false").Append(",\n");
+            sb.Append("  \"removed\": ").Append(Removed.ToString(CultureInfo.InvariantCulture)).Append(",\n");
+            sb.Append("  \"rebuilt\": ").Append(Rebuilt.ToString(CultureInfo.InvariantCulture)).Append(",\n");
+            sb.Append("  \"pending\": ").Append(Pending.ToString(CultureInfo.InvariantCulture)).Append(",\n");
+            sb.Append("  \"problems\": [");
+            for (int i = 0; i < Problems.Count; i++)
+                sb.Append(i == 0 ? "\n    " : ",\n    ").Append(Quote(Problems[i]));
+            sb.Append(Problems.Count > 0 ? "\n  ]\n" : "]\n");
+            sb.Append("}\n");
+            return sb.ToString();
+        }
+
+        private static string Quote(string s)
+        {
+            StringBuilder sb = new StringBuilder("\"");
+            foreach (char c in s ?? "")
+            {
+                if (c == '"') sb.Append("\\\"");
+                else if (c == '\\') sb.Append("\\\\");
+                else if (c == '\n') sb.Append("\\n");
+                else if (c == '\r') sb.Append("\\r");
+                else if (c == '\t') sb.Append("\\t");
+                else if (c < ' ') sb.Append("\\u").Append(((int)c).ToString("x4", CultureInfo.InvariantCulture));
+                else sb.Append(c);
+            }
+            return sb.Append('"').ToString();
+        }
+    }
+
     // A part the macro would change, and whether it can.
     public sealed class PartStatus
     {
@@ -1558,6 +1764,7 @@ namespace StandardBlocks.Nx
         public SbConfig Config;
         public Report Report;
         public string ConfigPath;
+        public string LogFolder;   // resolved log folder; null if logging is off
     }
 
     public static class NxAttr
@@ -1676,6 +1883,12 @@ namespace StandardBlocks.Nx
 
     public static class NxNames
     {
+        public static string PartNumber(SbConfig cfg, Part part)
+        {
+            string number = NxAttr.GetString(part, cfg.PartNumberAttribute);
+            return string.IsNullOrEmpty(number) ? part.Leaf : number;
+        }
+
         public static string PartLabel(SbConfig cfg, Part part)
         {
             string number = NxAttr.GetString(part, cfg.PartNumberAttribute);
@@ -2624,14 +2837,14 @@ namespace StandardBlocks.Nx
             if (result.Plans.Count == 0) r.Line("none");
             foreach (PlatePlan plan in result.Plans) r.Line(plan.Summary(cfg));
             r.Outdent();
-            string assemblyLabel = NxNames.PartLabel(cfg, display);
+            string assemblyNumber = NxNames.PartNumber(cfg, display);
             foreach (Part part in result.PlateParts())
             {
                 int uses = index.UsesOf(part);
                 if (uses > 1)
                     r.Warn(Text.F("{0} is used {1} times in this assembly. Holes are cut into the part, so every copy will get them.",
                         NxNames.PartLabel(cfg, part), uses));
-                List<string> others = HoleBuilder.OtherAssemblies(part, attrs, assemblyLabel);
+                List<string> others = HoleBuilder.OtherAssemblies(part, attrs, assemblyNumber);
                 if (others.Count > 0)
                     r.Warn(Text.F("{0} already has standard block holes linked from {1} (a mirrored jig?). It is the same part, so holes from both jigs end up in it.",
                         NxNames.PartLabel(cfg, part), string.Join(" and ", others.ToArray())));
@@ -2795,17 +3008,7 @@ namespace StandardBlocks.Nx
             }
             finally
             {
-                try
-                {
-                    PartLoadStatus status;
-                    ctx.Session.Parts.SetWorkComponent(originalWork, PartCollection.RefsetOption.Current,
-                        PartCollection.WorkComponentOption.Visible, out status);
-                    status.Dispose();
-                }
-                catch (Exception ex)
-                {
-                    r.Warn("Could not restore the work part: " + ex.Message + ".");
-                }
+                HoleBuilder.RestoreWork(ctx, originalWork);
             }
 
             if (ok)
@@ -2887,7 +3090,7 @@ namespace StandardBlocks.Nx
 
         // Gives the block component a permanent ID so Sync can find its holes.
         // Replaces an ID copied from another block component.
-        private static void EnsureInstanceId(BlockInfo b, SbAttrs attrs)
+        public static void EnsureInstanceId(BlockInfo b, SbAttrs attrs)
         {
             if (b.InstanceId != null) return;
             string id = Guid.NewGuid().ToString("N");
@@ -2906,14 +3109,14 @@ namespace StandardBlocks.Nx
 
     public static class HoleBuilder
     {
-        // Assemblies other than this one whose blocks have holes in this plate.
-        public static List<string> OtherAssemblies(Part plate, SbAttrs attrs, string thisAssembly)
+        // Assemblies other than this one (any revision) whose blocks have holes in this plate.
+        public static List<string> OtherAssemblies(Part plate, SbAttrs attrs, string thisAssemblyNumber)
         {
             List<string> others = new List<string>();
             foreach (NXOpen.Features.Feature f in plate.Features)
             {
                 string a = NxAttr.GetString(f, attrs.Assembly);
-                if (!string.IsNullOrEmpty(a) && a != thisAssembly && !others.Contains(a)) others.Add(a);
+                if (!SyncPlanner.SameAssembly(a, thisAssemblyNumber) && !others.Contains(a)) others.Add(a);
             }
             return others;
         }
@@ -2931,6 +3134,37 @@ namespace StandardBlocks.Nx
             return ids;
         }
 
+        public static Part MakeWork(NxContext ctx, Component component, string label)
+        {
+            try
+            {
+                PartLoadStatus status;
+                ctx.Session.Parts.SetWorkComponent(component, PartCollection.RefsetOption.Current,
+                    PartCollection.WorkComponentOption.Visible, out status);
+                status.Dispose();
+            }
+            catch (NXException ex)
+            {
+                throw new SbException(Text.F("Couldn't make {0} the work part: {1}.", label, ex.Message));
+            }
+            return ctx.Session.Parts.Work;
+        }
+
+        public static void RestoreWork(NxContext ctx, Component original)
+        {
+            try
+            {
+                PartLoadStatus status;
+                ctx.Session.Parts.SetWorkComponent(original, PartCollection.RefsetOption.Current,
+                    PartCollection.WorkComponentOption.Visible, out status);
+                status.Dispose();
+            }
+            catch (Exception ex)
+            {
+                ctx.Report.Warn("Could not restore the work part: " + ex.Message + ".");
+            }
+        }
+
         public static void AddToPlate(NxContext ctx, DetectionResult det, PlatePlan plan, SbAttrs attrs)
         {
             Report r = ctx.Report;
@@ -2939,18 +3173,7 @@ namespace StandardBlocks.Nx
             string plateLabel = plan.Plate.Label;
             string assemblyLabel = NxNames.PartLabel(cfg, det.Assembly);
 
-            PartLoadStatus status;
-            try
-            {
-                ctx.Session.Parts.SetWorkComponent(plate.Solid.Component, PartCollection.RefsetOption.Current,
-                    PartCollection.WorkComponentOption.Visible, out status);
-                status.Dispose();
-            }
-            catch (NXException ex)
-            {
-                throw new SbException(Text.F("Couldn't make {0} the work part: {1}.", plateLabel, ex.Message));
-            }
-            Part work = ctx.Session.Parts.Work;
+            Part work = MakeWork(ctx, plate.Solid.Component, plateLabel);
 
             r.Line("Adding to " + plateLabel + ":");
             r.Indent();
@@ -3090,6 +3313,323 @@ namespace StandardBlocks.Nx
             }
         }
     }
+
+    // The SB_ features of one group in one plate part, with what Sync knows about them.
+    public sealed class SyncGroupNx
+    {
+        public SyncGroup Core = new SyncGroup();
+        public Part Plate;
+        public List<NXOpen.Features.Feature> Features = new List<NXOpen.Features.Feature>();
+        public List<SolidRef> Occurrences = new List<SolidRef>();
+    }
+
+    // Step 6: bring the SB_ holes in line with the blocks now in the assembly.
+    public static class SyncCommand
+    {
+        public static void Run(NxContext ctx, bool dryRun)
+        {
+            Report r = ctx.Report;
+            SbConfig cfg = ctx.Config;
+            SbAttrs attrs = new SbAttrs(cfg.FeaturePrefix);
+            r.Line(dryRun ? "Command: Sync standard blocks, DRY RUN (reports only, changes nothing)" : "Command: Sync standard blocks");
+            Part display = NxCommon.RequireAssembly(ctx);
+            if (display == null) return;
+            string assemblyLabel = NxNames.PartLabel(cfg, display);
+            string assemblyNumber = NxNames.PartNumber(cfg, display);
+
+            SyncStatus status = new SyncStatus();
+            status.Assembly = assemblyLabel;
+            status.Time = DateTime.Now;
+            status.DryRun = dryRun;
+
+            AssemblyIndex index = AssemblyIndex.Build(ctx, display.ComponentAssembly.RootComponent);
+            if (index.NotLoaded.Count > 0)
+            {
+                string msg = Text.F("{0} not loaded, so Sync can't check them: {1}",
+                    Text.Count(index.NotLoaded.Count, "component is", "components are"), string.Join(", ", index.NotLoaded.ToArray()));
+                r.Warn(msg + ".");
+                status.Problems.Add(msg);
+            }
+
+            // Every standard block in the assembly.
+            List<BlockInfo> blocks = new List<BlockInfo>();
+            foreach (Component c in index.BlockComponents)
+            {
+                BlockInfo b;
+                string reason;
+                if (BlockReader.TryRead(ctx, c, out b, out reason)) blocks.Add(b);
+                else r.Warn(Text.F("Skipped {0}: {1}.", NxNames.ComponentPath(c), reason));
+            }
+            DetectionResult cache = new DetectionResult();
+            cache.Assembly = display;
+            InstanceIds.Resolve(ctx, index, blocks, cache);
+
+            // Every group of SB_ features in every plate part.
+            List<SyncGroupNx> groups = ReadGroups(ctx, index, attrs);
+            r.Line(Text.F("Found {0} and {1} of standard block holes.",
+                Text.Count(blocks.Count, "standard block", "standard blocks"), Text.Count(groups.Count, "group", "groups")));
+            r.Blank();
+
+            // Blocks as the planner sees them. A block left alone keeps no ID here.
+            List<SyncBlock> syncBlocks = new List<SyncBlock>();
+            Dictionary<SyncBlock, BlockInfo> infoOf = new Dictionary<SyncBlock, BlockInfo>();
+            foreach (BlockInfo b in blocks)
+            {
+                // A block left alone keeps its ID, so its holes aren't taken for a deleted block's.
+                SyncBlock sb = new SyncBlock();
+                sb.Instance = b.InstanceId;
+                sb.Label = b.Label;
+                sb.Path = b.Path;
+                sb.PartNumber = NxNames.PartNumber(cfg, b.Prototype);
+                foreach (ToolInfo t in b.Tools)
+                {
+                    if (!t.Usable) continue;
+                    sb.ToolBodies.Add(t.ProtoBody.JournalIdentifier);
+                    sb.ToolTypes.Add(t.Check.Expected.Name);
+                }
+                syncBlocks.Add(sb);
+                infoOf[sb] = b;
+                if (b.Skip != null)
+                {
+                    string msg = Text.F("{0} ({1}) was left alone: {2}", b.Label, b.Path, b.Skip);
+                    r.Warn(msg + ".");
+                    status.Problems.Add(msg);
+                }
+            }
+
+            List<SyncGroup> cores = new List<SyncGroup>();
+            foreach (SyncGroupNx g in groups) cores.Add(g.Core);
+            List<SyncDecision> decisions = SyncPlanner.Plan(cores, syncBlocks, assemblyNumber);
+
+            // For groups being kept: do the tool bodies still sit in their holes?
+            for (int i = 0; i < decisions.Count; i++)
+            {
+                if (decisions[i].Action != SyncAction.Keep) continue;
+                FindMisaligned(ctx, groups[i], infoOf[decisions[i].Block]);
+            }
+
+            // Report.
+            List<int> toRemove = new List<int>(), toRebuild = new List<int>(), others = new List<int>();
+            int kept = 0;
+            for (int i = 0; i < decisions.Count; i++)
+            {
+                switch (decisions[i].Action)
+                {
+                    case SyncAction.RemoveDeleted: toRemove.Add(i); break;
+                    case SyncAction.Rebuild: toRebuild.Add(i); break;
+                    case SyncAction.LeaveOtherAssembly: others.Add(i); break;
+                    default: kept++; break;
+                }
+            }
+            string will = dryRun ? "Would" : "Will";
+            ListDecisions(r, decisions, toRemove, will + " remove (block deleted):");
+            ListDecisions(r, decisions, toRebuild, will + " rebuild (block replaced):");
+            ListDecisions(r, decisions, others, "Left alone (holes from another assembly):");
+            r.Line(Text.F("In line with their blocks: {0}.", Text.Count(kept, "group", "groups")));
+            r.Blank();
+
+            foreach (string w in SyncPlanner.Misaligned(decisions)) { r.Warn(w); status.Problems.Add(w); }
+            foreach (string w in SyncPlanner.WithoutHoles(syncBlocks, decisions)) { r.Warn(w + "."); status.Problems.Add(w); }
+
+            int changes = toRemove.Count + toRebuild.Count;
+            if (dryRun || changes == 0)
+            {
+                status.Pending = dryRun ? changes : 0;
+                r.Line(dryRun ? "Dry run: nothing was changed." : "Nothing to change.");
+                WriteStatus(ctx, status);
+                return;
+            }
+
+            // Every plate part that changes must be writable.
+            List<Part> plates = new List<Part>();
+            foreach (int i in toRemove) if (!plates.Contains(groups[i].Plate)) plates.Add(groups[i].Plate);
+            foreach (int i in toRebuild) if (!plates.Contains(groups[i].Plate)) plates.Add(groups[i].Plate);
+            r.Blank();
+            List<string> problems = NxTeamcenter.Report(ctx, display, plates);
+            if (problems.Count > 0)
+            {
+                r.Error("Nothing was changed, because not every part can be changed. Fix the problems above and run Sync again.");
+                status.Pending = changes;
+                status.Problems.AddRange(problems);
+                WriteStatus(ctx, status);
+                return;
+            }
+
+            int answer = ctx.Ui.NXMessageBox.Show("Standard Blocks", NXMessageBox.DialogType.Question,
+                Text.F("Sync will remove {0} and rebuild {1}.\n\nGo ahead?",
+                    Text.Count(toRemove.Count, "group of holes", "groups of holes"), Text.Count(toRebuild.Count, "group", "groups")));
+            if (answer != 1)
+            {
+                r.Line("You chose not to: nothing was changed.");
+                status.Pending = changes;
+                WriteStatus(ctx, status);
+                return;
+            }
+
+            Session.UndoMarkId mark = ctx.Session.SetUndoMark(Session.MarkVisibility.Visible, "Sync Standard Blocks");
+            Component originalWork = ctx.Session.Parts.WorkComponent;
+            try
+            {
+                // Remove the old groups, one plate part at a time.
+                List<int> affected = new List<int>(toRemove);
+                affected.AddRange(toRebuild);
+                foreach (Part plate in plates)
+                {
+                    List<NXObject> doomed = new List<NXObject>();
+                    foreach (int i in affected) if (groups[i].Plate == plate) foreach (NXOpen.Features.Feature f in groups[i].Features) doomed.Add(f);
+                    SyncGroupNx first = null;
+                    foreach (int i in affected) if (groups[i].Plate == plate && first == null) first = groups[i];
+                    HoleBuilder.MakeWork(ctx, first.Occurrences[0].Component, first.Core.PlateLabel);
+                    Delete(ctx, doomed, first.Core.PlateLabel);
+                    r.Line(Text.F("Removed {0} from {1}.", Text.Count(doomed.Count, "feature", "features"), first.Core.PlateLabel));
+                }
+                status.Removed = toRemove.Count;
+
+                // Rebuild the replaced blocks' holes from scratch.
+                List<BlockInfo> rebuild = new List<BlockInfo>();
+                foreach (int i in toRebuild)
+                {
+                    BlockInfo b = infoOf[decisions[i].Block];
+                    if (!rebuild.Contains(b)) rebuild.Add(b);
+                }
+                if (rebuild.Count > 0)
+                {
+                    r.Blank();
+                    r.Line("Rebuilding:");
+                    DetectionResult det = Detector.Run(ctx, display, rebuild, null);
+                    foreach (BlockInfo b in rebuild) AddHolesCommand.EnsureInstanceId(b, attrs);
+                    foreach (PlatePlan plan in det.Plans) HoleBuilder.AddToPlate(ctx, det, plan, attrs);
+                }
+                status.Rebuilt = toRebuild.Count;
+                r.Blank();
+                r.Line("Done. Edit > Undo \"Sync Standard Blocks\" puts everything back.");
+            }
+            catch (Exception ex)
+            {
+                r.Error(ex.Message);
+                status.Problems.Add("Sync failed: " + ex.Message);
+                status.Pending = changes;
+                status.Removed = 0;
+                status.Rebuilt = 0;
+                try
+                {
+                    ctx.Session.UndoToMark(mark, null);
+                    r.Line("Everything this run did has been undone. Nothing was changed.");
+                }
+                catch (Exception undoEx)
+                {
+                    r.Error("Undoing it also failed (" + undoEx.Message + "). Use Edit > Undo to go back to \"Sync Standard Blocks\".");
+                }
+            }
+            finally
+            {
+                HoleBuilder.RestoreWork(ctx, originalWork);
+            }
+            WriteStatus(ctx, status);
+        }
+
+        private static List<SyncGroupNx> ReadGroups(NxContext ctx, AssemblyIndex index, SbAttrs attrs)
+        {
+            List<SyncGroupNx> groups = new List<SyncGroupNx>();
+            Dictionary<Tag, bool> seen = new Dictionary<Tag, bool>();
+            foreach (SolidRef s in index.Solids)
+            {
+                if (seen.ContainsKey(s.Part.Tag)) continue;
+                seen[s.Part.Tag] = true;
+
+                Dictionary<string, SyncGroupNx> byId = new Dictionary<string, SyncGroupNx>();
+                foreach (NXOpen.Features.Feature f in s.Part.Features)
+                {
+                    string role = NxAttr.GetString(f, attrs.Role);
+                    if (role == null) continue;
+                    string id = NxAttr.GetString(f, attrs.Group) ?? ("no group " + f.JournalIdentifier);
+                    SyncGroupNx g;
+                    if (!byId.TryGetValue(id, out g))
+                    {
+                        g = new SyncGroupNx();
+                        g.Plate = s.Part;
+                        g.Core.Id = id;
+                        g.Core.PlateLabel = NxNames.PartLabel(ctx.Config, s.Part);
+                        g.Core.Instance = NxAttr.GetString(f, attrs.SourceInstance);
+                        g.Core.SourcePart = NxAttr.GetString(f, attrs.SourcePart);
+                        g.Core.HoleType = NxAttr.GetString(f, attrs.HoleType);
+                        g.Core.Assembly = NxAttr.GetString(f, attrs.Assembly);
+                        foreach (SolidRef o in index.Solids) if (o.Part == s.Part) g.Occurrences.Add(o);
+                        byId[id] = g;
+                        groups.Add(g);
+                    }
+                    g.Features.Add(f);
+                    if (role == "LINK")
+                    {
+                        string body = NxAttr.GetString(f, attrs.SourceBody);
+                        if (body != null) g.Core.LinkBodies.Add(body);
+                    }
+                }
+            }
+            return groups;
+        }
+
+        // Tool bodies of the group's block that don't sit in a hole of their own size in any copy of the plate.
+        private static void FindMisaligned(NxContext ctx, SyncGroupNx g, BlockInfo block)
+        {
+            SbConfig cfg = ctx.Config;
+            List<FaceSample> holes = new List<FaceSample>();
+            foreach (SolidRef o in g.Occurrences)
+                foreach (FaceSample f in NxGeom.SampleAll(ctx.Uf, o.Body.GetFaces()))
+                    if (f.Kind == FaceKind.Cylinder) holes.Add(f);
+
+            foreach (string body in g.Core.LinkBodies)
+            {
+                foreach (ToolInfo t in block.Tools)
+                {
+                    if (t.AssyCyl == null || t.ProtoBody.JournalIdentifier != body) continue;
+                    if (ExistingHoles.FindCoaxial(t.AssyCyl, holes, cfg.DistanceTolerance, cfg.AngleToleranceDeg, true) < 0)
+                        g.Core.BodiesWithoutHole.Add(body);
+                }
+            }
+        }
+
+        private static void ListDecisions(Report r, List<SyncDecision> decisions, List<int> which, string heading)
+        {
+            if (which.Count == 0) return;
+            r.Line(heading);
+            r.Indent();
+            foreach (int i in which) r.Line(decisions[i].Group.Describe() + ": " + decisions[i].Reason);
+            r.Outdent();
+        }
+
+        private static void Delete(NxContext ctx, List<NXObject> objects, string plateLabel)
+        {
+            try
+            {
+                Session.UndoMarkId mark = ctx.Session.SetUndoMark(Session.MarkVisibility.Invisible, "Delete standard block holes");
+                ctx.Session.UpdateManager.ClearErrorList();
+                ctx.Session.UpdateManager.AddObjectsToDeleteList(objects.ToArray());
+                ctx.Session.UpdateManager.DoUpdate(mark);
+            }
+            catch (NXException ex)
+            {
+                throw new SbException(Text.F("Removing the old holes from {0} failed: {1}.", plateLabel, ex.Message));
+            }
+        }
+
+        // For the DXF export journal: did Sync last run cleanly for this assembly?
+        private static void WriteStatus(NxContext ctx, SyncStatus status)
+        {
+            string folder = ctx.LogFolder ?? Path.GetDirectoryName(ctx.ConfigPath);
+            try
+            {
+                Directory.CreateDirectory(folder);
+                string path = Path.Combine(folder, SyncStatus.FileName(status.Assembly));
+                File.WriteAllText(path, status.ToJson(), new UTF8Encoding(false));
+                ctx.Report.Line(Text.F("Sync status ({0}) written to {1}", status.Clean ? "clean" : "NOT clean", path));
+            }
+            catch (Exception ex)
+            {
+                ctx.Report.Warn("Could not write the sync status file: " + ex.Message + ".");
+            }
+        }
+    }
 }
 
 // Journal entry point. Tools > Journal > Play runs Main. Copies of this file
@@ -3099,7 +3639,7 @@ public class StandardBlocksJournal
     public const string ConfigFileName = "StandardBlocks.config.json";
 
     // Printed in the header so a run shows which build it is. Bump on every change.
-    public const string Version = "0.5.1 (step 5: several plates and blocks)";
+    public const string Version = "0.6.0 (step 6: sync)";
 
     public static void Main(string[] args)
     {
@@ -3177,8 +3717,14 @@ public class StandardBlocksJournal
                 case "addholesmanual":
                     StandardBlocks.Nx.AddHolesCommand.Run(ctx, true);
                     break;
+                case "sync":
+                    StandardBlocks.Nx.SyncCommand.Run(ctx, false);
+                    break;
+                case "syncdryrun":
+                    StandardBlocks.Nx.SyncCommand.Run(ctx, true);
+                    break;
                 default:
-                    report.Error("Unknown command \"" + command + "\". Available: inspect, detect, addholes, addholesmanual.");
+                    report.Error("Unknown command \"" + command + "\". Available: inspect, detect, addholes, addholesmanual, sync, syncdryrun.");
                     break;
             }
         }
@@ -3244,6 +3790,7 @@ public class StandardBlocksJournal
         string folder = ctx.Config.LogFolder;
         if (string.IsNullOrEmpty(folder)) return null;
         if (!Path.IsPathRooted(folder)) folder = Path.Combine(Path.GetDirectoryName(ctx.ConfigPath), folder);
+        ctx.LogFolder = folder;
         try
         {
             Directory.CreateDirectory(folder);

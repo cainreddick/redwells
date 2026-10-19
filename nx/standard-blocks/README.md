@@ -14,7 +14,7 @@ link the block's tool bodies (not fixed at timestamp), then subtract them.
 |---|---|
 | `StandardBlocks.cs` | The journal. All the code is in this one file. |
 | `StandardBlocks.config.json` | Settings: hole table, tolerances, layer, reference sets, attribute names, max plate thickness, log folder. |
-| `SB_Inspect.cs`, `SB_Detect.cs`, `SB_AddHoles.cs`, `SB_AddHolesManual.cs` | Exact copies of `StandardBlocks.cs`, one per command (see below). |
+| `SB_Inspect.cs`, `SB_Detect.cs`, `SB_AddHoles.cs`, `SB_AddHolesManual.cs`, `SB_Sync.cs`, `SB_SyncDryRun.cs` | Exact copies of `StandardBlocks.cs`, one per command (see below). |
 | `tests/` | Unit tests for the pure logic, and a compile check for the whole journal. Not needed in NX. |
 
 To install or update, copy `StandardBlocks.cs`, `StandardBlocks.config.json`
@@ -84,11 +84,74 @@ these diameters, so keep the two in step:
 | 2 | `SB_Detect.cs`: find the target plates, print the per-plate summary, highlight them | No | Done |
 | 3 | `SB_Detect.cs` also checks that the plates and top assembly are writable | No | Writable case confirmed; read-only case still to test |
 | 4 | `SB_AddHoles.cs`: WAVE link and subtract; moving the block updates the holes | **Yes** | Done: holes cut and follow the block |
-| 5 | Several plates and blocks in one run, one confirmation with plate-by-plate fallback, `SB_AddHolesManual.cs` | **Yes** | **Ready to test** |
-| 6 | Sync command (with dry run) | Yes | |
+| 5 | Several plates and blocks in one run, one confirmation with plate-by-plate fallback, `SB_AddHolesManual.cs` | **Yes** | Done |
+| 6 | `SB_Sync.cs` and `SB_SyncDryRun.cs` | **Yes** (`SB_Sync` only) | **Ready to test** |
 
 Step 1 confirmed in NX: NX reports tool body geometry in assembly
 coordinates, so detection works directly on the assembly occurrences.
+
+### Sync
+
+Sync looks at every group of `SB_` features (one subtract plus its links) in
+every plate of the open assembly, and at every standard block in it.
+
+| Situation | What Sync does |
+|---|---|
+| The block that made the holes has been deleted | Removes the subtract and its links |
+| The block's component now holds a different part (variant replaced), or no longer has the tool body a link came from | Removes the group and cuts the holes again from the block now there |
+| A tool body no longer sits in a hole of its own size in the plate (block moved off the plate, or a failed subtract) | Warns only |
+| A block, or one of its tool bodies, has no hole | Warns only: the final sanity check |
+| Holes made from another assembly, e.g. the mirrored jig (any revision of this assembly counts as this one) | Leaves them alone and lists them |
+
+- **`SB_SyncDryRun.cs`** only reports.
+- **`SB_Sync.cs`** reports, runs the Teamcenter check on the plates it would
+  change, asks once, then makes all the changes under one undo mark,
+  "Sync Standard Blocks". If any step fails, the whole run is undone.
+
+If a block is deleted and a different one added in its place, Sync removes the
+old holes. It then reports the new block as having no holes, so run
+`SB_AddHoles` on it.
+
+#### For the DXF export journal
+
+Every Sync run, dry run included, writes `sync_status_<assembly>.json` to the
+log folder, for example `C:\nx_settings\logs\sync_status_0003984_rev_A.json`:
+
+```json
+{
+  "assembly": "0003984 rev A",
+  "time": "2026-10-19T15:30:00",
+  "dryRun": false,
+  "clean": true,
+  "removed": 1,
+  "rebuilt": 0,
+  "pending": 0,
+  "problems": []
+}
+```
+
+`clean` is true when nothing is left to change and there are no warnings.
+Before exporting, the DXF journal can read this file and check three things:
+
+- it exists;
+- `clean` is true;
+- `time` is later than the assembly's last change.
+
+If any check fails, it can ask you to run Sync first. NX can't run one
+source journal from another without the Author licence, so this file is how
+the two journals pass information.
+
+### Testing step 6 in NX
+
+1. Copy `StandardBlocks.cs` and all `SB_*.cs` into `C:\nx_settings`. The header should say 0.6.0.
+2. Play `SB_SyncDryRun.cs` on the test assembly as it is now. Expect no
+   changes, and a status file saying `clean`.
+3. Delete block 2 (the copy) and play `SB_SyncDryRun.cs`. Expect "Would
+   remove" for its two groups, in 0003987 and 0003986.
+4. Play `SB_Sync.cs` and answer Yes. Its holes should go, and block 1's should
+   stay. **Edit > Undo** "Sync Standard Blocks" should bring them back.
+5. Move a block so a tool body leaves its plate, then play
+   `SB_SyncDryRun.cs`. Expect a "no longer in a hole" warning.
 
 ### Testing step 5 in NX (changes the model)
 

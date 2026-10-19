@@ -299,7 +299,7 @@ public static class JournalCopyTests
     public static void EveryCommandHasACopy()
     {
         string dir = Path.Combine(AppContext.BaseDirectory, "journals");
-        foreach (string command in new[] { "Inspect", "Detect", "AddHoles", "AddHolesManual" })
+        foreach (string command in new[] { "Inspect", "Detect", "AddHoles", "AddHolesManual", "Sync", "SyncDryRun" })
             Assert.True(File.Exists(Path.Combine(dir, "SB_" + command + ".cs")), "SB_" + command + ".cs exists");
     }
 }
