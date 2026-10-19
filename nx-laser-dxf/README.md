@@ -48,17 +48,35 @@ The design is described in [ARCHITECTURE.md](ARCHITECTURE.md).
    - the mouse wheel zooms, right-drag pans, and *Fit view* (Home) shows the whole plate
 
    Text that crosses the cut line, a hole or other text is boxed in **red**; text that is too
-   close is boxed in **orange**. *Export DXF* warns if anything is still flagged. Nothing is
-   written until you click it, and *Cancel* writes nothing (it asks first if you've made
-   changes).
+   close is boxed in **orange**. There are two export buttons:
+   - **Export DXF** writes the DXF.
+   - **Export DXF + PDF** also writes the same drawing as a PDF, for laser shops that can't
+     open the DXF (see step 6).
+
+   Both warn if anything is still flagged. Nothing is written until you click one of them, and
+   *Cancel* writes nothing (it asks first if you've made changes).
 6. The DXF is written to `<outputFolder>\{ID}-{REV}.dxf`. If the file already exists, you're
    asked before it's overwritten.
    - **CUT** layer (colour 7): the profile and the through holes, as true lines, arcs and
      circles. Countersunk and counterbored holes are cut at the bore.
    - **ETCH** layer (colour 5): the hole labels and the part number. By default they are
      single-stroke vectors; set `"textMode": "Text"` for DXF TEXT entities.
+
+   With **Export DXF + PDF**, `{ID}-{REV}.pdf` is written next to it. This is the DXF as a PDF:
+   - It has exactly the same lines, arcs, circles and etching.
+   - It is at **true 1:1 scale** in mm, on a page the size of the plate plus a 10 mm margin.
+   - Cut lines are black and etching is blue. They sit on PDF layers named **CUT** and
+     **ETCH**.
+   - There is no title block or other text, so the shop can import it straight into their
+     CAM software, or measure from it.
+   - DXF TEXT entities are drawn with the single-stroke etch font.
+
+   Settings are in the config's `cutPdf` section: file name, line width, margin and layers.
+   To make *Export DXF + PDF* the default (bold) button, tick "Also write the DXF as a 1:1 PDF"
+   in the options dialog, or set `cutPdf.default`. That setting also writes the PDF when the
+   preview is switched off.
 7. A **PDF instruction sheet** for the laser shop is written next to the DXF
-   (`{ID}-{REV}.pdf`, switch off in the options dialog or with `pdf.enabled`). It shows:
+   (`{ID}-{REV} instruction.pdf`, switch off in the options dialog or with `pdf.enabled`). It shows:
    - the plate as cut, viewed from the etch face, at a standard scale (A4, or A3 for large
      plates), with all etching in **blue** exactly as in the DXF, including preview edits.
      Etch text too small to read at the sheet's scale is printed larger, so it stays legible
@@ -69,7 +87,7 @@ The design is described in [ARCHITECTURE.md](ARCHITECTURE.md).
    - a title block: company, description, part number, revision, material, thickness, a
      blank QTY box, scale, sheet size, drawn by, date and the DXF file name
 
-   If the DXF or PDF already exists you're asked once, for both files. If the PDF is open in a
+   If the DXF or a PDF already exists you're asked once, for all the files. If the PDF is open in a
    viewer it can't be overwritten; that's reported as a warning.
 8. The listing window shows the part number and where it came from, the hole counts, what was
    labelled and why, where the part number went, any warnings, and the output path. A
@@ -96,8 +114,9 @@ several plates in one go:
    - **Duplicates:** two plates that would get the same file name are reported; only the
      first is written.
 5. The **preview** opens for each plate in turn ("plate 2 of 5"), with the same editing
-   tools, plus **Qty per jig**, **Export DXF**, **Skip plate** and **Cancel batch**. Each DXF
-   is written as soon as you approve it. Cancel batch keeps the plates already written.
+   tools, plus **Qty per jig**, **Export DXF**, **Export DXF + PDF**, **Skip plate** and
+   **Cancel batch**. Each DXF (and its 1:1 PDF, if you chose that button) is written as soon
+   as you approve it. The button you used last is the bold default for the next plate. Cancel batch keeps the plates already written.
    - **Qty per jig** is counted from the assembly structure, the same tree as the Assembly
      Navigator, including sub-assemblies. You pick each plate once; if it's used 4 times in
      the jig, the qty is 4. Suppressed components aren't counted, nor are components with
@@ -155,7 +174,7 @@ several plates in one go:
    `{THICKNESS}`, `{DXF}`, `{DXFNAME}`), so they can be renamed, reordered or dropped.
    Per-plate details go to the daily log.
 
-Batch mode writes DXFs only (no PDF sheets). Pick-a-point placement for the part number isn't
+Batch mode writes no PDF instruction sheets, only the DXFs and the 1:1 PDFs you ask for. Pick-a-point placement for the part number isn't
 available in batch mode; move the part number in the preview instead.
 
 ### How holes are labelled
@@ -190,7 +209,7 @@ as NX Open reports it (category, title, alias, value, flags), so the config can 
 
 `samples/` holds DXFs generated from synthetic plates. Use them to try the format in your laser
 CAM software. `sheet_irregular.pdf` (A3) and `sheet_small.pdf` (A4) are example instruction
-sheets.
+sheets. `cut_irregular.pdf` and `cut_small.pdf` are examples of the 1:1 PDFs.
 
 ## Step 1: probe (diagnostic journal)
 

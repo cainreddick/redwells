@@ -22,7 +22,7 @@ public class LaserDxfJournal
 
 // ----- nx/BatchCommand.cs -----
 // Batch journal: pick one face (or the body) on each plate in an assembly and
-// export a DXF per plate. DXF only - no PDF sheets in batch mode.
+// export a DXF per plate (plus a 1:1 PDF of it when asked). No PDF instruction sheets in batch mode.
 namespace LaserDxf.Nx
 {
     using System;
@@ -100,12 +100,12 @@ namespace LaserDxf.Nx
             List<PlateSelection> plates = NxPlate.SelectMany(s, log);
             if (plates == null) return;
 
-            if (cfg.ShowOptionsDialog && !OptionsDialog.Show(cfg, plates.Count + " plate(s)"))
+            if (cfg.ShowOptionsDialog && !OptionsDialog.Show(cfg, plates.Count + " plate(s)", true))
             {
                 lw.WriteLine("Laser DXF batch: cancelled.");
                 return;
             }
-            cfg.WritePdf = false; // batch writes DXFs only
+            cfg.WritePdf = false; // no instruction sheets in batch mode
             if (string.Equals(cfg.EtchPlacement, "Pick", StringComparison.OrdinalIgnoreCase))
             {
                 cfgWarnings.Add("Picking the part-number position isn't available in batch mode - placed automatically (move it in the preview if needed).");
@@ -176,7 +176,7 @@ namespace LaserDxf.Nx
             // 2. One overwrite question for all existing files.
             var existing = new List<string>();
             foreach (var it in items)
-                if (it.Status == BatchStatus.Exported) existing.AddRange(PlateJobs.Existing(jobs[it], folder));
+                if (it.Status == BatchStatus.Exported) existing.AddRange(PlateJobs.Existing(jobs[it], folder, true));
             bool overwrite = true;
             if (existing.Count > 0 && cfg.AskBeforeOverwrite)
             {
@@ -187,7 +187,7 @@ namespace LaserDxf.Nx
             }
             if (!overwrite)
                 foreach (var it in items)
-                    if (it.Status == BatchStatus.Exported && PlateJobs.Existing(jobs[it], folder).Count > 0)
+                    if (it.Status == BatchStatus.Exported && PlateJobs.Existing(jobs[it], folder, true).Count > 0)
                     {
                         it.Status = BatchStatus.Skipped;
                         it.Reason = it.Run.FileName + " already exists (overwrite declined)";
@@ -198,6 +198,7 @@ namespace LaserDxf.Nx
             foreach (var it in items) if (it.Status == BatchStatus.Exported) todo++;
             int n = 0;
             bool cancelled = false;
+            bool pdfDefault = cfg.WriteCutPdf;
             foreach (var it in items)
             {
                 if (it.Status != BatchStatus.Exported) continue;
@@ -213,7 +214,7 @@ namespace LaserDxf.Nx
                 {
                     var editor = new LayoutEditor(job.Run);
                     int qty = it.Qty;
-                    PreviewResult r = PreviewWindow.ShowBatch(editor, job.Run.Identity.Id + "  (" + job.Run.FileName + ")", n, todo, ref qty);
+                    PreviewResult r = PreviewWindow.ShowBatch(editor, job.Run.Identity.Id + "  (" + job.Run.FileName + ")", n, todo, pdfDefault, ref qty);
                     it.Qty = qty;
                     if (r == PreviewResult.Skip)
                     {
@@ -228,6 +229,8 @@ namespace LaserDxf.Nx
                         it.Reason = "batch cancelled in the preview";
                         continue;
                     }
+                    job.Run.WriteCutPdf = r == PreviewResult.ExportWithPdf;
+                    pdfDefault = job.Run.WriteCutPdf; // the next plate offers the same choice first
                     editor.Apply();
                 }
                 try
@@ -300,7 +303,7 @@ namespace LaserDxf.Nx
 
     public static class ExportCommand
     {
-        public const string Version = "0.6";
+        public const string Version = "0.7";
 
         public static void Run()
         {
@@ -341,11 +344,13 @@ namespace LaserDxf.Nx
             if (cfg.ShowPreview)
             {
                 var editor = new LayoutEditor(run);
-                if (!PreviewWindow.Show(editor, run.Identity.Id + "  (" + run.FileName + ")"))
+                PreviewResult r = PreviewWindow.Show(editor, run.Identity.Id + "  (" + run.FileName + ")", cfg.WriteCutPdf);
+                if (r == PreviewResult.Cancel)
                 {
                     lw.WriteLine("Laser DXF: cancelled in the preview - nothing written.");
                     return;
                 }
+                run.WriteCutPdf = r == PreviewResult.ExportWithPdf;
                 editor.Apply();
             }
 
@@ -1223,8 +1228,9 @@ namespace LaserDxf.Nx
 
     public static class OptionsDialog
     {
-        /// <summary>Shows the dialog and applies the choices to cfg. Returns false if cancelled.</summary>
-        public static bool Show(LaserConfig cfg, string partLabel)
+        /// <summary>Shows the dialog and applies the choices to cfg. Returns false if cancelled.
+        /// batch hides the instruction-sheet option (the batch journal writes none).</summary>
+        public static bool Show(LaserConfig cfg, string partLabel, bool batch = false)
         {
             using (var f = new Form())
             {
@@ -1275,9 +1281,16 @@ namespace LaserDxf.Nx
                 var preview = new CheckBox { Text = "Preview and adjust the text before writing the DXF", Left = 14, Top = y, Width = 416, Checked = cfg.ShowPreview };
                 f.Controls.Add(preview);
                 y += 26;
+                var cutPdf = new CheckBox { Text = "Also write the DXF as a 1:1 PDF (default button in the preview)", Left = 14, Top = y, Width = 416, Checked = cfg.WriteCutPdf };
+                f.Controls.Add(cutPdf);
+                y += 26;
                 var pdf = new CheckBox { Text = "Also write the PDF instruction sheet for the laser shop", Left = 14, Top = y, Width = 416, Checked = cfg.WritePdf };
-                f.Controls.Add(pdf);
-                y += 32;
+                if (!batch)
+                {
+                    f.Controls.Add(pdf);
+                    y += 26;
+                }
+                y += 6;
 
                 var ok = new Button { Text = "Continue", Left = 250, Top = y, Width = 85, Height = 28, DialogResult = DialogResult.OK };
                 var cancel = new Button { Text = "Cancel", Left = 341, Top = y, Width = 85, Height = 28, DialogResult = DialogResult.Cancel };
@@ -1295,7 +1308,8 @@ namespace LaserDxf.Nx
                 cfg.DxfVersion = version.SelectedIndex == 1 ? DxfVersion.R12 : DxfVersion.R2000;
                 if (folder.Text.Trim().Length > 0) cfg.OutputFolder = folder.Text.Trim();
                 cfg.ShowPreview = preview.Checked;
-                cfg.WritePdf = pdf.Checked;
+                cfg.WriteCutPdf = cutPdf.Checked;
+                if (!batch) cfg.WritePdf = pdf.Checked;
                 return true;
             }
         }
@@ -1363,13 +1377,20 @@ namespace LaserDxf.Nx
         /// <summary>Output files of the job that already exist in the folder.</summary>
         public static List<string> Existing(PlateJob job, string folder)
         {
+            return Existing(job, folder, job.Run.WriteCutPdf);
+        }
+
+        /// <param name="cutPdf">Include the 1:1 PDF (batch asks before the preview, so it can't know yet).</param>
+        public static List<string> Existing(PlateJob job, string folder, bool cutPdf)
+        {
             var l = new List<string>();
             if (File.Exists(Path.Combine(folder, job.Run.FileName))) l.Add(job.Run.FileName);
+            if (cutPdf && File.Exists(Path.Combine(folder, job.Run.CutPdfFileName))) l.Add(job.Run.CutPdfFileName);
             if (job.Run.PdfBytes != null && File.Exists(Path.Combine(folder, job.Run.PdfFileName))) l.Add(job.Run.PdfFileName);
             return l;
         }
 
-        /// <summary>Writes the DXF (and the PDF sheet if the run has one) to folder, and the debug body
+        /// <summary>Writes the DXF (plus the 1:1 PDF if run.WriteCutPdf, and the PDF sheet if the run has one) to folder, and the debug body
         /// model under supportFolder\_debug. write = false records that overwriting was declined.</summary>
         public static void Write(PlateJob job, LaserConfig cfg, string folder, bool write)
         {
@@ -1395,6 +1416,26 @@ namespace LaserDxf.Nx
                 }
             }
             else run.Outcome = "NOT written - overwrite declined";
+
+            if (run.WriteCutPdf)
+            {
+                string cutPath = Path.Combine(folder, run.CutPdfFileName);
+                run.CutPdfPath = cutPath;
+                if (!write) run.CutPdfOutcome = "NOT written - overwrite declined";
+                else
+                {
+                    try
+                    {
+                        File.WriteAllBytes(cutPath, CutPdf.Build(run).Save());
+                        run.CutPdfOutcome = "written";
+                    }
+                    catch (Exception cex)
+                    {
+                        run.CutPdfOutcome = "NOT written";
+                        run.Warnings.Add("Could not write the PDF " + cutPath + ": " + cex.Message + " (is it open in a PDF viewer?)");
+                    }
+                }
+            }
 
             if (run.PdfBytes != null)
             {
@@ -1475,27 +1516,34 @@ namespace LaserDxf.Nx
     using System.Windows.Forms;
     using LaserDxf.Core;
 
-    public enum PreviewResult { Export, Skip, Cancel }
+    public enum PreviewResult { Export, ExportWithPdf, Skip, Cancel }
 
     public static class PreviewWindow
     {
-        /// <summary>Returns true if the user clicked Export.</summary>
-        public static bool Show(LayoutEditor editor, string title)
+        /// <summary>Export (DXF only), ExportWithPdf (DXF + 1:1 PDF) or Cancel.
+        /// pdfDefault makes "Export DXF + PDF" the bold Enter button.</summary>
+        public static PreviewResult Show(LayoutEditor editor, string title, bool pdfDefault)
         {
-            using (var f = new PreviewForm(editor, title, false))
-                return f.ShowDialog() == DialogResult.OK;
+            using (var f = new PreviewForm(editor, title, false, pdfDefault))
+                return Result(f, f.ShowDialog());
+        }
+
+        static PreviewResult Result(PreviewForm f, DialogResult r)
+        {
+            if (r == DialogResult.OK) return f.WithPdf ? PreviewResult.ExportWithPdf : PreviewResult.Export;
+            return r == DialogResult.Ignore ? PreviewResult.Skip : PreviewResult.Cancel;
         }
 
         /// <summary>Batch mode: Export this plate, Skip it, or Cancel the rest of the batch.
         /// qty is the per-jig quantity shown in an editable box (the count from the assembly in, the final value out).</summary>
-        public static PreviewResult ShowBatch(LayoutEditor editor, string title, int index, int count, ref int qty)
+        public static PreviewResult ShowBatch(LayoutEditor editor, string title, int index, int count, bool pdfDefault, ref int qty)
         {
-            using (var f = new PreviewForm(editor, "plate " + index + " of " + count + " - " + title, true))
+            using (var f = new PreviewForm(editor, "plate " + index + " of " + count + " - " + title, true, pdfDefault))
             {
                 f.Qty = qty;
                 DialogResult r = f.ShowDialog();
                 qty = f.Qty;
-                return r == DialogResult.OK ? PreviewResult.Export : r == DialogResult.Ignore ? PreviewResult.Skip : PreviewResult.Cancel;
+                return Result(f, r);
             }
         }
     }
@@ -1519,6 +1567,9 @@ namespace LaserDxf.Nx
         readonly Button rotateBtn, editBtn, deleteBtn;
         readonly bool batch;
         NumericUpDown qtyBox;
+
+        /// <summary>True when the user pressed "Export DXF + PDF".</summary>
+        public bool WithPdf { get; private set; }
 
         /// <summary>Batch mode: quantity per jig (editable).</summary>
         public int Qty
@@ -1545,7 +1596,7 @@ namespace LaserDxf.Nx
         static readonly Color OverlapColour = Color.FromArgb(220, 0, 0);
         static readonly Color SelectColour = Color.FromArgb(40, 40, 40);
 
-        public PreviewForm(LayoutEditor editor, string title, bool batchMode)
+        public PreviewForm(LayoutEditor editor, string title, bool batchMode, bool pdfDefault)
         {
             ed = editor;
             batch = batchMode;
@@ -1582,8 +1633,9 @@ namespace LaserDxf.Nx
                 bar.Controls.Add(qtyBox);
             }
             bar.Controls.Add(new Label { Width = batch ? 16 : 40 });
-            Button export = MakeButton(bar, "Export DXF", delegate { TryExport(); });
-            export.Font = new Font(Font, FontStyle.Bold);
+            Button export = MakeButton(bar, "Export DXF", delegate { TryExport(false); });
+            Button exportPdf = MakeButton(bar, "Export DXF + PDF", delegate { TryExport(true); });
+            (pdfDefault ? exportPdf : export).Font = new Font(Font, FontStyle.Bold);
             if (batch) MakeButton(bar, "Skip plate", delegate { TrySkip(); });
             MakeButton(bar, batch ? "Cancel batch" : "Cancel", delegate { TryCancel(); });
 
@@ -2004,7 +2056,7 @@ namespace LaserDxf.Nx
             DialogResult = DialogResult.Ignore;
         }
 
-        void TryExport()
+        void TryExport(bool withPdf)
         {
             List<PlacedText> problems = ed.Problems();
             if (problems.Count > 0)
@@ -2016,6 +2068,7 @@ namespace LaserDxf.Nx
                     "Laser DXF", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
                 if (r != DialogResult.Yes) return;
             }
+            WithPdf = withPdf;
             DialogResult = DialogResult.OK;
         }
 
@@ -3169,9 +3222,17 @@ namespace LaserDxf.Core
         /// <summary>If the revision attribute is missing, take it from a Teamcenter part name "ID/REV".</summary>
         public bool RevisionFromPartName = true;
 
+        // The DXF as a 1:1 PDF (the "Export DXF + PDF" button), for shops that can't open DXFs
+        /// <summary>Write the cut PDF without asking: used when there is no preview, and makes it the preview's default button.</summary>
+        public bool WriteCutPdf = false;
+        public string CutPdfFileNameFormat = "{ID}-{REV}.pdf";
+        public double CutPdfLineWidth = 0.1;   // mm
+        public double CutPdfMargin = 10;       // mm of blank page around the plate
+        public bool CutPdfLayers = true;       // PDF layers named like the DXF layers (CUT / ETCH)
+
         // PDF instruction sheet for the laser shop
         public bool WritePdf = true;
-        public string PdfFileNameFormat = "{ID}-{REV}.pdf";
+        public string PdfFileNameFormat = "{ID}-{REV} instruction.pdf";
         public string SheetSize = "Auto";
         public string Company = "";
         public string SheetTitle = "LASER CUTTING INSTRUCTION";
@@ -3484,6 +3545,14 @@ namespace LaserDxf.Core
             }
             pdf.Finish();
 
+            Section cp = s.Sub("cutPdf");
+            c.WriteCutPdf = cp.Bool("default", c.WriteCutPdf);
+            c.CutPdfFileNameFormat = cp.Str("fileNameFormat", c.CutPdfFileNameFormat);
+            c.CutPdfLineWidth = cp.Num("lineWidth", c.CutPdfLineWidth, 0, 2);
+            c.CutPdfMargin = cp.Num("margin", c.CutPdfMargin, 0, 100);
+            c.CutPdfLayers = cp.Bool("layers", c.CutPdfLayers);
+            cp.Finish();
+
             Section b = s.Sub("batch");
             c.BatchFolderFormat = b.Str("folderFormat", c.BatchFolderFormat);
             c.BatchCsvFileFormat = b.Str("csvFileName", c.BatchCsvFileFormat);
@@ -3563,6 +3632,110 @@ namespace LaserDxf.Core
 
             s.Finish();
             return c;
+        }
+    }
+}
+
+// ----- core/CutPdf.cs -----
+// The DXF as a PDF, for laser shops that can't open the DXF: exactly the same
+// entities at true 1:1 scale on a page just big enough for the plate. Cut geometry
+// black, etching blue, each on a PDF layer named like the DXF layer, and nothing
+// else on the page so the file can be imported into CAM software as it is.
+namespace LaserDxf.Core
+{
+    using System;
+    using System.Collections.Generic;
+
+    public static class CutPdf
+    {
+        /// <summary>RGB for an AutoCAD colour index (the basic colours; anything else prints black).</summary>
+        public static double[] Rgb(int aci)
+        {
+            switch (aci)
+            {
+                case 1: return new double[] { 1, 0, 0 };
+                case 2: return new double[] { 1, 1, 0 };
+                case 3: return new double[] { 0, 1, 0 };
+                case 4: return new double[] { 0, 1, 1 };
+                case 5: return new double[] { 0, 0, 1 };
+                case 6: return new double[] { 1, 0, 1 };
+                default: return new double[] { 0, 0, 0 }; // 7 is white on black / black on white
+            }
+        }
+
+        public static PdfDocument Build(ExportRun run)
+        {
+            LaserConfig c = run.Config;
+            DxfDocument dxf = run.Profile.Doc;
+            Bounds2 ext = dxf.Extents();
+            double m = c.CutPdfMargin;
+            var page = new PdfPage(ext.Width + 2 * m, ext.Height + 2 * m);
+            var doc = new PdfDocument { Title = run.EtchText, Author = run.Identity.DrawnBy, Subject = run.FileName + " at 1:1 (mm)" };
+            doc.Pages.Add(page);
+            Vec2 shift = new Vec2(m - ext.MinX, m - ext.MinY);
+
+            // One pass per DXF layer, in the DXF's layer order, so each lands in its own PDF layer.
+            var layers = new List<string>();
+            var colours = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (DxfLayer l in dxf.Layers) { if (!colours.ContainsKey(l.Name)) layers.Add(l.Name); colours[l.Name] = l.Color; }
+            foreach (DxfEntity e in dxf.Entities) if (!colours.ContainsKey(e.Layer)) { layers.Add(e.Layer); colours[e.Layer] = 7; }
+
+            foreach (string layer in layers)
+            {
+                var on = new List<DxfEntity>();
+                foreach (DxfEntity e in dxf.Entities) if (string.Equals(e.Layer, layer, StringComparison.OrdinalIgnoreCase)) on.Add(e);
+                if (on.Count == 0) continue;
+                if (c.CutPdfLayers)
+                {
+                    page.BeginLayer(doc.Layers.Count);
+                    doc.Layers.Add(layer);
+                }
+                int current = -1;
+                foreach (DxfEntity e in on)
+                {
+                    int aci = e.Color == 256 || e.Color == 0 ? colours[layer] : e.Color;
+                    if (aci != current)
+                    {
+                        double[] rgb = Rgb(aci);
+                        page.Stroke(rgb[0], rgb[1], rgb[2], c.CutPdfLineWidth);
+                        current = aci;
+                    }
+                    Draw(page, e, shift);
+                }
+                if (c.CutPdfLayers) page.EndLayer();
+            }
+            return doc;
+        }
+
+        static void Draw(PdfPage page, DxfEntity e, Vec2 shift)
+        {
+            var line = e as DxfLine;
+            var circle = e as DxfCircle;
+            var arc = e as DxfArc;
+            var poly = e as DxfPolyline;
+            var text = e as DxfText;
+            if (line != null) page.Line(line.A + shift, line.B + shift);
+            else if (circle != null) page.Circle(circle.Center + shift, circle.Radius);
+            else if (arc != null)
+            {
+                double sweep = (arc.EndDeg - arc.StartDeg) % 360;
+                if (sweep <= 1e-9) sweep += 360;
+                page.Arc(arc.Center + shift, arc.Radius, arc.StartDeg, sweep);
+            }
+            else if (poly != null) page.Polyline(Shifted(poly.Points, shift), poly.Closed);
+            else if (text != null)
+            {
+                // DXF TEXT has no outline of its own: draw it with the single-stroke etch font.
+                foreach (var stroke in StrokeFont.Render(text.Value, text.Position + shift, text.Height, text.RotationDeg))
+                    page.Polyline(stroke, false);
+            }
+        }
+
+        static List<Vec2> Shifted(List<Vec2> pts, Vec2 shift)
+        {
+            var l = new List<Vec2>(pts.Count);
+            foreach (var p in pts) l.Add(p + shift);
+            return l;
         }
     }
 }
@@ -4020,6 +4193,7 @@ namespace LaserDxf.Core
 {
     using System;
     using System.Collections.Generic;
+    using System.IO;
 
     public static class ExportPipeline
     {
@@ -4059,11 +4233,17 @@ namespace LaserDxf.Core
             if (run.Etch != null) run.Etch.IsEtch = true;
 
             run.FileName = FileNameFor(run.Identity, c, run.Warnings);
+            run.WriteCutPdf = c.WriteCutPdf;
+            run.CutPdfFileName = PdfName(c.CutPdfFileNameFormat, run, Path.GetFileNameWithoutExtension(run.FileName));
             if (c.WritePdf)
             {
-                string pdf = Identity.SafeFileName(Identity.Format(c.PdfFileNameFormat, run.Identity.Tokens(), run.Warnings));
-                if (!pdf.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase)) pdf += ".pdf";
-                run.PdfFileName = pdf;
+                run.PdfFileName = PdfName(c.PdfFileNameFormat, run, "instruction");
+                if (run.PdfFileName.Equals(run.CutPdfFileName, StringComparison.OrdinalIgnoreCase))
+                {
+                    // Same name as the 1:1 PDF: keep the two apart.
+                    run.PdfFileName = Path.GetFileNameWithoutExtension(run.PdfFileName) + " instruction.pdf";
+                    run.Notes.Add("pdf.fileNameFormat gives the same name as cutPdf.fileNameFormat - instruction sheet named " + run.PdfFileName);
+                }
             }
             Finish(run);
             return run;
@@ -4080,6 +4260,14 @@ namespace LaserDxf.Core
             if (run.Etch != null && !run.Etch.Deleted) Annotator.Emit(doc, run.Etch, run.Config);
             run.DxfText = DxfWriter.Write(doc, run.Config.DxfVersion);
             run.PdfBytes = run.Config.WritePdf ? LaserSheet.Build(run).Save() : null;
+        }
+
+        static string PdfName(string format, ExportRun run, string fallback)
+        {
+            string pdf = Identity.SafeFileName(Identity.Format(format, run.Identity.Tokens(), run.Warnings));
+            if (pdf.Length == 0 || pdf.Equals(".pdf", StringComparison.OrdinalIgnoreCase)) pdf = fallback;
+            if (!pdf.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase)) pdf += ".pdf";
+            return pdf;
         }
 
         public static string FileNameFor(PartIdentity id, LaserConfig c, List<string> warnings)
@@ -4120,6 +4308,11 @@ namespace LaserDxf.Core
         public string FileName = "";
         public string Date = DateTime.Now.ToString("dd/MM/yyyy");
         public string PdfFileName = "";
+        /// <summary>The DXF as a 1:1 PDF: wanted when WriteCutPdf is set (preview button or config).</summary>
+        public bool WriteCutPdf;
+        public string CutPdfFileName = "";
+        public string CutPdfPath = "";
+        public string CutPdfOutcome = "";
         public byte[] PdfBytes;
         public string PdfPath = "";
         public string PdfOutcome = "";
@@ -4213,6 +4406,7 @@ namespace LaserDxf.Core
                       r.Config.EtchLayer.Name + " (colour " + r.Config.EtchLayer.Color + ")");
             if (r.EditSummary.Length > 0) L.Add("Hand edits   : " + r.EditSummary);
             L.Add("Output       : " + (r.OutputPath.Length > 0 ? r.OutputPath : "-") + (r.Outcome.Length > 0 ? "   [" + r.Outcome + "]" : ""));
+            if (r.CutPdfPath.Length > 0) L.Add("PDF (1:1)    : " + r.CutPdfPath + "   [" + r.CutPdfOutcome + "]");
             if (r.PdfPath.Length > 0) L.Add("PDF sheet    : " + r.PdfPath + "   [" + r.PdfOutcome + "]");
             if (r.Warnings.Count > 0)
             {
@@ -6012,6 +6206,35 @@ namespace LaserDxf.Core
             c.Append(N(x + d)).Append(' ').Append(N(y - r)).Append(' ').Append(N(x + r)).Append(' ').Append(N(y - d)).Append(' ').Append(N(x + r)).Append(' ').Append(N(y)).Append(" c S\n");
         }
 
+        /// <summary>Circular arc, counter-clockwise from startDeg through sweepDeg, as cubic Beziers of at most 90 degrees.</summary>
+        public void Arc(Vec2 ctr, double r, double startDeg, double sweepDeg)
+        {
+            int n = Math.Max(1, (int)Math.Ceiling(Math.Abs(sweepDeg) / 90 - 1e-9));
+            double step = sweepDeg / n * Math.PI / 180, a = startDeg * Math.PI / 180;
+            double k = 4.0 / 3 * Math.Tan(step / 4);
+            c.Append(N(ctr.X + r * Math.Cos(a))).Append(' ').Append(N(ctr.Y + r * Math.Sin(a))).Append(" m\n");
+            for (int i = 0; i < n; i++)
+            {
+                double a0 = a + step * i, a1 = a0 + step;
+                double c0 = Math.Cos(a0), s0 = Math.Sin(a0), c1 = Math.Cos(a1), s1 = Math.Sin(a1);
+                c.Append(N(ctr.X + r * (c0 - k * s0))).Append(' ').Append(N(ctr.Y + r * (s0 + k * c0))).Append(' ')
+                 .Append(N(ctr.X + r * (c1 + k * s1))).Append(' ').Append(N(ctr.Y + r * (s1 - k * c1))).Append(' ')
+                 .Append(N(ctr.X + r * c1)).Append(' ').Append(N(ctr.Y + r * s1)).Append(" c\n");
+            }
+            c.Append("S\n");
+        }
+
+        /// <summary>Starts drawing on a layer (optional content group) declared in PdfDocument.Layers.</summary>
+        public void BeginLayer(int index)
+        {
+            c.Append("/OC /OC").Append(index).Append(" BDC\n");
+        }
+
+        public void EndLayer()
+        {
+            c.Append("EMC\n");
+        }
+
         /// <summary>Single-line text; (x, y) is on the baseline. Size is the font size in mm.</summary>
         public void Text(double x, double y, double sizeMm, string text, bool bold, PdfAlign align)
         {
@@ -6095,6 +6318,8 @@ namespace LaserDxf.Core
     {
         public readonly List<PdfPage> Pages = new List<PdfPage>();
         public string Title = "", Author = "", Subject = "";
+        /// <summary>Layer names (PDF optional content groups), referenced by index from PdfPage.BeginLayer.</summary>
+        public readonly List<string> Layers = new List<string>();
 
         static readonly Encoding Win1252 = Encoding.GetEncoding(1252);
 
@@ -6104,12 +6329,23 @@ namespace LaserDxf.Core
             var offsets = new List<long>();
             Action<string> write = delegate (string s) { byte[] b = Win1252.GetBytes(s); ms.Write(b, 0, b.Length); };
 
-            // Object numbers: 1 catalog, 2 pages, 3 Helvetica, 4 Helvetica-Bold, 5 info, then page/content pairs.
-            int n = 5 + Pages.Count * 2;
+            // Object numbers: 1 catalog, 2 pages, 3 Helvetica, 4 Helvetica-Bold, 5 info, then page/content pairs, then layers.
+            int firstLayer = 6 + Pages.Count * 2;
+            int n = 5 + Pages.Count * 2 + Layers.Count;
             var objects = new string[n + 1];
             var kids = new StringBuilder();
             for (int i = 0; i < Pages.Count; i++) kids.Append(6 + i * 2).Append(" 0 R ");
-            objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+            var ocgs = new StringBuilder();
+            var props = new StringBuilder();
+            for (int i = 0; i < Layers.Count; i++)
+            {
+                objects[firstLayer + i] = "<< /Type /OCG /Name (" + Lit(Layers[i]) + ") >>";
+                ocgs.Append(firstLayer + i).Append(" 0 R ");
+                props.Append("/OC").Append(i).Append(' ').Append(firstLayer + i).Append(" 0 R ");
+            }
+            string ocgList = ocgs.ToString().Trim();
+            objects[1] = Layers.Count == 0 ? "<< /Type /Catalog /Pages 2 0 R >>"
+                : "<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [" + ocgList + "] /D << /Order [" + ocgList + "] /ON [" + ocgList + "] >> >> >>";
             objects[2] = "<< /Type /Pages /Kids [" + kids.ToString().Trim() + "] /Count " + Pages.Count + " >>";
             objects[3] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>";
             objects[4] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>";
@@ -6120,12 +6356,13 @@ namespace LaserDxf.Core
                 PdfPage p = Pages[i];
                 double w = p.WidthMm * 72 / 25.4, h = p.HeightMm * 72 / 25.4;
                 objects[6 + i * 2] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + w.ToString("0.##", CultureInfo.InvariantCulture) + " " +
-                                     h.ToString("0.##", CultureInfo.InvariantCulture) + "] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents " + (7 + i * 2) + " 0 R >>";
+                                     h.ToString("0.##", CultureInfo.InvariantCulture) + "] /Resources << /Font << /F1 3 0 R /F2 4 0 R >>" +
+                                     (Layers.Count > 0 ? " /Properties << " + props.ToString().Trim() + " >>" : "") + " >> /Contents " + (7 + i * 2) + " 0 R >>";
                 string content = p.Content;
                 objects[7 + i * 2] = "<< /Length " + Win1252.GetByteCount(content) + " >>\nstream\n" + content + "endstream";
             }
 
-            write("%PDF-1.4\n%âãÏÓ\n");
+            write((Layers.Count > 0 ? "%PDF-1.5" : "%PDF-1.4") + "\n%âãÏÓ\n"); // layers need 1.5
             for (int i = 1; i <= n; i++)
             {
                 offsets.Add(ms.Position);

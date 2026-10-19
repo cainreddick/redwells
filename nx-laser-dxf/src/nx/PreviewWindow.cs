@@ -12,27 +12,34 @@ namespace LaserDxf.Nx
     using System.Windows.Forms;
     using LaserDxf.Core;
 
-    public enum PreviewResult { Export, Skip, Cancel }
+    public enum PreviewResult { Export, ExportWithPdf, Skip, Cancel }
 
     public static class PreviewWindow
     {
-        /// <summary>Returns true if the user clicked Export.</summary>
-        public static bool Show(LayoutEditor editor, string title)
+        /// <summary>Export (DXF only), ExportWithPdf (DXF + 1:1 PDF) or Cancel.
+        /// pdfDefault makes "Export DXF + PDF" the bold Enter button.</summary>
+        public static PreviewResult Show(LayoutEditor editor, string title, bool pdfDefault)
         {
-            using (var f = new PreviewForm(editor, title, false))
-                return f.ShowDialog() == DialogResult.OK;
+            using (var f = new PreviewForm(editor, title, false, pdfDefault))
+                return Result(f, f.ShowDialog());
+        }
+
+        static PreviewResult Result(PreviewForm f, DialogResult r)
+        {
+            if (r == DialogResult.OK) return f.WithPdf ? PreviewResult.ExportWithPdf : PreviewResult.Export;
+            return r == DialogResult.Ignore ? PreviewResult.Skip : PreviewResult.Cancel;
         }
 
         /// <summary>Batch mode: Export this plate, Skip it, or Cancel the rest of the batch.
         /// qty is the per-jig quantity shown in an editable box (the count from the assembly in, the final value out).</summary>
-        public static PreviewResult ShowBatch(LayoutEditor editor, string title, int index, int count, ref int qty)
+        public static PreviewResult ShowBatch(LayoutEditor editor, string title, int index, int count, bool pdfDefault, ref int qty)
         {
-            using (var f = new PreviewForm(editor, "plate " + index + " of " + count + " - " + title, true))
+            using (var f = new PreviewForm(editor, "plate " + index + " of " + count + " - " + title, true, pdfDefault))
             {
                 f.Qty = qty;
                 DialogResult r = f.ShowDialog();
                 qty = f.Qty;
-                return r == DialogResult.OK ? PreviewResult.Export : r == DialogResult.Ignore ? PreviewResult.Skip : PreviewResult.Cancel;
+                return Result(f, r);
             }
         }
     }
@@ -56,6 +63,9 @@ namespace LaserDxf.Nx
         readonly Button rotateBtn, editBtn, deleteBtn;
         readonly bool batch;
         NumericUpDown qtyBox;
+
+        /// <summary>True when the user pressed "Export DXF + PDF".</summary>
+        public bool WithPdf { get; private set; }
 
         /// <summary>Batch mode: quantity per jig (editable).</summary>
         public int Qty
@@ -82,7 +92,7 @@ namespace LaserDxf.Nx
         static readonly Color OverlapColour = Color.FromArgb(220, 0, 0);
         static readonly Color SelectColour = Color.FromArgb(40, 40, 40);
 
-        public PreviewForm(LayoutEditor editor, string title, bool batchMode)
+        public PreviewForm(LayoutEditor editor, string title, bool batchMode, bool pdfDefault)
         {
             ed = editor;
             batch = batchMode;
@@ -119,8 +129,9 @@ namespace LaserDxf.Nx
                 bar.Controls.Add(qtyBox);
             }
             bar.Controls.Add(new Label { Width = batch ? 16 : 40 });
-            Button export = MakeButton(bar, "Export DXF", delegate { TryExport(); });
-            export.Font = new Font(Font, FontStyle.Bold);
+            Button export = MakeButton(bar, "Export DXF", delegate { TryExport(false); });
+            Button exportPdf = MakeButton(bar, "Export DXF + PDF", delegate { TryExport(true); });
+            (pdfDefault ? exportPdf : export).Font = new Font(Font, FontStyle.Bold);
             if (batch) MakeButton(bar, "Skip plate", delegate { TrySkip(); });
             MakeButton(bar, batch ? "Cancel batch" : "Cancel", delegate { TryCancel(); });
 
@@ -541,7 +552,7 @@ namespace LaserDxf.Nx
             DialogResult = DialogResult.Ignore;
         }
 
-        void TryExport()
+        void TryExport(bool withPdf)
         {
             List<PlacedText> problems = ed.Problems();
             if (problems.Count > 0)
@@ -553,6 +564,7 @@ namespace LaserDxf.Nx
                     "Laser DXF", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
                 if (r != DialogResult.Yes) return;
             }
+            WithPdf = withPdf;
             DialogResult = DialogResult.OK;
         }
 

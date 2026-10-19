@@ -1,5 +1,5 @@
 // Batch journal: pick one face (or the body) on each plate in an assembly and
-// export a DXF per plate. DXF only - no PDF sheets in batch mode.
+// export a DXF per plate (plus a 1:1 PDF of it when asked). No PDF instruction sheets in batch mode.
 namespace LaserDxf.Nx
 {
     using System;
@@ -77,12 +77,12 @@ namespace LaserDxf.Nx
             List<PlateSelection> plates = NxPlate.SelectMany(s, log);
             if (plates == null) return;
 
-            if (cfg.ShowOptionsDialog && !OptionsDialog.Show(cfg, plates.Count + " plate(s)"))
+            if (cfg.ShowOptionsDialog && !OptionsDialog.Show(cfg, plates.Count + " plate(s)", true))
             {
                 lw.WriteLine("Laser DXF batch: cancelled.");
                 return;
             }
-            cfg.WritePdf = false; // batch writes DXFs only
+            cfg.WritePdf = false; // no instruction sheets in batch mode
             if (string.Equals(cfg.EtchPlacement, "Pick", StringComparison.OrdinalIgnoreCase))
             {
                 cfgWarnings.Add("Picking the part-number position isn't available in batch mode - placed automatically (move it in the preview if needed).");
@@ -153,7 +153,7 @@ namespace LaserDxf.Nx
             // 2. One overwrite question for all existing files.
             var existing = new List<string>();
             foreach (var it in items)
-                if (it.Status == BatchStatus.Exported) existing.AddRange(PlateJobs.Existing(jobs[it], folder));
+                if (it.Status == BatchStatus.Exported) existing.AddRange(PlateJobs.Existing(jobs[it], folder, true));
             bool overwrite = true;
             if (existing.Count > 0 && cfg.AskBeforeOverwrite)
             {
@@ -164,7 +164,7 @@ namespace LaserDxf.Nx
             }
             if (!overwrite)
                 foreach (var it in items)
-                    if (it.Status == BatchStatus.Exported && PlateJobs.Existing(jobs[it], folder).Count > 0)
+                    if (it.Status == BatchStatus.Exported && PlateJobs.Existing(jobs[it], folder, true).Count > 0)
                     {
                         it.Status = BatchStatus.Skipped;
                         it.Reason = it.Run.FileName + " already exists (overwrite declined)";
@@ -175,6 +175,7 @@ namespace LaserDxf.Nx
             foreach (var it in items) if (it.Status == BatchStatus.Exported) todo++;
             int n = 0;
             bool cancelled = false;
+            bool pdfDefault = cfg.WriteCutPdf;
             foreach (var it in items)
             {
                 if (it.Status != BatchStatus.Exported) continue;
@@ -190,7 +191,7 @@ namespace LaserDxf.Nx
                 {
                     var editor = new LayoutEditor(job.Run);
                     int qty = it.Qty;
-                    PreviewResult r = PreviewWindow.ShowBatch(editor, job.Run.Identity.Id + "  (" + job.Run.FileName + ")", n, todo, ref qty);
+                    PreviewResult r = PreviewWindow.ShowBatch(editor, job.Run.Identity.Id + "  (" + job.Run.FileName + ")", n, todo, pdfDefault, ref qty);
                     it.Qty = qty;
                     if (r == PreviewResult.Skip)
                     {
@@ -205,6 +206,8 @@ namespace LaserDxf.Nx
                         it.Reason = "batch cancelled in the preview";
                         continue;
                     }
+                    job.Run.WriteCutPdf = r == PreviewResult.ExportWithPdf;
+                    pdfDefault = job.Run.WriteCutPdf; // the next plate offers the same choice first
                     editor.Apply();
                 }
                 try

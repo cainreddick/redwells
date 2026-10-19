@@ -83,9 +83,17 @@ namespace LaserDxf.Core
         /// <summary>If the revision attribute is missing, take it from a Teamcenter part name "ID/REV".</summary>
         public bool RevisionFromPartName = true;
 
+        // The DXF as a 1:1 PDF (the "Export DXF + PDF" button), for shops that can't open DXFs
+        /// <summary>Write the cut PDF without asking: used when there is no preview, and makes it the preview's default button.</summary>
+        public bool WriteCutPdf = false;
+        public string CutPdfFileNameFormat = "{ID}-{REV}.pdf";
+        public double CutPdfLineWidth = 0.1;   // mm
+        public double CutPdfMargin = 10;       // mm of blank page around the plate
+        public bool CutPdfLayers = true;       // PDF layers named like the DXF layers (CUT / ETCH)
+
         // PDF instruction sheet for the laser shop
         public bool WritePdf = true;
-        public string PdfFileNameFormat = "{ID}-{REV}.pdf";
+        public string PdfFileNameFormat = "{ID}-{REV} instruction.pdf";
         public string SheetSize = "Auto";
         public string Company = "";
         public string SheetTitle = "LASER CUTTING INSTRUCTION";
@@ -397,6 +405,14 @@ namespace LaserDxf.Core
                 foreach (object o in notes) if (o is string) c.SheetNotes.Add((string)o);
             }
             pdf.Finish();
+
+            Section cp = s.Sub("cutPdf");
+            c.WriteCutPdf = cp.Bool("default", c.WriteCutPdf);
+            c.CutPdfFileNameFormat = cp.Str("fileNameFormat", c.CutPdfFileNameFormat);
+            c.CutPdfLineWidth = cp.Num("lineWidth", c.CutPdfLineWidth, 0, 2);
+            c.CutPdfMargin = cp.Num("margin", c.CutPdfMargin, 0, 100);
+            c.CutPdfLayers = cp.Bool("layers", c.CutPdfLayers);
+            cp.Finish();
 
             Section b = s.Sub("batch");
             c.BatchFolderFormat = b.Str("folderFormat", c.BatchFolderFormat);

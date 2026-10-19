@@ -70,6 +70,35 @@ namespace LaserDxf.Core
             c.Append(N(x + d)).Append(' ').Append(N(y - r)).Append(' ').Append(N(x + r)).Append(' ').Append(N(y - d)).Append(' ').Append(N(x + r)).Append(' ').Append(N(y)).Append(" c S\n");
         }
 
+        /// <summary>Circular arc, counter-clockwise from startDeg through sweepDeg, as cubic Beziers of at most 90 degrees.</summary>
+        public void Arc(Vec2 ctr, double r, double startDeg, double sweepDeg)
+        {
+            int n = Math.Max(1, (int)Math.Ceiling(Math.Abs(sweepDeg) / 90 - 1e-9));
+            double step = sweepDeg / n * Math.PI / 180, a = startDeg * Math.PI / 180;
+            double k = 4.0 / 3 * Math.Tan(step / 4);
+            c.Append(N(ctr.X + r * Math.Cos(a))).Append(' ').Append(N(ctr.Y + r * Math.Sin(a))).Append(" m\n");
+            for (int i = 0; i < n; i++)
+            {
+                double a0 = a + step * i, a1 = a0 + step;
+                double c0 = Math.Cos(a0), s0 = Math.Sin(a0), c1 = Math.Cos(a1), s1 = Math.Sin(a1);
+                c.Append(N(ctr.X + r * (c0 - k * s0))).Append(' ').Append(N(ctr.Y + r * (s0 + k * c0))).Append(' ')
+                 .Append(N(ctr.X + r * (c1 + k * s1))).Append(' ').Append(N(ctr.Y + r * (s1 - k * c1))).Append(' ')
+                 .Append(N(ctr.X + r * c1)).Append(' ').Append(N(ctr.Y + r * s1)).Append(" c\n");
+            }
+            c.Append("S\n");
+        }
+
+        /// <summary>Starts drawing on a layer (optional content group) declared in PdfDocument.Layers.</summary>
+        public void BeginLayer(int index)
+        {
+            c.Append("/OC /OC").Append(index).Append(" BDC\n");
+        }
+
+        public void EndLayer()
+        {
+            c.Append("EMC\n");
+        }
+
         /// <summary>Single-line text; (x, y) is on the baseline. Size is the font size in mm.</summary>
         public void Text(double x, double y, double sizeMm, string text, bool bold, PdfAlign align)
         {
@@ -153,6 +182,8 @@ namespace LaserDxf.Core
     {
         public readonly List<PdfPage> Pages = new List<PdfPage>();
         public string Title = "", Author = "", Subject = "";
+        /// <summary>Layer names (PDF optional content groups), referenced by index from PdfPage.BeginLayer.</summary>
+        public readonly List<string> Layers = new List<string>();
 
         static readonly Encoding Win1252 = Encoding.GetEncoding(1252);
 
@@ -162,12 +193,23 @@ namespace LaserDxf.Core
             var offsets = new List<long>();
             Action<string> write = delegate (string s) { byte[] b = Win1252.GetBytes(s); ms.Write(b, 0, b.Length); };
 
-            // Object numbers: 1 catalog, 2 pages, 3 Helvetica, 4 Helvetica-Bold, 5 info, then page/content pairs.
-            int n = 5 + Pages.Count * 2;
+            // Object numbers: 1 catalog, 2 pages, 3 Helvetica, 4 Helvetica-Bold, 5 info, then page/content pairs, then layers.
+            int firstLayer = 6 + Pages.Count * 2;
+            int n = 5 + Pages.Count * 2 + Layers.Count;
             var objects = new string[n + 1];
             var kids = new StringBuilder();
             for (int i = 0; i < Pages.Count; i++) kids.Append(6 + i * 2).Append(" 0 R ");
-            objects[1] = "<< /Type /Catalog /Pages 2 0 R >>";
+            var ocgs = new StringBuilder();
+            var props = new StringBuilder();
+            for (int i = 0; i < Layers.Count; i++)
+            {
+                objects[firstLayer + i] = "<< /Type /OCG /Name (" + Lit(Layers[i]) + ") >>";
+                ocgs.Append(firstLayer + i).Append(" 0 R ");
+                props.Append("/OC").Append(i).Append(' ').Append(firstLayer + i).Append(" 0 R ");
+            }
+            string ocgList = ocgs.ToString().Trim();
+            objects[1] = Layers.Count == 0 ? "<< /Type /Catalog /Pages 2 0 R >>"
+                : "<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [" + ocgList + "] /D << /Order [" + ocgList + "] /ON [" + ocgList + "] >> >> >>";
             objects[2] = "<< /Type /Pages /Kids [" + kids.ToString().Trim() + "] /Count " + Pages.Count + " >>";
             objects[3] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>";
             objects[4] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>";
@@ -178,12 +220,13 @@ namespace LaserDxf.Core
                 PdfPage p = Pages[i];
                 double w = p.WidthMm * 72 / 25.4, h = p.HeightMm * 72 / 25.4;
                 objects[6 + i * 2] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + w.ToString("0.##", CultureInfo.InvariantCulture) + " " +
-                                     h.ToString("0.##", CultureInfo.InvariantCulture) + "] /Resources << /Font << /F1 3 0 R /F2 4 0 R >> >> /Contents " + (7 + i * 2) + " 0 R >>";
+                                     h.ToString("0.##", CultureInfo.InvariantCulture) + "] /Resources << /Font << /F1 3 0 R /F2 4 0 R >>" +
+                                     (Layers.Count > 0 ? " /Properties << " + props.ToString().Trim() + " >>" : "") + " >> /Contents " + (7 + i * 2) + " 0 R >>";
                 string content = p.Content;
                 objects[7 + i * 2] = "<< /Length " + Win1252.GetByteCount(content) + " >>\nstream\n" + content + "endstream";
             }
 
-            write("%PDF-1.4\n%âãÏÓ\n");
+            write((Layers.Count > 0 ? "%PDF-1.5" : "%PDF-1.4") + "\n%âãÏÓ\n"); // layers need 1.5
             for (int i = 1; i <= n; i++)
             {
                 offsets.Add(ms.Position);

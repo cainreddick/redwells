@@ -336,7 +336,67 @@ namespace LaserDxf.Tests
             string all = string.Join(" | ", key.ToArray());
             TestMain.Check(all.Contains("R6  x3  -  6 mm reamed dowel hole") && all.Contains("M8  x2") && all.Contains("CS  x1  -  countersunk"), all);
             TestMain.Check(all.Contains("laser cut Ø5.8"), "cut diameter in the key");
-            TestMain.Check(r.PdfFileName == "S180-06068-47009-1.pdf" && r.PdfBytes != null && r.PdfBytes.Length > 1000, "PDF made alongside the DXF");
+            TestMain.Check(r.PdfFileName == "S180-06068-47009-1 instruction.pdf" && r.PdfBytes != null && r.PdfBytes.Length > 1000, "PDF sheet made alongside the DXF: " + r.PdfFileName);
+            TestMain.Check(r.CutPdfFileName == "S180-06068-47009-1.pdf" && !r.WriteCutPdf, "1:1 PDF named like the DXF, off unless asked: " + r.CutPdfFileName);
+
+            // An old config with the sheet named like the 1:1 PDF: the sheet gets " instruction".
+            var old = new LaserConfig { PdfFileNameFormat = "{ID}-{REV}.pdf" };
+            ExportRun r2 = ExportPipeline.Prepare(s.M, s.TopFace, old, old.ToAnalysisOptions(), "t");
+            TestMain.Check(r2.PdfFileName == "S180-06068-47009-1 instruction.pdf" && r2.CutPdfFileName == "S180-06068-47009-1.pdf", "names kept apart: " + r2.PdfFileName);
+        }
+
+        public static void TestPdfArcAndLayers()
+        {
+            var doc = new PdfDocument();
+            var p = new PdfPage(100, 100);
+            doc.Layers.Add("CUT");
+            p.BeginLayer(0);
+            p.Arc(new Vec2(50, 50), 10, 0, 90);
+            p.EndLayer();
+            doc.Pages.Add(p);
+            string s = Encoding.GetEncoding(1252).GetString(doc.Save());
+            TestMain.Check(s.StartsWith("%PDF-1.5") && s.Contains("/OCProperties") && s.Contains("/Type /OCG /Name (CUT)") && s.Contains("/OC /OC0 BDC"), "layer written");
+            // Quarter circle from (60,50) to (50,60), one Bezier with k = 0.5523 r.
+            TestMain.Check(s.Contains("60 50 m\n60 55.5228 55.5228 60 50 60 c\nS"), "quarter arc Bezier");
+        }
+
+        public static void TestCutPdf()
+        {
+            var samples = new List<object>();
+            Synth irr = Synth.Irregular();
+            irr.M.Attributes = IdentityTests.Attrs();
+            var c = new LaserConfig();
+            ExportRun big = ExportPipeline.Prepare(irr.M, irr.TopFace, c, c.ToAnalysisOptions(), "t");
+            samples.Add(WriteCut("cut_irregular.pdf", big));
+
+            var small = new Synth(6);
+            small.Rectangle(120, 60);
+            small.SimpleHole(20, 30, 5.8);
+            small.SimpleHole(40, 30, 5.5);
+            small.SimpleHole(100, 30, 9);
+            small.M.Attributes = IdentityTests.Attrs();
+            ExportRun sm = ExportPipeline.Prepare(small.M, small.TopFace, c, c.ToAnalysisOptions(), "t");
+            samples.Add(WriteCut("cut_small.pdf", sm));
+
+            Synth irrText = Synth.Irregular();
+            irrText.M.Attributes = IdentityTests.Attrs();
+            var tc = new LaserConfig { TextMode = TextMode.Text, CutPdfLayers = false };
+            ExportRun txt = ExportPipeline.Prepare(irrText.M, irrText.TopFace, tc, tc.ToAnalysisOptions(), "t");
+            samples.Add(WriteCut("cut_irregular_TEXT.pdf", txt));
+
+            string content = Encoding.GetEncoding(1252).GetString(CutPdf.Build(sm).Save());
+            TestMain.Check(content.Contains("/Name (CUT)") && content.Contains("/Name (ETCH)"), "CUT and ETCH layers");
+            TestMain.Check(content.Contains("0 0 0 RG 0.1 w") && content.Contains("0 0 1 RG 0.1 w"), "cut black, etch blue, 0.1 mm lines");
+            TestMain.Check(!content.Contains(" Tj "), "no PDF text on the 1:1 sheet - everything is vectors");
+            File.WriteAllText(Path.Combine(TestMain.OutDir, "cut_pdf_samples.json"), Json.Write(samples));
+        }
+
+        static JObj WriteCut(string file, ExportRun r)
+        {
+            File.WriteAllBytes(Path.Combine(TestMain.OutDir, file), CutPdf.Build(r).Save());
+            Bounds2 b = r.Profile.Doc.Extents();
+            return new JObj().Add("file", file).Add("width", b.Width).Add("height", b.Height)
+                .Add("margin", r.Config.CutPdfMargin).Add("layers", r.Config.CutPdfLayers);
         }
 
         public static void TestWritePdfSamples()

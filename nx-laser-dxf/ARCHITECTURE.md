@@ -234,6 +234,12 @@ parts.
 7. Batch export (`LaserDxfBatch.cs`): `NxPlate.SelectMany` (one plate per component part),
    `PlateJobs` (prepare / write, shared with the single-plate journal), `Batch` (thickness rule,
    CSV, report; pure and unit-tested), preview in batch mode (Export / Skip / Cancel batch).
+7a. 1:1 PDF of the DXF (`CutPdf`, "Export DXF + PDF" button): the finished `DxfDocument` drawn
+   with our own small PDF writer at true scale (mm), with one PDF layer (optional content
+   group) per DXF layer. Arcs are cubic Beziers, so curves stay curves when imported into
+   CAM software. It is built from the same entities as the DXF, so the two can't disagree.
+   It was added for laser shops that can't open the DXF. Validated by rendering at
+   10 px/mm and checking that the drawing lands where 1:1 puts it.
 8. *Planned*: NX drawing-sheet route. One journal lays the profile and text out on a drawing
    sheet for editing with NX drafting tools, and a second exports that sheet with our DXF
    writer.

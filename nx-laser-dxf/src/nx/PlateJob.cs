@@ -46,13 +46,20 @@ namespace LaserDxf.Nx
         /// <summary>Output files of the job that already exist in the folder.</summary>
         public static List<string> Existing(PlateJob job, string folder)
         {
+            return Existing(job, folder, job.Run.WriteCutPdf);
+        }
+
+        /// <param name="cutPdf">Include the 1:1 PDF (batch asks before the preview, so it can't know yet).</param>
+        public static List<string> Existing(PlateJob job, string folder, bool cutPdf)
+        {
             var l = new List<string>();
             if (File.Exists(Path.Combine(folder, job.Run.FileName))) l.Add(job.Run.FileName);
+            if (cutPdf && File.Exists(Path.Combine(folder, job.Run.CutPdfFileName))) l.Add(job.Run.CutPdfFileName);
             if (job.Run.PdfBytes != null && File.Exists(Path.Combine(folder, job.Run.PdfFileName))) l.Add(job.Run.PdfFileName);
             return l;
         }
 
-        /// <summary>Writes the DXF (and the PDF sheet if the run has one) to folder, and the debug body
+        /// <summary>Writes the DXF (plus the 1:1 PDF if run.WriteCutPdf, and the PDF sheet if the run has one) to folder, and the debug body
         /// model under supportFolder\_debug. write = false records that overwriting was declined.</summary>
         public static void Write(PlateJob job, LaserConfig cfg, string folder, bool write)
         {
@@ -78,6 +85,26 @@ namespace LaserDxf.Nx
                 }
             }
             else run.Outcome = "NOT written - overwrite declined";
+
+            if (run.WriteCutPdf)
+            {
+                string cutPath = Path.Combine(folder, run.CutPdfFileName);
+                run.CutPdfPath = cutPath;
+                if (!write) run.CutPdfOutcome = "NOT written - overwrite declined";
+                else
+                {
+                    try
+                    {
+                        File.WriteAllBytes(cutPath, CutPdf.Build(run).Save());
+                        run.CutPdfOutcome = "written";
+                    }
+                    catch (Exception cex)
+                    {
+                        run.CutPdfOutcome = "NOT written";
+                        run.Warnings.Add("Could not write the PDF " + cutPath + ": " + cex.Message + " (is it open in a PDF viewer?)");
+                    }
+                }
+            }
 
             if (run.PdfBytes != null)
             {

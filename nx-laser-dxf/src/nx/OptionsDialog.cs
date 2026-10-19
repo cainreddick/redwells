@@ -10,8 +10,9 @@ namespace LaserDxf.Nx
 
     public static class OptionsDialog
     {
-        /// <summary>Shows the dialog and applies the choices to cfg. Returns false if cancelled.</summary>
-        public static bool Show(LaserConfig cfg, string partLabel)
+        /// <summary>Shows the dialog and applies the choices to cfg. Returns false if cancelled.
+        /// batch hides the instruction-sheet option (the batch journal writes none).</summary>
+        public static bool Show(LaserConfig cfg, string partLabel, bool batch = false)
         {
             using (var f = new Form())
             {
@@ -62,9 +63,16 @@ namespace LaserDxf.Nx
                 var preview = new CheckBox { Text = "Preview and adjust the text before writing the DXF", Left = 14, Top = y, Width = 416, Checked = cfg.ShowPreview };
                 f.Controls.Add(preview);
                 y += 26;
+                var cutPdf = new CheckBox { Text = "Also write the DXF as a 1:1 PDF (default button in the preview)", Left = 14, Top = y, Width = 416, Checked = cfg.WriteCutPdf };
+                f.Controls.Add(cutPdf);
+                y += 26;
                 var pdf = new CheckBox { Text = "Also write the PDF instruction sheet for the laser shop", Left = 14, Top = y, Width = 416, Checked = cfg.WritePdf };
-                f.Controls.Add(pdf);
-                y += 32;
+                if (!batch)
+                {
+                    f.Controls.Add(pdf);
+                    y += 26;
+                }
+                y += 6;
 
                 var ok = new Button { Text = "Continue", Left = 250, Top = y, Width = 85, Height = 28, DialogResult = DialogResult.OK };
                 var cancel = new Button { Text = "Cancel", Left = 341, Top = y, Width = 85, Height = 28, DialogResult = DialogResult.Cancel };
@@ -82,7 +90,8 @@ namespace LaserDxf.Nx
                 cfg.DxfVersion = version.SelectedIndex == 1 ? DxfVersion.R12 : DxfVersion.R2000;
                 if (folder.Text.Trim().Length > 0) cfg.OutputFolder = folder.Text.Trim();
                 cfg.ShowPreview = preview.Checked;
-                cfg.WritePdf = pdf.Checked;
+                cfg.WriteCutPdf = cutPdf.Checked;
+                if (!batch) cfg.WritePdf = pdf.Checked;
                 return true;
             }
         }

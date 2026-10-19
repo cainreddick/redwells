@@ -3,6 +3,7 @@ namespace LaserDxf.Core
 {
     using System;
     using System.Collections.Generic;
+    using System.IO;
 
     public static class ExportPipeline
     {
@@ -42,11 +43,17 @@ namespace LaserDxf.Core
             if (run.Etch != null) run.Etch.IsEtch = true;
 
             run.FileName = FileNameFor(run.Identity, c, run.Warnings);
+            run.WriteCutPdf = c.WriteCutPdf;
+            run.CutPdfFileName = PdfName(c.CutPdfFileNameFormat, run, Path.GetFileNameWithoutExtension(run.FileName));
             if (c.WritePdf)
             {
-                string pdf = Identity.SafeFileName(Identity.Format(c.PdfFileNameFormat, run.Identity.Tokens(), run.Warnings));
-                if (!pdf.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase)) pdf += ".pdf";
-                run.PdfFileName = pdf;
+                run.PdfFileName = PdfName(c.PdfFileNameFormat, run, "instruction");
+                if (run.PdfFileName.Equals(run.CutPdfFileName, StringComparison.OrdinalIgnoreCase))
+                {
+                    // Same name as the 1:1 PDF: keep the two apart.
+                    run.PdfFileName = Path.GetFileNameWithoutExtension(run.PdfFileName) + " instruction.pdf";
+                    run.Notes.Add("pdf.fileNameFormat gives the same name as cutPdf.fileNameFormat - instruction sheet named " + run.PdfFileName);
+                }
             }
             Finish(run);
             return run;
@@ -63,6 +70,14 @@ namespace LaserDxf.Core
             if (run.Etch != null && !run.Etch.Deleted) Annotator.Emit(doc, run.Etch, run.Config);
             run.DxfText = DxfWriter.Write(doc, run.Config.DxfVersion);
             run.PdfBytes = run.Config.WritePdf ? LaserSheet.Build(run).Save() : null;
+        }
+
+        static string PdfName(string format, ExportRun run, string fallback)
+        {
+            string pdf = Identity.SafeFileName(Identity.Format(format, run.Identity.Tokens(), run.Warnings));
+            if (pdf.Length == 0 || pdf.Equals(".pdf", StringComparison.OrdinalIgnoreCase)) pdf = fallback;
+            if (!pdf.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase)) pdf += ".pdf";
+            return pdf;
         }
 
         public static string FileNameFor(PartIdentity id, LaserConfig c, List<string> warnings)

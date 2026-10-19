@@ -25,6 +25,11 @@ namespace LaserDxf.Core
         public string FileName = "";
         public string Date = DateTime.Now.ToString("dd/MM/yyyy");
         public string PdfFileName = "";
+        /// <summary>The DXF as a 1:1 PDF: wanted when WriteCutPdf is set (preview button or config).</summary>
+        public bool WriteCutPdf;
+        public string CutPdfFileName = "";
+        public string CutPdfPath = "";
+        public string CutPdfOutcome = "";
         public byte[] PdfBytes;
         public string PdfPath = "";
         public string PdfOutcome = "";
@@ -118,6 +123,7 @@ namespace LaserDxf.Core
                       r.Config.EtchLayer.Name + " (colour " + r.Config.EtchLayer.Color + ")");
             if (r.EditSummary.Length > 0) L.Add("Hand edits   : " + r.EditSummary);
             L.Add("Output       : " + (r.OutputPath.Length > 0 ? r.OutputPath : "-") + (r.Outcome.Length > 0 ? "   [" + r.Outcome + "]" : ""));
+            if (r.CutPdfPath.Length > 0) L.Add("PDF (1:1)    : " + r.CutPdfPath + "   [" + r.CutPdfOutcome + "]");
             if (r.PdfPath.Length > 0) L.Add("PDF sheet    : " + r.PdfPath + "   [" + r.PdfOutcome + "]");
             if (r.Warnings.Count > 0)
             {

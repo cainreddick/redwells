@@ -127,13 +127,22 @@ namespace LaserDxf.Tests
                     After(800, delegate
                     {
                         Shot("preview_multi_resized.png");
+                        bool both = false;
+                        foreach (Control bar in preview.Controls)
+                            foreach (Control b in bar.Controls)
+                                if (b is Button && b.Text == "Export DXF + PDF") both = true;
+                        Console.WriteLine("Export DXF + PDF button: " + both);
+                        smokeOk &= both;
+                        // As if "Export DXF + PDF" was pressed (TryExport(true) could stop on a warning box).
+                        preview.GetType().GetProperty("WithPdf").SetValue(preview, true, null);
                         preview.DialogResult = DialogResult.OK;
                     });
                 });
             });
-            bool ok = PreviewWindow.Show(ed, "S180-06068-47009-1  (S180-06068-47009-1.dxf)");
+            PreviewResult pr = PreviewWindow.Show(ed, "S180-06068-47009-1  (S180-06068-47009-1.dxf)", false);
+            bool ok = pr == PreviewResult.ExportWithPdf;
             ed.Apply();
-            Console.WriteLine("preview returned " + ok + "; " + run.EditSummary + "; target labelled: " + (target.Label == "R6"));
+            Console.WriteLine("preview returned " + pr + "; " + run.EditSummary + "; target labelled: " + (target.Label == "R6"));
 
             // Batch preview: title shows the plate number; "Skip plate" returns Skip.
             Synth s2 = Synth.Irregular();
@@ -149,7 +158,7 @@ namespace LaserDxf.Tests
                 bp.GetType().GetMethod("TrySkip", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(bp, null);
             });
             int qty = 4;
-            PreviewResult br = PreviewWindow.ShowBatch(new LayoutEditor(run2), "S180-06068-47009  (S180-06068-47009-1.dxf)", 2, 5, ref qty);
+            PreviewResult br = PreviewWindow.ShowBatch(new LayoutEditor(run2), "S180-06068-47009  (S180-06068-47009-1.dxf)", 2, 5, true, ref qty);
             Console.WriteLine("batch preview returned " + br + ", qty " + qty);
             smokeOk &= br == PreviewResult.Skip && qty == 3;
 

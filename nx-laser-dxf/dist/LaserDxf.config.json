@@ -66,9 +66,19 @@
   },
 
   // PDF instruction sheet written next to each DXF, to send to the laser shop.
+  // The DXF as a PDF at 1:1 (the "Export DXF + PDF" button in the preview), for laser shops that
+  // can't open the DXF. Same geometry, cut black, etch blue, PDF layers CUT / ETCH, nothing else on the page.
+  "cutPdf": {
+    "default": false,                 // true = write it even without the preview, and make it the preview's default button
+    "fileNameFormat": "{ID}-{REV}.pdf",
+    "lineWidth": 0.1,                 // mm
+    "margin": 10,                     // mm of blank page around the plate
+    "layers": true                    // PDF layers named like the DXF layers
+  },
+  // PDF instruction sheet (single plate journal only)
   "pdf": {
     "enabled": true,
-    "fileNameFormat": "{ID}-{REV}.pdf",
+    "fileNameFormat": "{ID}-{REV} instruction.pdf",
     "sheet": "Auto",                  // "Auto" (A4, or A3 when it shows the plate larger), "A4" or "A3"
     "company": "",                    // shown in the title block
     "title": "LASER CUTTING INSTRUCTION",

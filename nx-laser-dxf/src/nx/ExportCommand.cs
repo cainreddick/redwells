@@ -8,7 +8,7 @@ namespace LaserDxf.Nx
 
     public static class ExportCommand
     {
-        public const string Version = "0.6";
+        public const string Version = "0.7";
 
         public static void Run()
         {
@@ -49,11 +49,13 @@ namespace LaserDxf.Nx
             if (cfg.ShowPreview)
             {
                 var editor = new LayoutEditor(run);
-                if (!PreviewWindow.Show(editor, run.Identity.Id + "  (" + run.FileName + ")"))
+                PreviewResult r = PreviewWindow.Show(editor, run.Identity.Id + "  (" + run.FileName + ")", cfg.WriteCutPdf);
+                if (r == PreviewResult.Cancel)
                 {
                     lw.WriteLine("Laser DXF: cancelled in the preview - nothing written.");
                     return;
                 }
+                run.WriteCutPdf = r == PreviewResult.ExportWithPdf;
                 editor.Apply();
             }
 

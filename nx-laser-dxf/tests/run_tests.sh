@@ -33,6 +33,7 @@ mkdir -p samples
 cp build/test-output/testplate_R2000.dxf build/test-output/irregular_R2000.dxf build/test-output/irregular_R12.dxf samples/
 cp build/test-output/irregular_TEXT_R2000.dxf samples/
 cp build/test-output/sheet_irregular.pdf build/test-output/sheet_small.pdf samples/
+cp build/test-output/cut_irregular.pdf build/test-output/cut_small.pdf samples/
 
 # 6) UI smoke test (preview window + options dialog) when an X server can be faked.
 if command -v xvfb-run >/dev/null 2>&1; then
