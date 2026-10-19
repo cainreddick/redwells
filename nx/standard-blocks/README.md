@@ -81,10 +81,10 @@ Hole table (`holeTypes` in the config):
 |---|---|---|---|
 | 1 | `SB_Inspect.cs`: select blocks and list their tool bodies, hole types and axes | No | Done |
 | 2 | `SB_Detect.cs`: find the target plates, print the per-plate summary, highlight them | No | Done |
-| 3 | `SB_Detect.cs` also checks that the plates and top assembly are writable | No | Writable case confirmed; read-only case still to test |
+| 3 | `SB_Detect.cs` also checks that the plates and top assembly are writable | No | Writable case confirmed; read-only case not yet tested |
 | 4 | `SB_AddHoles.cs`: WAVE link and subtract; moving the block updates the holes | **Yes** | Done: holes cut and follow the block |
 | 5 | Several plates and blocks in one run, one confirmation with plate-by-plate fallback, `SB_AddHolesManual.cs` | **Yes** | Done |
-| 6 | `SB_Sync.cs` and `SB_SyncDryRun.cs` | **Yes** (`SB_Sync` only) | **Ready to test** |
+| 6 | `SB_Sync.cs` and `SB_SyncDryRun.cs` | **Yes** (`SB_Sync` only) | Done: deleted block's holes removed, moved block warned |
 
 Step 1 confirmed in NX: NX reports tool body geometry in assembly
 coordinates, so detection works directly on the assembly occurrences.
