@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Compiles the full journal (NX half included) and the launchers against
+       NxOpenStubs.cs, with C# 5 syntax enforced. Building is the test; nothing runs. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <LangVersion>5</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="NxOpenStubs.cs" />
+    <Compile Include="../../StandardBlocks.cs" />
+    <Compile Include="../../SB_*.cs" />
+  </ItemGroup>
+</Project>

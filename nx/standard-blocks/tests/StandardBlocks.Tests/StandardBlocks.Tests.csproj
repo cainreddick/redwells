@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Unit tests for the journal's pure logic. No NuGet packages: a tiny
+       runner (TestRunner.cs) so this works offline. Run with:
+       dotnet run -\-project tests/StandardBlocks.Tests -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Core/StandardBlocks.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="../../StandardBlocks.config.json" Link="StandardBlocks.config.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+</Project>

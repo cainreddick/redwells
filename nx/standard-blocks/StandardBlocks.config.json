@@ -1,0 +1,46 @@
+{
+  "_comment": "Settings for StandardBlocks.cs. Keys starting with _ are comments. In paths, use / or \\\\ (a single backslash is not valid JSON).",
+
+  "holeTypes": [
+    { "type": "R6",     "diameter": 5.8, "purpose": "6 mm reamed dowel hole (cut at 5.8, reamed after)" },
+    { "type": "M8",     "diameter": 5.5, "purpose": "M8 threaded hole (laser pilot 5.5, drilled and tapped after)" },
+    { "type": "CLR8.2", "diameter": 8.2, "purpose": "8.2 mm clearance hole" }
+  ],
+
+  "tolerances": {
+    "_comment": "mm, except angleDegrees",
+    "diameter": 0.01,
+    "distance": 0.01,
+    "angleDegrees": 0.5,
+    "boundingBox": 1.0
+  },
+
+  "plates": {
+    "maxThickness": 6.0
+  },
+
+  "toolBodies": {
+    "layer": 250,
+    "referenceSet": "SB_TOOLS",
+    "modelReferenceSet": "MODEL",
+    "insideDepth": 5.0,
+    "projection": 10.0
+  },
+
+  "attributes": {
+    "block": "SB_BLOCK",
+    "blockValue": "true",
+    "holeType": "SB_HOLE_TYPE",
+    "partNumber": "DB_PART_NO",
+    "partRevision": "DB_PART_REV"
+  },
+
+  "features": {
+    "prefix": "SB_"
+  },
+
+  "log": {
+    "_comment": "Absolute, or relative to this file's folder. Empty string = no log file.",
+    "folder": "logs"
+  }
+}
