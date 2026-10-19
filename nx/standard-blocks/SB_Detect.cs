@@ -2388,6 +2388,9 @@ public class StandardBlocksJournal
 {
     public const string ConfigFileName = "StandardBlocks.config.json";
 
+    // Printed in the header so a run shows which build it is. Bump on every change.
+    public const string Version = "0.3.1 (step 3: Teamcenter check)";
+
     public static void Main(string[] args)
     {
         string journal = null;
@@ -2410,7 +2413,7 @@ public class StandardBlocksJournal
         string logPath = null;
         try
         {
-            report.Line("=== Standard Blocks ===");
+            report.Line("=== Standard Blocks " + Version + " ===");
             report.Line(StandardBlocks.Core.Text.F("{0:yyyy-MM-dd HH:mm:ss}, user {1}, .NET {2}",
                 DateTime.Now, Environment.UserName, Environment.Version));
 
