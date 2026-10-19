@@ -143,7 +143,7 @@ the two journals pass information.
 
 ### Testing step 6 in NX
 
-1. Copy `StandardBlocks.cs` and all `SB_*.cs` into `C:\nx_settings`. The header should say 0.6.0.
+1. Copy `StandardBlocks.cs` and all `SB_*.cs` into `C:\nx_settings`. The header should say 0.6.1.
 2. Play `SB_SyncDryRun.cs` on the test assembly as it is now. Expect no
    changes, and a status file saying `clean`.
 3. Delete block 2 (the copy) and play `SB_SyncDryRun.cs`. Expect "Would

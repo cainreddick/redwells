@@ -2525,22 +2525,23 @@ namespace StandardBlocks.Nx
         }
 
         // Lists each part's state and returns the problems (empty = all writable).
-        public static List<string> Report(NxContext ctx, Part assembly, IList<Part> plates)
+        // action: what would change the parts, e.g. "adding holes" or "Sync".
+        public static List<string> Report(NxContext ctx, Part assembly, IList<Part> plates, string action)
         {
             Report r = ctx.Report;
             List<PartStatus> parts = new List<PartStatus>();
             parts.Add(Status(ctx.Config, assembly, "top assembly"));
             foreach (Part p in plates) parts.Add(Status(ctx.Config, p, "plate"));
 
-            r.Line("Teamcenter check: parts that adding holes would change");
+            r.Line("Teamcenter check: parts that " + action + " would change");
             r.Indent();
             foreach (PartStatus s in parts) r.Line(Text.F("{0} ({1}): {2}", s.Label, s.Role, s.Describe()));
             r.Outdent();
 
             List<string> problems = WriteCheck.Problems(parts);
             foreach (string p in problems) r.Warn(p + ".");
-            if (problems.Count == 0) r.Line("All writable: adding holes would be allowed.");
-            else r.Line("Adding holes would stop here, before changing anything.");
+            if (problems.Count == 0) r.Line("All writable: " + action + " would be allowed.");
+            else r.Line("Here " + action + " would stop, before changing anything.");
             r.Blank();
             return problems;
         }
@@ -2867,7 +2868,7 @@ namespace StandardBlocks.Nx
 
             DetectionResult det = Detector.Run(ctx, display, blocks, null);
             if (det.Plans.Count == 0) return;
-            NxTeamcenter.Report(ctx, display, det.PlateParts());
+            NxTeamcenter.Report(ctx, display, det.PlateParts(), "adding holes");
             Highlight(ctx, det);
         }
 
@@ -2970,7 +2971,7 @@ namespace StandardBlocks.Nx
             SbAttrs attrs = new SbAttrs(cfg.FeaturePrefix);
             List<PlatePlan> plans = det.Plans;   // holes already made are left out
 
-            List<string> problems = NxTeamcenter.Report(ctx, display, det.PlateParts());
+            List<string> problems = NxTeamcenter.Report(ctx, display, det.PlateParts(), "adding holes");
             if (problems.Count > 0)
             {
                 r.Error("Nothing was changed, because not every part can be changed. Fix the problems above and run it again.");
@@ -3444,8 +3445,7 @@ namespace StandardBlocks.Nx
             List<Part> plates = new List<Part>();
             foreach (int i in toRemove) if (!plates.Contains(groups[i].Plate)) plates.Add(groups[i].Plate);
             foreach (int i in toRebuild) if (!plates.Contains(groups[i].Plate)) plates.Add(groups[i].Plate);
-            r.Blank();
-            List<string> problems = NxTeamcenter.Report(ctx, display, plates);
+            List<string> problems = NxTeamcenter.Report(ctx, display, plates, "Sync");
             if (problems.Count > 0)
             {
                 r.Error("Nothing was changed, because not every part can be changed. Fix the problems above and run Sync again.");
@@ -3455,9 +3455,11 @@ namespace StandardBlocks.Nx
                 return;
             }
 
+            List<string> plan = new List<string>();
+            if (toRemove.Count > 0) plan.Add("remove " + Text.Count(toRemove.Count, "group of holes", "groups of holes") + " left by deleted blocks");
+            if (toRebuild.Count > 0) plan.Add("rebuild " + Text.Count(toRebuild.Count, "group of holes", "groups of holes") + " for replaced blocks");
             int answer = ctx.Ui.NXMessageBox.Show("Standard Blocks", NXMessageBox.DialogType.Question,
-                Text.F("Sync will remove {0} and rebuild {1}.\n\nGo ahead?",
-                    Text.Count(toRemove.Count, "group of holes", "groups of holes"), Text.Count(toRebuild.Count, "group", "groups")));
+                "Sync will " + string.Join(" and ", plan.ToArray()) + ".\n\nGo ahead?");
             if (answer != 1)
             {
                 r.Line("You chose not to: nothing was changed.");
@@ -3639,7 +3641,7 @@ public class StandardBlocksJournal
     public const string ConfigFileName = "StandardBlocks.config.json";
 
     // Printed in the header so a run shows which build it is. Bump on every change.
-    public const string Version = "0.6.0 (step 6: sync)";
+    public const string Version = "0.6.1 (step 6: sync)";
 
     public static void Main(string[] args)
     {
