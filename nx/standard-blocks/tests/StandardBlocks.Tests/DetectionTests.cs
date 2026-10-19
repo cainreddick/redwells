@@ -156,6 +156,16 @@ public static class ExistingHoleTests
         Assert.Equal(2, ExistingHoles.FindCoaxial(tool, faces, 0.01, 0.5));
     }
 
+    public static void SameRadiusOptionIgnoresOtherSizes()
+    {
+        var tool = TestData.VerticalR6(); // dia 5.8
+        var faces = new List<FaceSample> { Cyl(new Vec3(10, 15, -6), new Vec3(0, 0, 1), 4.1) }; // dia 8.2 on the axis
+        Assert.Equal(0, ExistingHoles.FindCoaxial(tool, faces, 0.01, 0.5));
+        Assert.Equal(-1, ExistingHoles.FindCoaxial(tool, faces, 0.01, 0.5, true));
+        faces.Add(Cyl(new Vec3(10, 15, -3), new Vec3(0, 0, -1), 2.9));
+        Assert.Equal(1, ExistingHoles.FindCoaxial(tool, faces, 0.01, 0.5, true), "the dia 5.8 hole");
+    }
+
     public static void IgnoresOffsetOrTiltedHoles()
     {
         var tool = TestData.VerticalR6();

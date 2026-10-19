@@ -67,7 +67,14 @@ these diameters, so keep the two in step:
 - **Final sanity check:** Sync warns about any block that has no holes yet, or any of whose tool bodies has no hole. Run it once the jig is thought complete. The DXF macro should make the same check before exporting; how it does that is decided at step 6, because one source journal cannot call another.
 - The top assembly is normally checked out while working, so block components can carry an instance-ID attribute that Sync uses to find them.
 - Parts are in millimetres and loaded fully.
-- Feature names: `SB_<blockID>_<holeType>_LINK` for each WAVE link and `SB_<blockID>_<holeType>` for each subtract, with `_2`, `_3`… when two copies of one block cut the same plate.
+- Feature names: `SB_<blockID>_<holeType>_LINK` for each WAVE link and `SB_<blockID>_<holeType>` for each subtract, with `_2`, `_3`… when two copies of one block cut the same plate. A dot in a hole type becomes `p` (`CLR8.2` → `CLR8p2`) so it can't be confused with a copy number.
+- **Copied blocks:** copying a block component in NX copies its `SB_INSTANCE_ID`
+  too. When several components share an ID, the one whose tool bodies sit in
+  the holes made under it owns them. The others are treated as new blocks and
+  get their own ID when they cut holes. If more than one copy sits in such
+  holes, those blocks are left alone and you get a warning.
+- **Already done:** a tool body already linked into a plate sits in its own
+  hole, so it is reported as "already done" for that plate. It is never cut twice.
 
 ## Build steps
 
@@ -85,7 +92,7 @@ coordinates, so detection works directly on the assembly occurrences.
 
 ### Testing step 5 in NX (changes the model)
 
-1. Copy `StandardBlocks.cs` and all `SB_*.cs` into `C:\nx_settings`. The header should say 0.5.0.
+1. Copy `StandardBlocks.cs` and all `SB_*.cs` into `C:\nx_settings`. The header should say 0.5.1.
 2. **Several blocks, several plates.** In an assembly with two or more blocks
    that have no holes yet, play `SB_AddHoles.cs` and select all the blocks.
    One question lists every plate, with all of them highlighted:

@@ -337,7 +337,8 @@ public static class FeatureNameTests
     {
         Assert.Equal("SB_001_4032_CAD2072_R6", FeatureNames.Subtract("SB_", "001-4032-CAD2072", "R6", 1));
         Assert.Equal("SB_001_4032_CAD2072_R6_LINK", FeatureNames.Link("SB_", "001-4032-CAD2072", "R6", 1));
-        Assert.Equal("SB_001_4032_CAD2072_CLR8_2", FeatureNames.Subtract("SB_", "001-4032-CAD2072", "CLR8.2", 1));
+        Assert.Equal("SB_001_4032_CAD2072_CLR8p2", FeatureNames.Subtract("SB_", "001-4032-CAD2072", "CLR8.2", 1));
+        Assert.Equal("SB_001_4032_CAD2072_CLR8p2_2_LINK", FeatureNames.Link("SB_", "001-4032-CAD2072", "CLR8.2", 2));
     }
 
     public static void SecondCopyOfABlockGetsASuffix()
@@ -356,7 +357,26 @@ public static class FeatureNameTests
 
     public static void SanitizeKeepsOnlySafeCharacters()
     {
-        Assert.Equal("A_B_C_9", FeatureNames.Sanitize(" A-B.C 9 "));
+        Assert.Equal("A_BpC_9", FeatureNames.Sanitize(" A-B.C 9 "));
         Assert.Equal("_", FeatureNames.Sanitize("Ø"));
+    }
+}
+
+public static class OwnershipTests
+{
+    public static void TheCopySittingInTheHolesOwnsThem()
+    {
+        Assert.Equal(1, Ownership.Decide(new[] { 0, 3 }), "second copy sits in 3 holes");
+        Assert.Equal(0, Ownership.Decide(new[] { 6, 0, 0 }));
+    }
+
+    public static void NoHolesMeansNoOwnerYet()
+    {
+        Assert.Equal(Ownership.NoHoles, Ownership.Decide(new[] { 0, 0 }));
+    }
+
+    public static void TwoCopiesInHolesIsAmbiguous()
+    {
+        Assert.Equal(Ownership.Ambiguous, Ownership.Decide(new[] { 2, 3 }));
     }
 }

@@ -1282,11 +1282,17 @@ namespace StandardBlocks.Core
     public static class FeatureNames
     {
         // Letters, digits and underscores only: "001-4032-CAD2072" -> "001_4032_CAD2072".
+        // A dot becomes "p" ("CLR8.2" -> "CLR8p2") so it can't be mistaken for
+        // the _2 that marks a second copy of a block.
         public static string Sanitize(string s)
         {
             StringBuilder sb = new StringBuilder();
             foreach (char c in (s ?? "").Trim())
-                sb.Append((c < 128 && char.IsLetterOrDigit(c)) || c == '_' ? c : '_');
+            {
+                if ((c < 128 && char.IsLetterOrDigit(c)) || c == '_') sb.Append(c);
+                else if (c == '.') sb.Append('p');
+                else sb.Append('_');
+            }
             return sb.ToString();
         }
 
@@ -1307,6 +1313,28 @@ namespace StandardBlocks.Core
         {
             int i = existingInstances.IndexOf(instance);
             return i >= 0 ? i + 1 : existingInstances.Count + 1;
+        }
+    }
+
+    // Copies of a block component carry its instance ID with them. The copy
+    // that owns the holes made under that ID is the one whose tool bodies sit
+    // in them. matches[i] = how many of copy i's tool bodies sit in an existing
+    // hole of their own size.
+    public static class Ownership
+    {
+        public const int NoHoles = -1;     // no copy sits in a hole: none owns any yet
+        public const int Ambiguous = -2;   // more than one copy sits in holes
+
+        public static int Decide(IList<int> matches)
+        {
+            int owner = NoHoles;
+            for (int i = 0; i < matches.Count; i++)
+            {
+                if (matches[i] <= 0) continue;
+                if (owner != NoHoles) return Ambiguous;
+                owner = i;
+            }
+            return owner;
         }
     }
 
@@ -1355,11 +1383,18 @@ namespace StandardBlocks.Core
         // leave out faces made by our own SB_ features.
         public static int FindCoaxial(ToolCylinder tool, IList<FaceSample> plateFaces, double distTol, double angleTolDeg)
         {
+            return FindCoaxial(tool, plateFaces, distTol, angleTolDeg, false);
+        }
+
+        // sameRadius: only count a hole the same size as the tool body.
+        public static int FindCoaxial(ToolCylinder tool, IList<FaceSample> plateFaces, double distTol, double angleTolDeg, bool sameRadius)
+        {
             Vec3 dir = tool.Direction;
             for (int i = 0; i < plateFaces.Count; i++)
             {
                 FaceSample f = plateFaces[i];
                 if (f.Kind != FaceKind.Cylinder || f.Direction.IsZero) continue;
+                if (sameRadius && Math.Abs(f.Radius - tool.Radius) > distTol + Geo.Eps) continue;
                 if (!Geo.AreParallel(f.Direction, dir, angleTolDeg)) continue;
                 if (Geo.DistanceToLine(f.Point, tool.Start, dir) > distTol + Geo.Eps) continue;
                 return i;
@@ -1750,6 +1785,8 @@ namespace StandardBlocks.Nx
         public string Label;       // "001-4032-CAD2072 rev A"
         public string Path;        // component path in the assembly
         public Aabb BlockBox;      // the block's own solid bodies, block part coordinates
+        public string InstanceId;  // SB_INSTANCE_ID, or null if it has none (or only a copy's)
+        public string Skip;        // set when the block must be left alone this run, with the reason
         public List<ToolInfo> Tools = new List<ToolInfo>();
         public List<string> Problems = new List<string>();
     }
@@ -1809,6 +1846,7 @@ namespace StandardBlocks.Nx
             b.Prototype = proto;
             b.Label = NxNames.PartLabel(cfg, proto);
             b.Path = NxNames.ComponentPath(comp);
+            b.InstanceId = NxAttr.GetString(comp, new SbAttrs(cfg.FeaturePrefix).InstanceId);
 
             if (proto.PartUnits != BasePart.Units.Millimeters)
                 b.Problems.Add("the block part is not in millimetres; all sizes below will be wrong");
@@ -2135,6 +2173,7 @@ namespace StandardBlocks.Nx
         public List<SolidRef> Solids = new List<SolidRef>();
         public Dictionary<Tag, int> PartUses = new Dictionary<Tag, int>();
         public List<string> NotLoaded = new List<string>();
+        public List<Component> BlockComponents = new List<Component>();
 
         public static AssemblyIndex Build(NxContext ctx, Component root)
         {
@@ -2173,7 +2212,8 @@ namespace StandardBlocks.Nx
                 }
                 PartUses[p.Tag] = UsesOf(p) + 1;
 
-                if (!BlockReader.IsBlock(cfg, p))
+                if (BlockReader.IsBlock(cfg, p)) BlockComponents.Add(c);
+                else
                 {
                     foreach (Body b in p.Bodies)
                     {
@@ -2293,6 +2333,103 @@ namespace StandardBlocks.Nx
         }
     }
 
+    // Copying a block component in NX copies its SB_INSTANCE_ID too. This works
+    // out which component really owns the holes made under each shared ID; the
+    // other copies are treated as new blocks (and get their own ID when they
+    // cut holes).
+    public static class InstanceIds
+    {
+        public static void Resolve(NxContext ctx, AssemblyIndex index, List<BlockInfo> selected, DetectionResult det)
+        {
+            Report r = ctx.Report;
+            SbAttrs attrs = new SbAttrs(ctx.Config.FeaturePrefix);
+
+            Dictionary<string, List<Component>> byId = new Dictionary<string, List<Component>>();
+            foreach (Component c in index.BlockComponents)
+            {
+                string id = NxAttr.GetString(c, attrs.InstanceId);
+                if (id == null) continue;
+                if (!byId.ContainsKey(id)) byId[id] = new List<Component>();
+                byId[id].Add(c);
+            }
+
+            Dictionary<string, Component> owners = new Dictionary<string, Component>();
+            foreach (BlockInfo b in selected)
+            {
+                List<Component> sharing;
+                if (b.InstanceId == null || !byId.TryGetValue(b.InstanceId, out sharing) || sharing.Count < 2) continue;
+
+                Component owner;
+                if (!owners.TryGetValue(b.InstanceId, out owner))
+                {
+                    owner = FindOwner(ctx, index, det, attrs, b.InstanceId, sharing, selected);
+                    owners[b.InstanceId] = owner;
+                }
+                if (owner == b.Component) continue;
+                if (owner == null)
+                {
+                    b.Skip = Text.F("{0} other components carry the same {1} and more than one sits in holes made under it, so it can't tell which copy owns them",
+                        sharing.Count - 1, attrs.InstanceId);
+                    continue;
+                }
+                r.Warn(Text.F("{0} ({1}) carries the {2} of another copy of the block, probably because it was copied. It is treated as a new block and gets its own ID when it cuts holes.",
+                    b.Label, b.Path, attrs.InstanceId));
+                b.InstanceId = null;
+            }
+        }
+
+        private static Component FindOwner(NxContext ctx, AssemblyIndex index, DetectionResult det, SbAttrs attrs,
+            string id, List<Component> sharing, List<BlockInfo> selected)
+        {
+            SbConfig cfg = ctx.Config;
+            string prefix = id + "|";
+
+            // Plates holding links made under this ID, with the tool bodies linked.
+            List<SolidRef> plates = new List<SolidRef>();
+            List<List<string>> bodies = new List<List<string>>();
+            foreach (SolidRef s in index.Solids)
+            {
+                List<string> linked = new List<string>();
+                foreach (string key in det.LinkKeys(s.Part, attrs).Keys)
+                    if (key.StartsWith(prefix, StringComparison.Ordinal)) linked.Add(key.Substring(prefix.Length));
+                if (linked.Count == 0) continue;
+                plates.Add(s);
+                bodies.Add(linked);
+            }
+            if (plates.Count == 0) return sharing[0];   // no holes yet: the first copy keeps the ID
+
+            List<int> matches = new List<int>();
+            foreach (Component c in sharing)
+            {
+                BlockInfo info = null;
+                foreach (BlockInfo b in selected) if (b.Component == c) info = b;
+                string reason;
+                if (info == null && !BlockReader.TryRead(ctx, c, out info, out reason)) info = null;
+
+                int count = 0;
+                if (info != null)
+                {
+                    for (int i = 0; i < plates.Count; i++)
+                    {
+                        List<FaceSample> holes = new List<FaceSample>();
+                        foreach (FaceSample f in NxGeom.SampleAll(ctx.Uf, plates[i].Body.GetFaces()))
+                            if (f.Kind == FaceKind.Cylinder) holes.Add(f);
+                        foreach (ToolInfo t in info.Tools)
+                        {
+                            if (t.AssyCyl == null || !bodies[i].Contains(t.ProtoBody.JournalIdentifier)) continue;
+                            if (ExistingHoles.FindCoaxial(t.AssyCyl, holes, cfg.DistanceTolerance, cfg.AngleToleranceDeg, true) >= 0) count++;
+                        }
+                    }
+                }
+                matches.Add(count);
+            }
+
+            int owner = Ownership.Decide(matches);
+            if (owner == Ownership.Ambiguous) return null;
+            return owner == Ownership.NoHoles ? sharing[0] : sharing[owner];
+        }
+    }
+
     // What detection found, for the commands that act on it.
     public sealed class DetectionResult
     {
@@ -2302,6 +2439,25 @@ namespace StandardBlocks.Nx
         public Dictionary<string, PlateInfo> Plates = new Dictionary<string, PlateInfo>();   // by PlateModel.Id
         public Dictionary<ToolEvaluation, ToolInfo> Tools = new Dictionary<ToolEvaluation, ToolInfo>();
         public Dictionary<ToolEvaluation, BlockInfo> Blocks = new Dictionary<ToolEvaluation, BlockInfo>();
+        public Dictionary<ToolEvaluation, bool> Done = new Dictionary<ToolEvaluation, bool>();   // already linked into its plate
+        private readonly Dictionary<Tag, Dictionary<string, bool>> linkKeys = new Dictionary<Tag, Dictionary<string, bool>>();
+
+        // "instance|tool body" for every SB_ link feature in the part.
+        public Dictionary<string, bool> LinkKeys(Part part, SbAttrs attrs)
+        {
+            Dictionary<string, bool> keys;
+            if (linkKeys.TryGetValue(part.Tag, out keys)) return keys;
+            keys = new Dictionary<string, bool>();
+            foreach (NXOpen.Features.Feature f in part.Features)
+            {
+                if (NxAttr.GetString(f, attrs.Role) != "LINK") continue;
+                string instance = NxAttr.GetString(f, attrs.SourceInstance);
+                string body = NxAttr.GetString(f, attrs.SourceBody);
+                if (instance != null && body != null) keys[instance + "|" + body] = true;
+            }
+            linkKeys[part.Tag] = keys;
+            return keys;
+        }
 
         public List<Part> PlateParts()
         {
@@ -2345,6 +2501,8 @@ namespace StandardBlocks.Nx
                     Text.Count(index.NotLoaded.Count, "component is", "components are"), string.Join(", ", index.NotLoaded.ToArray())));
             r.Blank();
 
+            InstanceIds.Resolve(ctx, index, blocks, result);
+
             Dictionary<Tag, PlateInfo> cache = new Dictionary<Tag, PlateInfo>();
             Dictionary<string, PlateInfo> byId = result.Plates;
             List<ToolEvaluation> evals = new List<ToolEvaluation>();
@@ -2354,6 +2512,13 @@ namespace StandardBlocks.Nx
                 BlockInfo b = blocks[bi];
                 r.Line(Text.F("Block {0}: {1}  ({2})", bi + 1, b.Label, b.Path));
                 r.Indent();
+                if (b.Skip != null)
+                {
+                    r.Warn(Text.F("{0} ({1}) is left alone: {2}.", b.Label, b.Path, b.Skip));
+                    r.Outdent();
+                    r.Blank();
+                    continue;
+                }
                 foreach (string p in b.Problems) r.Warn(Text.F("{0}: {1}.", b.Label, p));
 
                 List<ToolInfo> tools = new List<ToolInfo>();
@@ -2403,27 +2568,37 @@ namespace StandardBlocks.Nx
                 {
                     ToolInfo t = tools[ti];
                     Body toolBody = t.OccBody;
+                    // A tool body already linked into a plate sits in its own hole, so it
+                    // no longer overlaps the plate; it still counts as reaching it.
+                    string doneKey = b.InstanceId == null ? null : b.InstanceId + "|" + t.ProtoBody.JournalIdentifier;
                     ToolEvaluation e = new ToolEvaluation();
                     e.BlockLabel = b.Label;
                     e.ToolName = t.Name;
                     e.HoleType = t.Check.Expected.Name;
                     e.Tool = t.AssyCyl;
                     e.Hits = Detection.EvaluateTool(t.AssyCyl, plates,
-                        delegate(PlateModel m) { return PlateReader.Interferes(ctx.Uf, byId[m.Id].Solid.Body, toolBody); }, cfg);
+                        delegate(PlateModel m)
+                        {
+                            PlateInfo pi = byId[m.Id];
+                            if (doneKey != null && result.LinkKeys(pi.Solid.Part, attrs).ContainsKey(doneKey)) return true;
+                            return PlateReader.Interferes(ctx.Uf, pi.Solid.Body, toolBody);
+                        }, cfg);
                     evals.Add(e);
                     result.Tools[e] = t;
                     result.Blocks[e] = b;
 
                     ToolHit sel = e.Selected;
-                    r.Line(Text.F("[{0}] {1}  {2}  ->  {3}", ti + 1, e.HoleType, t.Name, sel != null ? sel.Plate.Label : "no hole"));
+                    bool done = sel != null && doneKey != null && result.LinkKeys(byId[sel.Plate.Id].Solid.Part, attrs).ContainsKey(doneKey);
+                    if (done) result.Done[e] = true;
+                    r.Line(Text.F("[{0}] {1}  {2}  ->  {3}", ti + 1, e.HoleType, t.Name,
+                        sel == null ? "no hole" : sel.Plate.Label + (done ? " (already done)" : "")));
                     r.Indent();
                     foreach (ToolHit h in e.Hits) r.Line(h.Plate.Label + ": " + Planner.Describe(h));
                     string problem = Planner.Problem(e, cfg);
                     if (problem != null) r.Warn(problem + ".");
-                    string instance = NxAttr.GetString(b.Component, attrs.InstanceId);
-                    if (sel != null && instance != null && HoleBuilder.HasFeaturesFrom(byId[sel.Plate.Id].Solid.Part, attrs, instance))
+                    if (done)
                     {
-                        r.Line("Already done: this copy of the block has cut its holes in " + sel.Plate.Label + ".");
+                        r.Line("Already done: this copy of the block has already cut this hole.");
                     }
                     else if (sel != null)
                     {
@@ -2439,7 +2614,11 @@ namespace StandardBlocks.Nx
                 r.Blank();
             }
 
-            result.Plans = Planner.ByPlate(evals);
+            List<ToolEvaluation> todo = new List<ToolEvaluation>();
+            foreach (ToolEvaluation e in evals) if (!result.Done.ContainsKey(e)) todo.Add(e);
+            result.Plans = Planner.ByPlate(todo);
+            if (result.Done.Count > 0)
+                r.Line(Text.F("Already done, left as they are: {0}.", Text.Count(result.Done.Count, "hole", "holes")));
             r.Line("Plates to cut:");
             r.Indent();
             if (result.Plans.Count == 0) r.Line("none");
@@ -2571,32 +2750,12 @@ namespace StandardBlocks.Nx
             DetectionResult det = Detector.Run(ctx, display, blocks, onlyBodies);
             if (det.Plans.Count == 0)
             {
-                r.Line("Nothing to add.");
+                r.Line(det.Done.Count > 0 ? "Nothing to add: every hole is already there." : "Nothing to add.");
                 return;
             }
 
-            // Leave out plates this block copy has already cut.
             SbAttrs attrs = new SbAttrs(cfg.FeaturePrefix);
-            List<PlatePlan> plans = new List<PlatePlan>();
-            foreach (PlatePlan plan in det.Plans)
-            {
-                PlatePlan todo = new PlatePlan();
-                todo.Plate = plan.Plate;
-                Part platePart = det.Plates[plan.Plate.Id].Solid.Part;
-                foreach (ToolEvaluation e in plan.Tools)
-                {
-                    string id = NxAttr.GetString(det.Blocks[e].Component, attrs.InstanceId);
-                    if (id != null && HoleBuilder.HasFeaturesFrom(platePart, attrs, id))
-                        r.Line(Text.F("Skipped: {0} already has holes from this copy of {1}.", plan.Plate.Label, e.BlockLabel));
-                    else todo.Tools.Add(e);
-                }
-                if (todo.Tools.Count > 0) plans.Add(todo);
-            }
-            if (plans.Count == 0)
-            {
-                r.Line("Nothing to add: every plate already has its holes.");
-                return;
-            }
+            List<PlatePlan> plans = det.Plans;   // holes already made are left out
 
             List<string> problems = NxTeamcenter.Report(ctx, display, det.PlateParts());
             if (problems.Count > 0)
@@ -2727,12 +2886,15 @@ namespace StandardBlocks.Nx
         }
 
         // Gives the block component a permanent ID so Sync can find its holes.
+        // Replaces an ID copied from another block component.
         private static void EnsureInstanceId(BlockInfo b, SbAttrs attrs)
         {
-            if (NxAttr.GetString(b.Component, attrs.InstanceId) != null) return;
+            if (b.InstanceId != null) return;
+            string id = Guid.NewGuid().ToString("N");
             try
             {
-                b.Component.SetUserAttribute(attrs.InstanceId, -1, Guid.NewGuid().ToString("N"), Update.Option.Now);
+                b.Component.SetUserAttribute(attrs.InstanceId, -1, id, Update.Option.Now);
+                b.InstanceId = id;
             }
             catch (NXException ex)
             {
@@ -2744,15 +2906,6 @@ namespace StandardBlocks.Nx
 
     public static class HoleBuilder
     {
-        public static bool HasFeaturesFrom(Part plate, SbAttrs attrs, string instanceId)
-        {
-            foreach (NXOpen.Features.Feature f in plate.Features)
-            {
-                if (NxAttr.GetString(f, attrs.SourceInstance) == instanceId) return true;
-            }
-            return false;
-        }
-
         // Assemblies other than this one whose blocks have holes in this plate.
         public static List<string> OtherAssemblies(Part plate, SbAttrs attrs, string thisAssembly)
         {
@@ -2807,7 +2960,7 @@ namespace StandardBlocks.Nx
             Dictionary<string, List<ToolEvaluation>> groups = new Dictionary<string, List<ToolEvaluation>>();
             foreach (ToolEvaluation e in plan.Tools)
             {
-                string key = NxAttr.GetString(det.Blocks[e].Component, attrs.InstanceId) + "|" + e.HoleType;
+                string key = det.Blocks[e].InstanceId + "|" + e.HoleType;
                 if (!groups.ContainsKey(key))
                 {
                     keys.Add(key);
@@ -2822,7 +2975,7 @@ namespace StandardBlocks.Nx
                 BlockInfo block = det.Blocks[group[0]];
                 string blockPart = NxAttr.GetString(block.Prototype, cfg.PartNumberAttribute) ?? block.Prototype.Leaf;
                 string blockRev = NxAttr.GetString(block.Prototype, cfg.PartRevisionAttribute) ?? "";
-                string instance = NxAttr.GetString(block.Component, attrs.InstanceId);
+                string instance = block.InstanceId;
                 string holeType = group[0].HoleType;
                 string groupId = Guid.NewGuid().ToString("N");
 
@@ -2946,7 +3099,7 @@ public class StandardBlocksJournal
     public const string ConfigFileName = "StandardBlocks.config.json";
 
     // Printed in the header so a run shows which build it is. Bump on every change.
-    public const string Version = "0.5.0 (step 5: several plates and blocks)";
+    public const string Version = "0.5.1 (step 5: several plates and blocks)";
 
     public static void Main(string[] args)
     {
