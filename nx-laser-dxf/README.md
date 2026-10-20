@@ -84,8 +84,23 @@ The design is described in [ARCHITECTURE.md](ARCHITECTURE.md).
      not omit any etching". The notes are editable in `pdf.notes`
    - a hole key built from the labels actually on the plate, e.g. `R6 x12 - 6 mm reamed dowel
      hole - ream after cutting (laser cut Ø5.8)`, using each label table row's `description`
-   - a title block: company, description, part number, revision, material, thickness, a
-     blank QTY box, scale, sheet size, drawn by, date and the DXF file name
+   - **overall X and Y reference dimensions** in brackets, e.g. `(805)` and `(759.6)`, below
+     and left of the plate (`pdf.referenceDimensions`)
+   - the **company drawing border**, redrawn to match the Polar A4 border:
+     - 50 mm zones (1-6 / A-D on A4, 1-8 / A-F on A3) and centring marks
+     - the red "PRINTED COPIES ARE UNCONTROLLED" banner
+     - the revision row and the REVISION triangle
+     - the title block: projection, general tolerances, legal owner with logo and address,
+       surface and heat treatment, description, material and thickness, part number, size,
+       scale, sheet, date, approver, and an **estimated mass** (net area × thickness ×
+       density; aluminium is recognised from the material name)
+
+     All the wording is in the `pdf` section of the config.
+
+   **Logo:** save the company logo as a PNG or JPEG called `Polar logo.png` next to the
+   journal and config, or set `pdf.logo` to its path. Until then the sheet prints "POLAR
+   TECHNOLOGY" in its place, and the listing says where it looked. A PNG with a transparent
+   background works best.
 
    If the DXF or a PDF already exists you're asked once, for all the files. If the PDF is open in a
    viewer it can't be overwritten; that's reported as a warning.

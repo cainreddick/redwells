@@ -41,6 +41,13 @@ namespace LaserDxf.Tests
                 var attr = v as AttrRef;
                 var table = v as List<LabelRule>;
                 var strings = v as List<string>;
+                var dens = v as List<KeyValuePair<string, double>>;
+                if (dens != null)
+                {
+                    var parts = new List<string>();
+                    foreach (var kv in dens) parts.Add(kv.Key + "=" + Fmt.N(kv.Value));
+                    v = string.Join(";", parts.ToArray());
+                }
                 if (layer != null) v = layer.Name + "/" + layer.Color;
                 else if (attr != null) v = attr + string.Join(",", attr.IgnoreValues.ToArray());
                 else if (table != null)
@@ -345,6 +352,65 @@ namespace LaserDxf.Tests
             TestMain.Check(r2.PdfFileName == "S180-06068-47009-1 instruction.pdf" && r2.CutPdfFileName == "S180-06068-47009-1.pdf", "names kept apart: " + r2.PdfFileName);
         }
 
+        static readonly string Images = Path.Combine(Path.Combine("tests", "fixtures"), "images");
+
+        public static void TestPngDecoderMatchesPil()
+        {
+            foreach (string name in new[] { "rgba8", "rgb8", "grey8", "greyalpha8", "palette8", "palette4", "palettealpha", "mono1", "grey16" })
+            {
+                byte[] want = File.ReadAllBytes(Path.Combine(Images, name + ".rgba"));
+                int w, h, ch;
+                byte[] colour, alpha;
+                PdfImage.DecodePng(File.ReadAllBytes(Path.Combine(Images, name + ".png")), out w, out h, out ch, out colour, out alpha);
+                int bad = 0;
+                for (int i = 0; i < w * h; i++)
+                {
+                    for (int k = 0; k < 3; k++)
+                        if (colour[i * ch + (ch == 1 ? 0 : k)] != want[i * 4 + k]) bad++;
+                    if ((alpha == null ? 255 : alpha[i]) != want[i * 4 + 3]) bad++;
+                }
+                TestMain.Check(w == 13 && h == 7 && bad == 0, name + ".png decodes like PIL (" + bad + " samples differ)");
+            }
+            PdfImage logo = PdfImage.Load(File.ReadAllBytes(Path.Combine(Images, "test_logo.png")));
+            TestMain.Check(logo.Width == 600 && logo.Height == 140 && logo.Alpha != null && logo.ColorSpace == "/DeviceRGB", "RGBA logo: RGB + soft mask");
+            PdfImage jpg = PdfImage.Load(File.ReadAllBytes(Path.Combine(Images, "test_logo.jpg")));
+            TestMain.Check(jpg.Width == 600 && jpg.Height == 140 && jpg.Filter == "/DCTDecode" && jpg.Alpha == null, "JPEG passed through");
+            bool threw = false;
+            try { PdfImage.Load(Encoding.ASCII.GetBytes("GIF89a....")); }
+            catch (FormatException) { threw = true; }
+            TestMain.Check(threw, "other formats refused with a FormatException");
+        }
+
+        public static void TestSheetBorderAndDimensions()
+        {
+            Synth irr = Synth.Irregular();
+            irr.M.Attributes = IdentityTests.Attrs();
+            var c = new LaserConfig { Logo = Path.GetFullPath(Path.Combine(Images, "test_logo.png")) };
+            ExportRun r = ExportPipeline.Prepare(irr.M, irr.TopFace, c, c.ToAnalysisOptions(), "t");
+            string s = Encoding.GetEncoding(1252).GetString(r.PdfBytes);
+            TestMain.Check(s.Contains("/Subtype /Image") && s.Contains("/SMask") && s.Contains("/Im0 Do"), "logo embedded");
+            TestMain.Check(s.Contains("(PRINTED COPIES ARE UNCONTROLLED)") && s.Contains("(REVISION)") && s.Contains("(PART NUMBER:)"), "company border");
+            Bounds2 b = LaserSheet.PlateBounds(r);
+            TestMain.Check(s.Contains("(" + Fmt.N(b.Width, 1) + "\\)") || s.Contains("(\\(" + Fmt.N(b.Width, 1) + "\\))"), "X reference dimension (" + Fmt.N(b.Width, 1) + ")");
+            TestMain.Check(s.Contains("0 1 -1 0 ") && s.Contains("(\\(" + Fmt.N(b.Height, 1) + "\\))"), "Y reference dimension, turned 90 degrees");
+            foreach (string w in r.Warnings) TestMain.Check(!w.Contains("logo"), "no logo warning when the file is there: " + w);
+
+            // Mass: net area x thickness x density.
+            double kg = LaserSheet.EstimatedMass(r);
+            TestMain.Near(kg, r.Analysis.NetArea * r.Analysis.Thickness * 7.85 / 1e6, 1e-9, "steel by default");
+            r.Identity.Material = "ALUMINIUM 6082-T6";
+            TestMain.Near(LaserSheet.EstimatedMass(r), kg * 2.70 / 7.85, 1e-9, "aluminium picked from the material name");
+
+            // No logo file: company name instead, and one warning saying where it looked.
+            var c2 = new LaserConfig { Logo = Path.GetFullPath(Path.Combine(Images, "missing.png")) };
+            ExportRun r2 = ExportPipeline.Prepare(irr.M, irr.TopFace, c2, c2.ToAnalysisOptions(), "t");
+            ExportPipeline.Finish(r2);
+            int n = 0;
+            foreach (string w in r2.Warnings) if (w.Contains("missing.png not found")) n++;
+            string s2 = Encoding.GetEncoding(1252).GetString(r2.PdfBytes);
+            TestMain.Check(n == 1 && s2.Contains("(POLAR TECHNOLOGY)") && !s2.Contains("/Subtype /Image"), "missing logo: name printed, warned once (" + n + ")");
+        }
+
         public static void TestPdfArcAndLayers()
         {
             var doc = new PdfDocument();
@@ -405,7 +471,7 @@ namespace LaserDxf.Tests
             // Large irregular plate (A3), a small plate (A4, 1:1) and one with hand edits.
             Synth irr = Synth.Irregular();
             irr.M.Attributes = IdentityTests.Attrs();
-            var c = new LaserConfig { Company = "POLAR" };
+            var c = new LaserConfig { Logo = Path.GetFullPath(Path.Combine(Images, "test_logo.png")) };
             ExportRun big = ExportPipeline.Prepare(irr.M, irr.TopFace, c, c.ToAnalysisOptions(), "t");
             samples.Add(Write("sheet_irregular.pdf", big, "A3"));
 
@@ -432,7 +498,9 @@ namespace LaserDxf.Tests
             File.WriteAllBytes(Path.Combine(TestMain.OutDir, file), r.PdfBytes);
             var labels = new List<object>();
             foreach (var t in r.Labels) if (!t.Deleted) labels.Add(t.Text);
+            Bounds2 b = LaserSheet.PlateBounds(r);
             return new JObj().Add("file", file).Add("sheet", sheet).Add("etch", r.Etch.Text).Add("dxf", r.FileName)
+                .Add("dims", new List<object> { "(" + Fmt.N(b.Width, 1) + ")", "(" + Fmt.N(b.Height, 1) + ")" })
                 .Add("key", new List<object>(LaserSheet.HoleKey(r).ToArray()));
         }
     }

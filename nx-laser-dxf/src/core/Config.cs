@@ -95,8 +95,55 @@ namespace LaserDxf.Core
         public bool WritePdf = true;
         public string PdfFileNameFormat = "{ID}-{REV} instruction.pdf";
         public string SheetSize = "Auto";
-        public string Company = "";
         public string SheetTitle = "LASER CUTTING INSTRUCTION";
+        // company drawing border (zones, banner, revision table and title block)
+        /// <summary>Logo image (PNG or JPEG) for the LEGAL OWNER box; relative paths are next to the config file.</summary>
+        public string Logo = "Polar logo.png";
+        /// <summary>Printed in the LEGAL OWNER box when the logo file can't be found.</summary>
+        public string Company = "POLAR TECHNOLOGY";
+        public string Banner = "PRINTED COPIES ARE UNCONTROLLED";
+        public List<string> OwnerLines = new List<string>
+        {
+            "HORIZON TECHNOLOGY PARK",
+            "STANTON HARCOURT ROAD",
+            "EYNSHAM, OXFORDSHIRE, OX29 4GF",
+            "+44 (0) 1865 592 262",
+            "INFO@POLARTECHNOLOGY.CO.UK"
+        };
+        public string Confidentiality = "THIS DRAWING AND ANY INFORMATION OR DESCRIPTIVE MATERIAL SET OUT ON IT ARE THE CONFIDENTIAL AND COPYRIGHT PROPERTY OF POLAR TECHNOLOGY AND MUST NOT BE DISCLOSED, COPIED, LOANED, IN WHOLE OR PART OR USED FOR ANY PURPOSE WITHOUT THE WRITTEN PERMISSION OF POLAR TECHNOLOGY";
+        /// <summary>General tolerance block: "text|value" puts the value right-aligned; a leading "!" is bold.</summary>
+        public List<string> Tolerances = new List<string>
+        {
+            "GENERAL TOLERANCES FOR DIMENSIONS",
+            "WITHOUT SPECIFIED TOLERANCE",
+            "",
+            "LINEAR:",
+            "   0 DECIMAL PLACES|± 0.5",
+            "   1 DECIMAL PLACE .X|± 0.25",
+            "   2 DECIMAL PLACES .XX|± 0.1",
+            "   3 DECIMAL PLACES .XXX|± 0.05",
+            "ANGULAR:|± 0.5°",
+            "MACHINE SURFACE FINISH:|3.2 µm",
+            "(METALLIC ONLY)",
+            "TOLERANCING ISO 8015",
+            "!REMOVE ALL BURRS & SHARP EDGES"
+        };
+        public string SurfaceTreatment = "N/A";
+        public string HeatTreatment = "N/A";
+        public string RevisionDescription = "";
+        public string Approver = "";
+        /// <summary>Overall X and Y reference dimensions on the plate view.</summary>
+        public bool ReferenceDimensions = true;
+        /// <summary>EST MASS: density in g/cm3, picked by the first keyword found in the material name, else Density.</summary>
+        public double Density = 7.85;
+        public List<KeyValuePair<string, double>> DensityByMaterial = new List<KeyValuePair<string, double>>
+        {
+            new KeyValuePair<string, double>("ALUMIN", 2.70),
+            new KeyValuePair<string, double>("6082", 2.70),
+            new KeyValuePair<string, double>("STAINLESS", 7.95)
+        };
+        internal PdfImage LogoImage;   // loaded once per run by LaserSheet
+        internal string LogoProblem;
         public double SheetMinTextHeight = 1.8;
         public List<string> SheetNotes = new List<string>
         {
@@ -397,6 +444,37 @@ namespace LaserDxf.Core
             }
             c.Company = pdf.Str("company", c.Company);
             c.SheetTitle = pdf.Str("title", c.SheetTitle);
+            c.Logo = pdf.Str("logo", c.Logo);
+            c.Banner = pdf.Str("banner", c.Banner);
+            c.Confidentiality = pdf.Str("confidentiality", c.Confidentiality);
+            c.SurfaceTreatment = pdf.Str("surfaceTreatment", c.SurfaceTreatment);
+            c.HeatTreatment = pdf.Str("heatTreatment", c.HeatTreatment);
+            c.RevisionDescription = pdf.Str("revisionDescription", c.RevisionDescription);
+            c.Approver = pdf.Str("approver", c.Approver);
+            c.ReferenceDimensions = pdf.Bool("referenceDimensions", c.ReferenceDimensions);
+            c.Density = pdf.Num("density", c.Density, 0.1, 30);
+            List<object> owner = pdf.Arr("ownerLines");
+            if (owner != null)
+            {
+                c.OwnerLines.Clear();
+                foreach (object o in owner) if (o is string) c.OwnerLines.Add((string)o);
+            }
+            List<object> tol = pdf.Arr("tolerances");
+            if (tol != null)
+            {
+                c.Tolerances.Clear();
+                foreach (object o in tol) if (o is string) c.Tolerances.Add((string)o);
+            }
+            JObj dens = pdf.RawObj("densityByMaterial");
+            if (dens != null)
+            {
+                c.DensityByMaterial.Clear();
+                foreach (var kv in dens.Items)
+                {
+                    if (kv.Value is double) c.DensityByMaterial.Add(new KeyValuePair<string, double>(kv.Key, (double)kv.Value));
+                    else warnings.Add("Config: pdf.densityByMaterial." + kv.Key + " should be a number (g/cm3)");
+                }
+            }
             c.SheetMinTextHeight = pdf.Num("minTextHeight", c.SheetMinTextHeight, 0.5, 10);
             List<object> notes = pdf.Arr("notes");
             if (notes != null)

@@ -32,7 +32,9 @@ def main():
         if abs(w - ew) > 1 or abs(h - eh) > 1:
             problems.append(f"page {w:.0f}x{h:.0f}, expected {s['sheet']} landscape {ew}x{eh}")
         text = " ".join(page.extract_text().split())
-        for must in ["ETCH ALL TEXT ON LAYER ETCH", s["etch"], s["dxf"], "LASER CUTTING NOTES", "VIEW FROM THE ETCH FACE"]:
+        musts = ["ETCH ALL TEXT ON LAYER ETCH", s["etch"], s["dxf"], "LASER CUTTING NOTES", "VIEW FROM THE ETCH FACE",
+                 "PRINTED COPIES ARE UNCONTROLLED", "REVISION HISTORY", "PART NUMBER:", "EST MASS:", "REVISION"] + s["dims"]
+        for must in musts:
             if must not in text:
                 problems.append(f"missing text: {must!r}")
         for k in s["key"]:

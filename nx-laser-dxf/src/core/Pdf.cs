@@ -1,4 +1,4 @@
-// Minimal vector PDF writer (lines, curves, rectangles, Helvetica text).
+// Minimal vector PDF writer (lines, curves, rectangles, Helvetica text, PNG/JPEG images, layers).
 // NX journals can't pull in a PDF library, and this is all the instruction sheet needs.
 // Coordinates are millimetres from the bottom-left corner of the page.
 namespace LaserDxf.Core
@@ -25,6 +25,7 @@ namespace LaserDxf.Core
         }
 
         internal string Content { get { return c.ToString(); } }
+        internal readonly List<PdfImage> Images = new List<PdfImage>();
 
         static string N(double v) { return Math.Round(v, 4).ToString("0.####", CultureInfo.InvariantCulture); }
 
@@ -99,14 +100,41 @@ namespace LaserDxf.Core
             c.Append("EMC\n");
         }
 
+        /// <summary>Closed polygon filled with the fill colour.</summary>
+        public void FillPolygon(IList<Vec2> pts)
+        {
+            if (pts.Count < 3) return;
+            c.Append(N(pts[0].X)).Append(' ').Append(N(pts[0].Y)).Append(" m");
+            for (int i = 1; i < pts.Count; i++) c.Append(' ').Append(N(pts[i].X)).Append(' ').Append(N(pts[i].Y)).Append(" l");
+            c.Append(" h f\n");
+        }
+
+        /// <summary>Draws the image stretched to the w x h box with its bottom-left corner at (x, y).</summary>
+        public void Image(PdfImage img, double x, double y, double w, double h)
+        {
+            int i = Images.IndexOf(img);
+            if (i < 0) { i = Images.Count; Images.Add(img); }
+            c.Append("q ").Append(N(w)).Append(" 0 0 ").Append(N(h)).Append(' ').Append(N(x)).Append(' ').Append(N(y)).Append(" cm /Im").Append(i).Append(" Do Q\n");
+        }
+
         /// <summary>Single-line text; (x, y) is on the baseline. Size is the font size in mm.</summary>
         public void Text(double x, double y, double sizeMm, string text, bool bold, PdfAlign align)
         {
+            Text(x, y, sizeMm, text, bold, align, 0);
+        }
+
+        /// <summary>Text turned rotationDeg anticlockwise about (x, y); the alignment runs along the text.</summary>
+        public void Text(double x, double y, double sizeMm, string text, bool bold, PdfAlign align, double rotationDeg)
+        {
             double w = PdfFonts.Width(text, sizeMm, bold);
-            if (align == PdfAlign.Center) x -= w / 2;
-            else if (align == PdfAlign.Right) x -= w;
-            c.Append("BT /").Append(bold ? "F2" : "F1").Append(' ').Append(N(sizeMm)).Append(" Tf ")
-             .Append(N(x)).Append(' ').Append(N(y)).Append(" Td (").Append(Escape(text)).Append(") Tj ET\n");
+            double shift = align == PdfAlign.Center ? w / 2 : align == PdfAlign.Right ? w : 0;
+            double a = rotationDeg * Math.PI / 180, cs = Math.Cos(a), sn = Math.Sin(a);
+            x -= shift * cs;
+            y -= shift * sn;
+            c.Append("BT /").Append(bold ? "F2" : "F1").Append(' ').Append(N(sizeMm)).Append(" Tf ");
+            if (rotationDeg == 0) c.Append(N(x)).Append(' ').Append(N(y)).Append(" Td");
+            else c.Append(N(cs)).Append(' ').Append(N(sn)).Append(' ').Append(N(-sn)).Append(' ').Append(N(cs)).Append(' ').Append(N(x)).Append(' ').Append(N(y)).Append(" Tm");
+            c.Append(" (").Append(Escape(text)).Append(") Tj ET\n");
         }
 
         static string Escape(string s)
@@ -193,10 +221,38 @@ namespace LaserDxf.Core
             var offsets = new List<long>();
             Action<string> write = delegate (string s) { byte[] b = Win1252.GetBytes(s); ms.Write(b, 0, b.Length); };
 
-            // Object numbers: 1 catalog, 2 pages, 3 Helvetica, 4 Helvetica-Bold, 5 info, then page/content pairs, then layers.
+            // Object numbers: 1 catalog, 2 pages, 3 Helvetica, 4 Helvetica-Bold, 5 info, then page/content pairs,
+            // then layers, then each page's images (an image with transparency is followed by its soft mask).
             int firstLayer = 6 + Pages.Count * 2;
             int n = 5 + Pages.Count * 2 + Layers.Count;
+            var imageObj = new List<int>[Pages.Count];
+            for (int i = 0; i < Pages.Count; i++)
+            {
+                imageObj[i] = new List<int>();
+                foreach (PdfImage img in Pages[i].Images)
+                {
+                    imageObj[i].Add(n + 1);
+                    n += img.Alpha != null ? 2 : 1;
+                }
+            }
             var objects = new string[n + 1];
+            var binary = new byte[n + 1][];
+            for (int i = 0; i < Pages.Count; i++)
+                for (int k = 0; k < Pages[i].Images.Count; k++)
+                {
+                    PdfImage img = Pages[i].Images[k];
+                    int o = imageObj[i][k];
+                    objects[o] = "<< /Type /XObject /Subtype /Image /Width " + img.Width + " /Height " + img.Height + " /ColorSpace " + img.ColorSpace +
+                                 " /BitsPerComponent 8 /Filter " + img.Filter + (img.Decode != null ? " /Decode " + img.Decode : "") +
+                                 (img.Alpha != null ? " /SMask " + (o + 1) + " 0 R" : "") + " /Length " + img.Data.Length + " >>";
+                    binary[o] = img.Data;
+                    if (img.Alpha != null)
+                    {
+                        objects[o + 1] = "<< /Type /XObject /Subtype /Image /Width " + img.Width + " /Height " + img.Height +
+                                         " /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length " + img.Alpha.Length + " >>";
+                        binary[o + 1] = img.Alpha;
+                    }
+                }
             var kids = new StringBuilder();
             for (int i = 0; i < Pages.Count; i++) kids.Append(6 + i * 2).Append(" 0 R ");
             var ocgs = new StringBuilder();
@@ -221,7 +277,7 @@ namespace LaserDxf.Core
                 double w = p.WidthMm * 72 / 25.4, h = p.HeightMm * 72 / 25.4;
                 objects[6 + i * 2] = "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 " + w.ToString("0.##", CultureInfo.InvariantCulture) + " " +
                                      h.ToString("0.##", CultureInfo.InvariantCulture) + "] /Resources << /Font << /F1 3 0 R /F2 4 0 R >>" +
-                                     (Layers.Count > 0 ? " /Properties << " + props.ToString().Trim() + " >>" : "") + " >> /Contents " + (7 + i * 2) + " 0 R >>";
+                                     (Layers.Count > 0 ? " /Properties << " + props.ToString().Trim() + " >>" : "") + XObjects(imageObj[i]) + " >> /Contents " + (7 + i * 2) + " 0 R >>";
                 string content = p.Content;
                 objects[7 + i * 2] = "<< /Length " + Win1252.GetByteCount(content) + " >>\nstream\n" + content + "endstream";
             }
@@ -230,7 +286,13 @@ namespace LaserDxf.Core
             for (int i = 1; i <= n; i++)
             {
                 offsets.Add(ms.Position);
-                write(i + " 0 obj\n" + objects[i] + "\nendobj\n");
+                if (binary[i] == null) write(i + " 0 obj\n" + objects[i] + "\nendobj\n");
+                else
+                {
+                    write(i + " 0 obj\n" + objects[i] + "\nstream\n");
+                    ms.Write(binary[i], 0, binary[i].Length);
+                    write("\nendstream\nendobj\n");
+                }
             }
             long xref = ms.Position;
             var x = new StringBuilder();
@@ -239,6 +301,14 @@ namespace LaserDxf.Core
             x.Append("trailer\n<< /Size ").Append(n + 1).Append(" /Root 1 0 R /Info 5 0 R >>\nstartxref\n").Append(xref).Append("\n%%EOF\n");
             write(x.ToString());
             return ms.ToArray();
+        }
+
+        static string XObjects(List<int> objs)
+        {
+            if (objs.Count == 0) return "";
+            var sb = new StringBuilder(" /XObject << ");
+            for (int k = 0; k < objs.Count; k++) sb.Append("/Im").Append(k).Append(' ').Append(objs[k]).Append(" 0 R ");
+            return sb.Append(">>").ToString();
         }
 
         static string Lit(string s)
