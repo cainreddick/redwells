@@ -414,8 +414,12 @@ Private Sub AddHelpBox(ByVal ws As Worksheet, ByVal boxName As String, ByVal txt
     tb.Fill.ForeColor.RGB = RGB(248, 248, 248)
     tb.Line.ForeColor.RGB = RGB(200, 200, 200)
     tb.Placement = xlFreeFloating
-    tb.PrintObject = False
     tb.Locked = True
+    ' PrintObject lives on the drawing object, not the Shape. Cosmetic only:
+    ' the box is outside the print area anyway.
+    On Error Resume Next
+    tb.DrawingObject.PrintObject = False
+    On Error GoTo 0
 End Sub
 
 Private Sub FormatTextBox(ByVal rng As Range)
