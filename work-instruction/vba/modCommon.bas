@@ -406,7 +406,7 @@ Public Sub SetupPage(ByVal ws As Worksheet, ByVal area As String, ByVal orient A
         .FitToPagesTall = 1
         .LeftMargin = Application.InchesToPoints(0.5)
         .RightMargin = Application.InchesToPoints(0.5)
-        .TopMargin = Application.InchesToPoints(0.95)   ' clears the header logo
+        .TopMargin = Application.InchesToPoints(1.05)   ' clear gap below the header logo
         .BottomMargin = Application.InchesToPoints(0.6)
         .HeaderMargin = Application.InchesToPoints(0.3)
         .FooterMargin = Application.InchesToPoints(0.25)

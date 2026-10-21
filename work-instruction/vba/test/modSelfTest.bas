@@ -222,6 +222,8 @@ Public Function RunSelfTest(ByVal assetDir As String, ByVal outDir As String) As
     For Each v In Array(SH_FRONT, SH_BOM, "Op 10", "Op 20", "Op 30")
         Set ws = ThisWorkbook.Worksheets(v)
         Check ws.PageSetup.Pages.Count = 1, ws.Name & ": prints on exactly 1 page"
+        saved = ControlsClash(ws)
+        Check saved = "", ws.Name & ": buttons/notes sit right of the print area, no overlaps" & IIf(saved = "", "", " - " & saved)
         Check ws.PageSetup.Orientation = IIf(IsOpSheet(ws), xlLandscape, xlPortrait), _
               ws.Name & ": " & IIf(ws.PageSetup.Orientation = xlLandscape, "landscape", "portrait")
         Info ws.Name & ": print area " & ws.PageSetup.PrintArea & ", estimated scale " & Format(EstimatedFitScale(ws), "0%")
@@ -329,6 +331,28 @@ End Sub
 
 Private Function FirstPart(ByVal sheetName As String) As String
     FirstPart = SafeText(ThisWorkbook.Worksheets(sheetName).Range("OpParts").Cells(1, 1).Value)
+End Function
+
+' "" if every button / note box is right of the print area and none overlap; else what is wrong
+Private Function ControlsClash(ByVal ws As Worksheet) As String
+    Dim area As Range
+    Dim shp As Shape, other As Shape
+    Dim s As String
+    Set area = ws.Range(ws.PageSetup.PrintArea)
+    For Each shp In ws.Shapes
+        If shp.Name Like "btn_*" Or shp.Name = "HowToUse" Then
+            If shp.Left < area.Left + area.Width - 0.5 Then s = s & shp.Name & " is inside the print area (" & shp.TopLeftCell.Address(False, False) & "); "
+            For Each other In ws.Shapes
+                If (other.Name Like "btn_*" Or other.Name = "HowToUse") And other.Name <> shp.Name Then
+                    If shp.Left < other.Left + other.Width And other.Left < shp.Left + shp.Width And _
+                       shp.Top < other.Top + other.Height And other.Top < shp.Top + shp.Height Then
+                        If shp.Name < other.Name Then s = s & shp.Name & " overlaps " & other.Name & "; "
+                    End If
+                End If
+            Next other
+        End If
+    Next shp
+    ControlsClash = s
 End Function
 
 Private Function ButtonCount(ByVal ws As Worksheet) As Long

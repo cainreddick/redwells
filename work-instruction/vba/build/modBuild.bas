@@ -37,6 +37,12 @@ Public Function BuildTemplate() As String
     If wsF.Shapes.Count <> 1 Then Err.Raise vbObjectError + 601, , "expected 1 shape (PPE icons) on Sheet1, found " & wsF.Shapes.Count
     headerFill = wsF.Range("A18").Interior.Color
 
+    ' The original opens in Page Layout view, where Range.Left/Top are measured
+    ' differently - shapes placed in that view land in the wrong cells.
+    StepIs "switching to Normal view"
+    SetView wsF, "A1", True
+    SetView wsO, "A1", True
+
     StepIs "renaming sheets"
     wsF.Name = SH_FRONT
     wsO.Name = SH_TEMPLATE
@@ -103,7 +109,7 @@ End Function
 Private Sub BuildFrontPage(ByVal ws As Worksheet, ByVal headerFill As Long)
     Dim shp As Shape
     Dim hse As Range
-    Dim i As Long, r As Long, topPt As Double, leftPt As Double
+    Dim i As Long, topPt As Double, leftPt As Double
     Dim t As Variant
     Dim macros As Variant, captions As Variant, helpText As Variant
 
@@ -149,7 +155,11 @@ Private Sub BuildFrontPage(ByVal ws As Worksheet, ByVal headerFill As Long)
     ws.Range("D8").MergeArea.NumberFormat = "@"
     ws.Range("F8").MergeArea.NumberFormat = "@"
     SetDateValidation ws.Range("H8").MergeArea
-    ws.Range("A7:I7").ShrinkToFit = True          ' "Document Number" label was clipped
+    ' Label row: was 15pt with wrapping, so "Document Number" lost its second line
+    ' and the bold labels were clipped top and bottom
+    ws.Range("A7:I7").WrapText = False
+    ws.Range("A7:I7").ShrinkToFit = True
+    ws.Rows(7).RowHeight = 18
 
     StepIs "front page: approvers"
     For i = 0 To 2
@@ -184,34 +194,19 @@ Private Sub BuildFrontPage(ByVal ws As Worksheet, ByVal headerFill As Long)
     For i = 0 To UBound(macros)
         AddButton ws, CStr(macros(i)), CStr(captions(i)), leftPt, topPt + i * 28, 190, 24
     Next i
-    r = 2
-    Do While ws.Rows(r).Top < topPt + (UBound(macros) + 1) * 28 + 8
-        r = r + 1
-    Loop
+    ' How-to notes in a text box (not cells) so row heights and Add Row cannot clip them
     helpText = Array( _
-        "HOW TO USE (this column does not print)", _
+        "HOW TO USE (not printed)", _
         "1. Type in the shaded cells - Tab jumps to the next one.", _
-        "2. Title, Doc No., Revision, Author and Release Date flow", _
-        "    to every op page and footer automatically.", _
-        "3. Section 3: click a row, press Link Document and pick", _
-        "    the file. Doc No. is filled in and hyperlinked.", _
+        "2. Title, Doc No., Revision, Author and Release Date flow to every op page and footer automatically.", _
+        "3. Section 3: click a row, press Link Document and pick the file. Doc No. is filled in and hyperlinked.", _
         "4. Need more rows? Click in the table, press Add Row.", _
         "5. Add Operation creates the next op sheet (10, 20, 30...).", _
-        "6. On an op sheet: Insert Image (file) or Paste Image", _
-        "    (screenshot with Win+Shift+S first). It fits itself.", _
+        "6. On an op sheet: Insert Image (file) or Paste Image (take a screenshot with Win+Shift+S first). It fits itself.", _
         "7. Parts required on each op build the BOM sheet.", _
-        "8. Export PDF checks everything, then saves", _
-        "    <DocNo>_Rev<Rev>.pdf next to this file.", _
-        "", _
-        "Sheets are protected without a password to prevent", _
-        "accidents (Review > Unprotect Sheet if really needed).")
-    For i = 0 To UBound(helpText)
-        ws.Cells(r + i, 11).Value = helpText(i)
-        ws.Cells(r + i, 11).Font.Name = BASE_FONT
-        ws.Cells(r + i, 11).Font.Size = 9
-        ws.Cells(r + i, 11).Font.Color = RGB(64, 64, 64)
-    Next i
-    ws.Cells(r, 11).Font.Bold = True
+        "8. Export PDF checks everything, then saves <DocNo>_Rev<Rev>.pdf next to this file.", _
+        "Sheets are protected without a password to prevent accidents (Review > Unprotect Sheet if really needed).")
+    AddHelpBox ws, "HowToUse", Join(helpText, vbLf), leftPt, topPt + (UBound(macros) + 1) * 28 + 10, 260
 
     StepIs "front page: print setup"
     SetupPage ws, "$A$1:$I$" & (NameRange("Equip_Rows").Row + NameRange("Equip_Rows").Rows.Count - 1), xlPortrait
@@ -394,6 +389,33 @@ Private Sub BuildOpTemplate(ByVal ws As Worksheet, ByVal headerFill As Long)
 
     StepIs "op template: print setup"
     SetupPage ws, "$A$1:$N$32", xlLandscape
+End Sub
+
+' Non-printing note beside the print area; first line bold
+Private Sub AddHelpBox(ByVal ws As Worksheet, ByVal boxName As String, ByVal txt As String, _
+                       ByVal leftPt As Double, ByVal topPt As Double, ByVal w As Double)
+    Dim tb As Shape
+    Set tb = ws.Shapes.AddTextbox(msoTextOrientationHorizontal, leftPt, topPt, w, 100)
+    tb.Name = boxName
+    With tb.TextFrame2
+        .WordWrap = msoTrue
+        .MarginLeft = 6
+        .MarginRight = 6
+        .MarginTop = 4
+        .MarginBottom = 4
+        .TextRange.Text = txt
+        .TextRange.Font.Name = BASE_FONT
+        .TextRange.Font.Size = 9
+        .TextRange.Font.Fill.ForeColor.RGB = RGB(64, 64, 64)
+        .TextRange.ParagraphFormat.SpaceAfter = 3
+        .TextRange.Paragraphs(1).Font.Bold = msoTrue
+        .AutoSize = msoAutoSizeShapeToFitText
+    End With
+    tb.Fill.ForeColor.RGB = RGB(248, 248, 248)
+    tb.Line.ForeColor.RGB = RGB(200, 200, 200)
+    tb.Placement = xlFreeFloating
+    tb.PrintObject = False
+    tb.Locked = True
 End Sub
 
 Private Sub FormatTextBox(ByVal rng As Range)

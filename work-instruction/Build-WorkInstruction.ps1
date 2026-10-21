@@ -156,6 +156,12 @@ function New-PlaceholderImage([string]$Path, [int]$Width, [int]$Height, [string]
     $format.LineAlignment = [System.Drawing.StringAlignment]::Center
     $text = "$Label`n$Width x $Height px"
     $box = $g.MeasureString($text, $font)
+    while ($box.Width -gt $Width * 0.85 -and $size -gt 12) {      # shrink the label to fit narrow images
+        $font.Dispose()
+        $size = [float]($size * 0.9)
+        $font = New-Object System.Drawing.Font -ArgumentList 'Segoe UI', $size, ([System.Drawing.FontStyle]::Bold), ([System.Drawing.GraphicsUnit]::Pixel)
+        $box = $g.MeasureString($text, $font)
+    }
     $rect = New-Object System.Drawing.RectangleF -ArgumentList ([float](($Width - $box.Width) / 2 - 20)), ([float](($Height - $box.Height) / 2 - 10)), ([float]($box.Width + 40)), ([float]($box.Height + 20))
     $g.FillRectangle([System.Drawing.Brushes]::White, $rect)
     $g.DrawString($text, $font, [System.Drawing.Brushes]::Black, $rect, $format)
