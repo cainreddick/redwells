@@ -203,7 +203,21 @@ function New-TestAssets([string]$Dir) {
 $excel = $null
 $exitCode = 0
 try {
-    if (-not (Test-Path $Source)) { throw "Source workbook not found: $Source" }
+    # The original template may also sit next to this script instead of in source\
+    if (-not (Test-Path $Source)) {
+        $besideScript = Join-Path $PSScriptRoot 'Work_Instruction_Template.xlsx'
+        if (Test-Path $besideScript) { $Source = $besideScript }
+    }
+    # Check the whole folder is here before starting Excel
+    $required = @($Source, (Join-Path $VbaDir 'ThisWorkbook.cls'), (Join-Path $VbaDir 'build\modBuild.bas'))
+    $required += $RuntimeModules | ForEach-Object { Join-Path $VbaDir "$_.bas" }
+    if (-not $SkipTest) { $required += Join-Path $VbaDir 'test\modSelfTest.bas' }
+    $missing = @($required | Where-Object { -not (Test-Path $_) })
+    if ($missing.Count -gt 0) {
+        throw ("These files are missing:`n    " + ($missing -join "`n    ") + "`n`n" +
+               "The build needs the whole work-instruction folder (source\ and vba\ next to this script). " +
+               "Extract the complete work-instruction zip and run Build.cmd from inside the extracted folder.")
+    }
     $Source = (Resolve-Path $Source).Path
     New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
     $OutDir = (Resolve-Path $OutDir).Path
