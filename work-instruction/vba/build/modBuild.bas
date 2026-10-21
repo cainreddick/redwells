@@ -266,6 +266,7 @@ Private Sub BuildOpTemplate(ByVal ws As Worksheet, ByVal headerFill As Long)
     ws.Range("C1:D1").Copy ws.Range("A1")
     ws.Range("A1").Value = "Work Instruction"
     ws.Range("C2:D3").Copy ws.Range("A2")
+    ws.Range("A2").MergeArea.NumberFormat = "General"   ' C2 is Text-formatted in the original
     ws.Range("A2").Formula = "=IF(WI_Title="""","""",WI_Title)"
     With ws.Range("A2").MergeArea
         .Font.Size = 9
@@ -288,6 +289,7 @@ Private Sub BuildOpTemplate(ByVal ws As Worksheet, ByVal headerFill As Long)
     End With
     ws.Range("K2").Value = ""
     ' Linked from the Front Page - never retyped
+    ws.Range("C2").MergeArea.NumberFormat = "General"
     ws.Range("C2").Value = ""
     ws.Range("H2").Formula = "=IF(WI_DocNo="""","""",WI_DocNo)"
     ws.Range("J2").Formula = "=IF(WI_Rev="""","""",WI_Rev)"

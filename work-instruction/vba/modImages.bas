@@ -100,33 +100,49 @@ Public Sub InsertImageFile(ByVal ws As Worksheet, ByVal filePath As String)
 End Sub
 
 Public Function PasteImageFromClipboard(ByVal ws As Worksheet) As Boolean
-    Dim before As Long
+    Dim existing As String
     Dim shp As Shape
+    Dim pasted As Shape
     Dim box As Range
     Set box = ws.Range("OpImageBox")
     UnprotectSheet ws
     ws.Activate
     box.Cells(1, 1).Select
-    before = ws.Shapes.Count
+    ' Remember what is already on the sheet. (Form buttons sit above pictures in
+    ' the shape order, so "the last shape" is not necessarily the pasted one.)
+    existing = ShapeNameList(ws)
     ' JPEG keeps screenshots/photos small; fall back to PNG, then a plain paste
     On Error Resume Next
     ws.PasteSpecial Format:="Picture (JPEG)", Link:=False, DisplayAsIcon:=False
-    If ws.Shapes.Count = before Then ws.PasteSpecial Format:="Picture (PNG)", Link:=False, DisplayAsIcon:=False
-    If ws.Shapes.Count = before Then ws.Paste
+    If ShapeNameList(ws) = existing Then ws.PasteSpecial Format:="Picture (PNG)", Link:=False, DisplayAsIcon:=False
+    If ShapeNameList(ws) = existing Then ws.Paste
     On Error GoTo 0
-    If ws.Shapes.Count > before Then
-        Set shp = ws.Shapes(ws.Shapes.Count)
-        If IsPictureShape(shp) Then
-            shp.Name = IMAGE_NAME & "_new"
-            RemoveOpImages ws, shp.Name
-            PlaceOpImage shp, box
+    For Each shp In ws.Shapes
+        If InStr(existing, "|" & shp.Name & "|") = 0 Then Set pasted = shp
+    Next shp
+    If Not pasted Is Nothing Then
+        If IsPictureShape(pasted) Then
+            pasted.Name = IMAGE_NAME & "_new"
+            RemoveOpImages ws, pasted.Name
+            PlaceOpImage pasted, box
             PasteImageFromClipboard = True
         Else
-            shp.Delete                   ' pasted something that is not a picture
+            pasted.Delete                ' pasted something that is not a picture
         End If
     End If
     ws.Range("OpDetails").Select
     ProtectSheet ws
+End Function
+
+' "|name1|name2|...|" of every shape on the sheet
+Private Function ShapeNameList(ByVal ws As Worksheet) As String
+    Dim shp As Shape
+    Dim s As String
+    s = "|"
+    For Each shp In ws.Shapes
+        s = s & shp.Name & "|"
+    Next shp
+    ShapeNameList = s
 End Function
 
 Private Sub PlaceOpImage(ByVal shp As Shape, ByVal box As Range)

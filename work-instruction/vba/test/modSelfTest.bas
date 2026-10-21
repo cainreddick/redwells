@@ -18,6 +18,7 @@ Public Function RunSelfTest(ByVal assetDir As String, ByVal outDir As String) As
     Dim i As Long
     Dim v As Variant
     Dim saved As String
+    Dim src As Shape
     On Error GoTo Fail
 
     gSilent = True
@@ -113,8 +114,9 @@ Public Function RunSelfTest(ByVal assetDir As String, ByVal outDir As String) As
     Check OpListText() = "Op 10, Op 20, Op 30", "Add Operation x3 -> " & OpListText()
     For Each v In GetOpSheets()
         Set ws = v
-        Check SafeText(ws.Range("H2").Value) = "WI-0421" And SafeText(ws.Range("J2").Value) = "B" And _
-              SafeText(ws.Range("A2").Value) = FrontValue("WI_Title"), ws.Name & ": Doc No., Rev. and title linked from Front Page"
+        Check SafeText(ws.Range("A2").Value) = FrontValue("WI_Title"), ws.Name & ": title linked from Front Page ('" & SafeText(ws.Range("A2").Value) & "')"
+        Check SafeText(ws.Range("H2").Value) = "WI-0421", ws.Name & ": Doc No. linked from Front Page ('" & SafeText(ws.Range("H2").Value) & "')"
+        Check SafeText(ws.Range("J2").Value) = "B", ws.Name & ": Rev. linked from Front Page ('" & SafeText(ws.Range("J2").Value) & "')"
         Check OpNumberOf(ws) = Val(Mid$(ws.Name, 4)), ws.Name & ": Op No. cell = " & OpNumberOf(ws)
     Next v
 
@@ -144,13 +146,16 @@ Public Function RunSelfTest(ByVal assetDir As String, ByVal outDir As String) As
     ' Op 30 goes through the clipboard (Paste Image path)
     Set ws = ThisWorkbook.Worksheets("Op 30")
     UnprotectSheet ws
-    With ws.Shapes.AddPicture(assetDir & "\op30_square.png", msoFalse, msoTrue, 0, 0, -1, -1)
-        .Copy
-        .Delete
-    End With
+    ' Source picture sits outside the image box and is removed after pasting,
+    ' as when copying from another application
+    Set src = ws.Shapes.AddPicture(assetDir & "\op30_square.png", msoFalse, msoTrue, 0, 0, -1, -1)
+    src.Copy
     Check PasteImageFromClipboard(ws), "Paste Image from the clipboard"
+    UnprotectSheet ws
+    src.Delete
     For Each v In GetOpSheets()
         CheckImageFit v
+        Check ButtonCount(v) = 7, v.Name & ": all 7 buttons still present (" & ButtonCount(v) & ")"
     Next v
 
     '--------------------------------------------------------------------------
@@ -324,6 +329,13 @@ End Sub
 
 Private Function FirstPart(ByVal sheetName As String) As String
     FirstPart = SafeText(ThisWorkbook.Worksheets(sheetName).Range("OpParts").Cells(1, 1).Value)
+End Function
+
+Private Function ButtonCount(ByVal ws As Worksheet) As Long
+    Dim shp As Shape
+    For Each shp In ws.Shapes
+        If shp.Name Like "btn_*" Then ButtonCount = ButtonCount + 1
+    Next shp
 End Function
 
 Private Function PictureCount(ByVal ws As Worksheet) As Long
