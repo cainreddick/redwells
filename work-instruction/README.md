@@ -30,12 +30,11 @@ work-instruction/
 ## Building it (Windows, Excel 2016 / Microsoft 365)
 
 1. Close Excel.
-2. In this folder, run:
-   ```
-   powershell -ExecutionPolicy Bypass -File .\Build-WorkInstruction.ps1
-   ```
-   If Windows blocks the script because it was downloaded, run
-   `Get-ChildItem -Recurse | Unblock-File` once in this folder first.
+2. Double-click **`Build.cmd`** in this folder. A console window opens and stays open
+   until you press a key, so you can read the result.
+   (Double-clicking `Build-WorkInstruction.ps1` itself only opens it in Notepad - that is a
+   Windows default. `Build.cmd` runs it for you.) To run it from a PowerShell prompt
+   instead: `powershell -ExecutionPolicy Bypass -File .\Build-WorkInstruction.ps1`
 3. An Excel window opens and runs the build, then a self-test. This takes about a minute. Leave it alone until the script finishes.
 
 Output:
